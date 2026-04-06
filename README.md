@@ -20,14 +20,7 @@ Add `aztec-rs` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-aztec-rs = { git = "https://github.com/anthropics/aztec-rust.git" }
-```
-
-Or from a local path:
-
-```toml
-[dependencies]
-aztec-rs = { path = "../aztec-rust" }
+aztec-rs = "0.1.0"
 ```
 
 ## Quick Start
@@ -133,9 +126,4 @@ cargo fmt
 
 ## License
 
-Licensed under either of
-
-- [Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0)
-- [MIT License](http://opensource.org/licenses/MIT)
-
-at your option.
+Licensed under the [Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0).
