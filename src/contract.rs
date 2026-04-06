@@ -109,6 +109,65 @@ impl<W: Wallet> ContractFunctionInteraction<'_, W> {
 }
 
 // ---------------------------------------------------------------------------
+// BatchCall
+// ---------------------------------------------------------------------------
+
+/// A batch of interactions aggregated into a single transaction.
+///
+/// Merges multiple [`ExecutionPayload`]s into one, preserving all calls,
+/// auth witnesses, capsules, and extra hashed args from each payload.
+/// The fee payer is taken from the last payload that specifies one.
+pub struct BatchCall<'a, W> {
+    wallet: &'a W,
+    payloads: Vec<ExecutionPayload>,
+}
+
+impl<W> std::fmt::Debug for BatchCall<'_, W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BatchCall")
+            .field("payload_count", &self.payloads.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a, W: Wallet> BatchCall<'a, W> {
+    /// Create a new batch from a list of execution payloads.
+    pub const fn new(wallet: &'a W, payloads: Vec<ExecutionPayload>) -> Self {
+        Self { wallet, payloads }
+    }
+
+    /// Merge all payloads into a single [`ExecutionPayload`].
+    pub fn request(&self) -> Result<ExecutionPayload, Error> {
+        let mut merged = ExecutionPayload::default();
+
+        for payload in &self.payloads {
+            merged.calls.extend(payload.calls.clone());
+            merged.auth_witnesses.extend(payload.auth_witnesses.clone());
+            merged.capsules.extend(payload.capsules.clone());
+            merged
+                .extra_hashed_args
+                .extend(payload.extra_hashed_args.clone());
+
+            if payload.fee_payer.is_some() {
+                merged.fee_payer = payload.fee_payer;
+            }
+        }
+
+        Ok(merged)
+    }
+
+    /// Simulate the batch without sending.
+    pub async fn simulate(&self, opts: SimulateOptions) -> Result<TxSimulationResult, Error> {
+        self.wallet.simulate_tx(self.request()?, opts).await
+    }
+
+    /// Send the batch as a single transaction.
+    pub async fn send(&self, opts: SendOptions) -> Result<SendResult, Error> {
+        self.wallet.send_tx(self.request()?, opts).await
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -412,5 +471,169 @@ mod tests {
             .expect("send");
 
         assert_eq!(result.tx_hash, tx_hash);
+    }
+
+    // -----------------------------------------------------------------------
+    // BatchCall tests
+    // -----------------------------------------------------------------------
+
+    use crate::abi::FunctionSelector;
+    use crate::tx::{AuthWitness, Capsule, HashedValues};
+
+    fn make_call(addr: u64, selector: &str) -> FunctionCall {
+        FunctionCall {
+            to: AztecAddress(Fr::from(addr)),
+            selector: FunctionSelector::from_hex(selector).expect("valid selector"),
+            args: vec![AbiValue::Field(Fr::from(addr))],
+            function_type: FunctionType::Private,
+            is_static: false,
+        }
+    }
+
+    fn make_payload(addr: u64, selector: &str) -> ExecutionPayload {
+        ExecutionPayload {
+            calls: vec![make_call(addr, selector)],
+            ..ExecutionPayload::default()
+        }
+    }
+
+    // -- BatchCall::request --
+
+    #[test]
+    fn batch_call_empty() {
+        let wallet = MockWallet::new(sample_chain_info());
+        let batch = BatchCall::new(&wallet, vec![]);
+        let payload = batch.request().expect("empty batch");
+        assert!(payload.calls.is_empty());
+        assert!(payload.auth_witnesses.is_empty());
+        assert!(payload.capsules.is_empty());
+        assert!(payload.extra_hashed_args.is_empty());
+        assert!(payload.fee_payer.is_none());
+    }
+
+    #[test]
+    fn batch_call_single_payload() {
+        let wallet = MockWallet::new(sample_chain_info());
+        let p = make_payload(1, "0xaabbccdd");
+        let batch = BatchCall::new(&wallet, vec![p]);
+        let payload = batch.request().expect("single payload");
+        assert_eq!(payload.calls.len(), 1);
+        assert_eq!(payload.calls[0].to, AztecAddress(Fr::from(1u64)));
+    }
+
+    #[test]
+    fn batch_call_merges_multiple_payloads() {
+        let wallet = MockWallet::new(sample_chain_info());
+        let p1 = ExecutionPayload {
+            calls: vec![make_call(1, "0xaabbccdd")],
+            auth_witnesses: vec![AuthWitness {
+                fields: vec![Fr::from(10u64)],
+            }],
+            capsules: vec![Capsule { data: vec![0x01] }],
+            extra_hashed_args: vec![HashedValues {
+                values: vec![Fr::from(20u64)],
+            }],
+            fee_payer: None,
+        };
+        let p2 = ExecutionPayload {
+            calls: vec![make_call(2, "0x11223344")],
+            auth_witnesses: vec![AuthWitness {
+                fields: vec![Fr::from(30u64)],
+            }],
+            capsules: vec![],
+            extra_hashed_args: vec![],
+            fee_payer: Some(AztecAddress(Fr::from(99u64))),
+        };
+
+        let batch = BatchCall::new(&wallet, vec![p1, p2]);
+        let payload = batch.request().expect("merge payloads");
+
+        assert_eq!(payload.calls.len(), 2);
+        assert_eq!(payload.calls[0].to, AztecAddress(Fr::from(1u64)));
+        assert_eq!(payload.calls[1].to, AztecAddress(Fr::from(2u64)));
+        assert_eq!(payload.auth_witnesses.len(), 2);
+        assert_eq!(payload.capsules.len(), 1);
+        assert_eq!(payload.extra_hashed_args.len(), 1);
+        assert_eq!(payload.fee_payer, Some(AztecAddress(Fr::from(99u64))));
+    }
+
+    #[test]
+    fn batch_call_fee_payer_uses_last_non_none() {
+        let wallet = MockWallet::new(sample_chain_info());
+        let p1 = ExecutionPayload {
+            fee_payer: Some(AztecAddress(Fr::from(1u64))),
+            ..ExecutionPayload::default()
+        };
+        let p2 = ExecutionPayload {
+            fee_payer: None,
+            ..ExecutionPayload::default()
+        };
+        let p3 = ExecutionPayload {
+            fee_payer: Some(AztecAddress(Fr::from(3u64))),
+            ..ExecutionPayload::default()
+        };
+
+        let batch = BatchCall::new(&wallet, vec![p1, p2, p3]);
+        let payload = batch.request().expect("merge payloads");
+        assert_eq!(payload.fee_payer, Some(AztecAddress(Fr::from(3u64))));
+    }
+
+    // -- BatchCall::simulate --
+
+    #[tokio::test]
+    async fn batch_call_simulate_delegates_to_wallet() {
+        let wallet =
+            MockWallet::new(sample_chain_info()).with_simulate_result(TxSimulationResult {
+                return_values: serde_json::json!({"batch": true}),
+                gas_used: Some(Gas {
+                    da_gas: 10,
+                    l2_gas: 20,
+                }),
+            });
+
+        let batch = BatchCall::new(
+            &wallet,
+            vec![make_payload(1, "0xaabbccdd"), make_payload(2, "0x11223344")],
+        );
+
+        let result = batch
+            .simulate(SimulateOptions::default())
+            .await
+            .expect("simulate batch");
+
+        assert_eq!(result.return_values, serde_json::json!({"batch": true}));
+        assert_eq!(result.gas_used.as_ref().map(|g| g.l2_gas), Some(20));
+    }
+
+    // -- BatchCall::send --
+
+    #[tokio::test]
+    async fn batch_call_send_delegates_to_wallet() {
+        let tx_hash =
+            TxHash::from_hex("0x00000000000000000000000000000000000000000000000000000000deadbeef")
+                .expect("valid hex");
+        let wallet = MockWallet::new(sample_chain_info()).with_send_result(SendResult { tx_hash });
+
+        let batch = BatchCall::new(
+            &wallet,
+            vec![make_payload(1, "0xaabbccdd"), make_payload(2, "0x11223344")],
+        );
+
+        let result = batch
+            .send(SendOptions::default())
+            .await
+            .expect("send batch");
+
+        assert_eq!(result.tx_hash, tx_hash);
+    }
+
+    // -- BatchCall debug --
+
+    #[test]
+    fn batch_call_debug() {
+        let wallet = MockWallet::new(sample_chain_info());
+        let batch = BatchCall::new(&wallet, vec![make_payload(1, "0xaabbccdd")]);
+        let dbg = format!("{batch:?}");
+        assert!(dbg.contains("payload_count: 1"));
     }
 }
