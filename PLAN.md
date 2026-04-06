@@ -178,7 +178,7 @@ Verification:
 
 - serde fixture tests
 
-## Phase 3 — Node Client
+## Phase 3 — Node Client **COMPLETED**
 
 ### Step 3.1: Shared JSON-RPC transport
 
