@@ -1,6 +1,6 @@
 [package]
 name = "aztec-rs"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Rust SDK for the Aztec Network"
 license = "Apache-2.0"

@@ -20,7 +20,7 @@ Add `aztec-rs` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-aztec-rs = "0.1.0"
+aztec-rs = "0.1.1"
 ```
 
 ## Quick Start
