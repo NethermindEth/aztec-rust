@@ -260,7 +260,7 @@ Verification:
 cargo run --example node_info
 ```
 
-## Phase 4 — Wallet Abstraction
+## Phase 4 — Wallet Abstraction **COMPLETED**
 
 ### Step 4.1: Define the `Wallet` trait
 
@@ -322,7 +322,7 @@ Verification:
 - compile-time trait conformance
 - unit tests for trait-backed simulation/send flows
 
-## Phase 5 — Contract Interaction
+## Phase 5 — Contract Interaction **COMPLETED**
 
 ### Step 5.1: `Contract`
 
