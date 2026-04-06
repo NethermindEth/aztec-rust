@@ -5,11 +5,11 @@ use std::fmt;
 
 use crate::Error;
 
-fn strip_0x(s: &str) -> &str {
+pub(crate) fn strip_0x(s: &str) -> &str {
     s.strip_prefix("0x").unwrap_or(s)
 }
 
-fn decode_fixed_hex<const N: usize>(s: &str) -> Result<[u8; N], Error> {
+pub(crate) fn decode_fixed_hex<const N: usize>(s: &str) -> Result<[u8; N], Error> {
     let raw = strip_0x(s);
     if raw.len() > N * 2 {
         return Err(Error::InvalidData(format!(
@@ -35,7 +35,7 @@ fn decode_fixed_hex<const N: usize>(s: &str) -> Result<[u8; N], Error> {
     Ok(out)
 }
 
-fn encode_hex(bytes: &[u8]) -> String {
+pub(crate) fn encode_hex(bytes: &[u8]) -> String {
     format!("0x{}", hex::encode(bytes))
 }
 
@@ -279,7 +279,7 @@ impl std::ops::Deref for ContractInstanceWithAddress {
 }
 
 #[cfg(test)]
-#[allow(clippy::panic)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
