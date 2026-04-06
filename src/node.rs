@@ -32,7 +32,7 @@ pub struct NodeInfo {
 }
 
 /// Identifies a specific log entry within a block.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogId {
     pub block_number: u64,
