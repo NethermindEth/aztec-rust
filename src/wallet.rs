@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::abi::{ContractArtifact, EventSelector};
+use crate::abi::{AbiType, ContractArtifact, EventSelector};
 use crate::error::Error;
 use crate::fee::{Gas, GasSettings};
 use crate::node::LogId;
@@ -136,6 +136,7 @@ pub struct SendResult {
 #[serde(rename_all = "camelCase")]
 pub struct EventMetadataDefinition {
     pub event_selector: EventSelector,
+    pub abi_type: AbiType,
     pub field_names: Vec<String>,
 }
 
@@ -532,7 +533,7 @@ impl Wallet for MockWallet {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::abi::{FunctionSelector, FunctionType};
+    use crate::abi::{AbiParameter, FunctionSelector, FunctionType};
     use crate::types::{ContractInstance, PublicKeys};
 
     fn sample_chain_info() -> ChainInfo {
@@ -717,6 +718,21 @@ mod tests {
     fn event_metadata_definition_roundtrip() {
         let def = EventMetadataDefinition {
             event_selector: EventSelector(Fr::from(1u64)),
+            abi_type: AbiType::Struct {
+                name: "Transfer".to_owned(),
+                fields: vec![
+                    AbiParameter {
+                        name: "amount".to_owned(),
+                        typ: AbiType::Field,
+                        visibility: None,
+                    },
+                    AbiParameter {
+                        name: "sender".to_owned(),
+                        typ: AbiType::Field,
+                        visibility: None,
+                    },
+                ],
+            },
             field_names: vec!["amount".to_owned(), "sender".to_owned()],
         };
         let json = serde_json::to_string(&def).expect("serialize");
@@ -944,6 +960,14 @@ mod tests {
             .get_private_events(
                 &EventMetadataDefinition {
                     event_selector: EventSelector(Fr::from(1u64)),
+                    abi_type: AbiType::Struct {
+                        name: "AmountOnly".to_owned(),
+                        fields: vec![AbiParameter {
+                            name: "amount".to_owned(),
+                            typ: AbiType::Field,
+                            visibility: None,
+                        }],
+                    },
                     field_names: vec!["amount".to_owned()],
                 },
                 PrivateEventFilter {

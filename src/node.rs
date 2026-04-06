@@ -44,6 +44,8 @@ pub struct LogId {
 #[serde(rename_all = "camelCase")]
 pub struct PublicLogFilter {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub tx_hash: Option<TxHash>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub from_block: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub to_block: Option<u64>,
@@ -61,6 +63,8 @@ pub struct PublicLogFilter {
 pub struct PublicLog {
     pub contract_address: AztecAddress,
     pub data: Vec<Fr>,
+    #[serde(default)]
+    pub tx_hash: Option<TxHash>,
     pub block_number: u64,
     pub log_index: u64,
 }
@@ -337,12 +341,17 @@ mod tests {
 
     #[test]
     fn public_log_filter_with_fields() {
+        let tx_hash =
+            TxHash::from_hex("0x0000000000000000000000000000000000000000000000000000000000000001")
+                .unwrap();
         let filter = PublicLogFilter {
+            tx_hash: Some(tx_hash),
             from_block: Some(10),
             to_block: Some(20),
             ..Default::default()
         };
         let json = serde_json::to_value(&filter).unwrap();
+        assert_eq!(json["txHash"], tx_hash.to_string());
         assert_eq!(json["fromBlock"], 10);
         assert_eq!(json["toBlock"], 20);
         assert!(json.get("contractAddress").is_none());
