@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Restructured codebase from a single flat crate into a Cargo workspace with 10 internal crates (`aztec-core`, `aztec-crypto`, `aztec-rpc`, `aztec-node-client`, `aztec-pxe-client`, `aztec-wallet`, `aztec-contract`, `aztec-account`, `aztec-fee`, `aztec-ethereum`)
+- Migrated all existing modules into their respective workspace crates while preserving the public API via umbrella re-exports in `aztec-rs`
+- Root `Cargo.toml` now defines a workspace and the `aztec-rs` umbrella crate depends on all workspace members
+
+### Added
+
+- Stub crates for future functionality: `aztec-crypto`, `aztec-pxe-client`, `aztec-fee`, `aztec-ethereum`
+- Gap analysis and refactor plan documents (`GAP_ANALYSIS.md`, `REFACTOR_PLAN.md`)
+
+### Removed
+
+- Flat `src/*.rs` module files (code moved into workspace crates)
+
 ## [0.1.1] - 2026-04-06
 
 ### Fixed
