@@ -20,31 +20,52 @@
 //! ```
 
 /// ABI types, selectors, and contract artifact loading.
-pub mod abi;
+pub mod abi {
+    pub use aztec_core::abi::*;
+}
 /// Account abstraction: traits, account manager, and deployment.
-pub mod account;
+pub mod account {
+    pub use aztec_account::account::*;
+}
 /// Authorization witness types and helpers.
-pub mod authorization;
+pub use aztec_account::authorization;
 /// Contract handles and function interactions.
-pub mod contract;
+pub mod contract {
+    pub use aztec_contract::contract::*;
+}
 /// Contract deployment helpers and deployer builder.
-pub mod deployment;
+pub mod deployment {
+    pub use aztec_contract::deployment::*;
+}
 /// Crate-level error types.
-pub mod error;
+pub mod error {
+    pub use aztec_core::error::*;
+}
 /// Public and private event types and decoding.
-pub mod events;
+pub mod events {
+    pub use aztec_contract::events::*;
+}
 /// Gas and fee payment types.
-pub mod fee;
+pub mod fee {
+    pub use aztec_core::fee::*;
+}
 /// L1-L2 messaging helpers.
-pub mod messaging;
+pub use aztec_ethereum::messaging;
 /// Node client, readiness polling, and receipt waiting.
-pub mod node;
-mod rpc;
+pub mod node {
+    pub use aztec_node_client::node::*;
+}
 /// Transaction types, receipts, statuses, and execution payloads.
-pub mod tx;
+pub mod tx {
+    pub use aztec_core::tx::*;
+}
 /// Core field, address, key, and contract instance types.
-pub mod types;
+pub mod types {
+    pub use aztec_core::types::*;
+}
 /// Wallet trait and mock implementation.
-pub mod wallet;
+pub mod wallet {
+    pub use aztec_wallet::wallet::*;
+}
 
 pub use error::Error;

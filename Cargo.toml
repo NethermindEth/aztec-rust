@@ -1,3 +1,17 @@
+[workspace]
+members = [
+    "crates/core",
+    "crates/rpc",
+    "crates/crypto",
+    "crates/node-client",
+    "crates/pxe-client",
+    "crates/wallet",
+    "crates/contract",
+    "crates/account",
+    "crates/fee",
+    "crates/ethereum",
+]
+
 [package]
 name = "aztec-rs"
 version = "0.1.1"
@@ -6,18 +20,22 @@ description = "Rust SDK for the Aztec Network"
 license = "Apache-2.0"
 
 [dependencies]
+aztec-core = { path = "crates/core" }
+aztec-rpc = { path = "crates/rpc" }
+aztec-crypto = { path = "crates/crypto" }
+aztec-node-client = { path = "crates/node-client" }
+aztec-pxe-client = { path = "crates/pxe-client" }
+aztec-wallet = { path = "crates/wallet" }
+aztec-contract = { path = "crates/contract" }
+aztec-account = { path = "crates/account" }
+aztec-fee = { path = "crates/fee" }
+aztec-ethereum = { path = "crates/ethereum" }
+
+# Re-export key external dependencies so consumers don't need to add them separately
+async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json"] }
-async-trait = "0.1"
-thiserror = "2"
-url = "2"
-hex = "0.4"
-ark-bn254 = "0.5"
-ark-ff = "0.5"
-ark-serialize = "0.5"
-rand = "0.8"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
