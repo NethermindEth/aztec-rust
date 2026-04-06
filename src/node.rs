@@ -17,9 +17,13 @@ use crate::types::{AztecAddress, Fr};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeInfo {
+    /// Semantic version of the node software.
     pub node_version: String,
+    /// L1 chain ID the node is connected to.
     pub l1_chain_id: u64,
+    /// Rollup protocol version.
     pub rollup_version: u64,
+    /// Ethereum Node Record, if available.
     #[serde(default)]
     pub enr: Option<String>,
     /// L1 contract addresses — kept as opaque JSON until the full schema stabilizes.
@@ -28,6 +32,7 @@ pub struct NodeInfo {
     /// Protocol contract addresses — kept as opaque JSON until the full schema stabilizes.
     #[serde(default)]
     pub protocol_contract_addresses: serde_json::Value,
+    /// Whether the node is running with real (non-mock) proofs.
     pub real_proofs: bool,
 }
 
@@ -35,7 +40,9 @@ pub struct NodeInfo {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogId {
+    /// Block number containing the log.
     pub block_number: u64,
+    /// Index of the log within the block.
     pub log_index: u64,
 }
 
@@ -43,16 +50,22 @@ pub struct LogId {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicLogFilter {
+    /// Filter by transaction hash.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tx_hash: Option<TxHash>,
+    /// Start block (inclusive).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub from_block: Option<u64>,
+    /// End block (inclusive).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub to_block: Option<u64>,
+    /// Filter by emitting contract address.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contract_address: Option<AztecAddress>,
+    /// Filter by event selector.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selector: Option<EventSelector>,
+    /// Cursor for pagination — fetch logs after this entry.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub after_log: Option<LogId>,
 }
@@ -61,11 +74,16 @@ pub struct PublicLogFilter {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicLog {
+    /// Address of the contract that emitted the log.
     pub contract_address: AztecAddress,
+    /// Field element data comprising the log payload.
     pub data: Vec<Fr>,
+    /// Hash of the transaction that emitted the log.
     #[serde(default)]
     pub tx_hash: Option<TxHash>,
+    /// Block number containing the log.
     pub block_number: u64,
+    /// Index of the log within the block.
     pub log_index: u64,
 }
 
@@ -73,7 +91,9 @@ pub struct PublicLog {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicLogsResponse {
+    /// Matching log entries.
     pub logs: Vec<PublicLog>,
+    /// Whether the response was truncated due to the log limit.
     pub max_logs_hit: bool,
 }
 
@@ -105,9 +125,13 @@ impl Default for WaitOpts {
 /// Public read interface for an Aztec node.
 #[async_trait]
 pub trait AztecNode: Send + Sync {
+    /// Fetch information about the node's current state.
     async fn get_node_info(&self) -> Result<NodeInfo, Error>;
+    /// Get the latest block number.
     async fn get_block_number(&self) -> Result<u64, Error>;
+    /// Get the receipt for a transaction.
     async fn get_tx_receipt(&self, tx_hash: &TxHash) -> Result<TxReceipt, Error>;
+    /// Query public logs matching the given filter.
     async fn get_public_logs(&self, filter: PublicLogFilter) -> Result<PublicLogsResponse, Error>;
 }
 

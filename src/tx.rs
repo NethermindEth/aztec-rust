@@ -5,14 +5,17 @@ use crate::abi::{AbiValue, FunctionSelector, FunctionType};
 use crate::types::{decode_fixed_hex, encode_hex, AztecAddress, Fr};
 use crate::Error;
 
+/// A 32-byte transaction hash.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TxHash(pub [u8; 32]);
 
 impl TxHash {
+    /// The zero hash.
     pub const fn zero() -> Self {
         Self([0u8; 32])
     }
 
+    /// Parse from a hex string (e.g. `"0xdead..."`).
     pub fn from_hex(value: &str) -> Result<Self, Error> {
         Ok(Self(decode_fixed_hex::<32>(value)?))
     }
@@ -49,36 +52,57 @@ impl<'de> Deserialize<'de> for TxHash {
     }
 }
 
+/// Transaction lifecycle status.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TxStatus {
+    /// Transaction was dropped from the mempool.
     Dropped,
+    /// Transaction is pending in the mempool.
     Pending,
+    /// Transaction has been proposed in a block.
     Proposed,
+    /// Transaction's block has been checkpointed to L1.
     Checkpointed,
+    /// Transaction's block has been proven.
     Proven,
+    /// Transaction's block has been finalized on L1.
     Finalized,
 }
 
+/// Outcome of transaction execution within a block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TxExecutionResult {
+    /// All phases executed successfully.
     Success,
+    /// The app logic phase reverted.
     AppLogicReverted,
+    /// The teardown phase reverted.
     TeardownReverted,
+    /// Both app logic and teardown phases reverted.
     BothReverted,
 }
 
+/// A transaction receipt returned by the node.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TxReceipt {
+    /// Hash of the transaction.
     pub tx_hash: TxHash,
+    /// Current lifecycle status.
     pub status: TxStatus,
+    /// Execution outcome (present once the tx has been included in a block).
     pub execution_result: Option<TxExecutionResult>,
+    /// Error message if the transaction failed.
     pub error: Option<String>,
+    /// Total fee paid for the transaction.
     pub transaction_fee: Option<u128>,
+    /// Hash of the block containing this transaction.
     #[serde(default, with = "option_hex_bytes_32")]
     pub block_hash: Option<[u8; 32]>,
+    /// Block number containing this transaction.
     pub block_number: Option<u64>,
+    /// Epoch number containing this transaction.
     pub epoch_number: Option<u64>,
 }
 
@@ -114,6 +138,7 @@ mod option_hex_bytes_32 {
 }
 
 impl TxReceipt {
+    /// Returns `true` if the transaction has been included in a block.
     pub const fn is_mined(&self) -> bool {
         matches!(
             self.status,
@@ -121,60 +146,85 @@ impl TxReceipt {
         )
     }
 
+    /// Returns `true` if the transaction is pending in the mempool.
     pub fn is_pending(&self) -> bool {
         self.status == TxStatus::Pending
     }
 
+    /// Returns `true` if the transaction was dropped from the mempool.
     pub fn is_dropped(&self) -> bool {
         self.status == TxStatus::Dropped
     }
 
+    /// Returns `true` if execution completed successfully.
     pub fn has_execution_succeeded(&self) -> bool {
         self.execution_result == Some(TxExecutionResult::Success)
     }
 
+    /// Returns `true` if any execution phase reverted.
     pub fn has_execution_reverted(&self) -> bool {
         self.execution_result.is_some() && !self.has_execution_succeeded()
     }
 }
 
+/// A single function call to a contract.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionCall {
+    /// Target contract address.
     pub to: AztecAddress,
+    /// Function selector identifying the function to call.
     pub selector: FunctionSelector,
+    /// Encoded function arguments.
     pub args: Vec<AbiValue>,
+    /// The type of function being called.
     pub function_type: FunctionType,
+    /// Whether this is a static (read-only) call.
     pub is_static: bool,
 }
 
+/// An authorization witness proving the caller's intent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AuthWitness {
+    /// Field elements comprising the witness data.
     #[serde(default)]
     pub fields: Vec<Fr>,
 }
 
+/// Private data capsule passed alongside a transaction.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Capsule {
+    /// Raw capsule bytes.
     #[serde(default)]
     pub data: Vec<u8>,
 }
 
+/// Pre-hashed values included in a transaction for oracle access.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct HashedValues {
+    /// Field elements to be hashed.
     #[serde(default)]
     pub values: Vec<Fr>,
 }
 
+/// A complete transaction execution payload.
+///
+/// Groups one or more [`FunctionCall`]s with their associated auth witnesses,
+/// capsules, hashed args, and an optional fee payer override.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ExecutionPayload {
+    /// Function calls to execute.
     #[serde(default)]
     pub calls: Vec<FunctionCall>,
+    /// Authorization witnesses for the calls.
     #[serde(default)]
     pub auth_witnesses: Vec<AuthWitness>,
+    /// Private data capsules.
     #[serde(default)]
     pub capsules: Vec<Capsule>,
+    /// Extra hashed arguments for oracle access.
     #[serde(default)]
     pub extra_hashed_args: Vec<HashedValues>,
+    /// Override the fee payer for this payload.
     pub fee_payer: Option<AztecAddress>,
 }
 

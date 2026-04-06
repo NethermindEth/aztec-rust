@@ -21,7 +21,12 @@ pub enum Error {
 
     /// JSON-RPC error returned by the server.
     #[error("rpc error {code}: {message}")]
-    Rpc { code: i64, message: String },
+    Rpc {
+        /// JSON-RPC error code.
+        code: i64,
+        /// Error message from the server.
+        message: String,
+    },
 
     /// Transaction execution reverted.
     #[error("reverted: {0}")]

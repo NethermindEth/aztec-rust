@@ -13,7 +13,9 @@ use crate::wallet::{SendOptions, SendResult, SimulateOptions, TxSimulationResult
 /// Provides dynamic method lookup and call construction driven by the
 /// contract artifact (ABI). Use [`Contract::at`] to create a handle.
 pub struct Contract<W> {
+    /// The deployed contract's address.
     pub address: AztecAddress,
+    /// The contract's ABI artifact.
     pub artifact: ContractArtifact,
     wallet: W,
 }

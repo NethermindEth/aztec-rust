@@ -23,14 +23,19 @@ fn decode_selector_hex(s: &str) -> Result<[u8; 4], Error> {
     Ok(out)
 }
 
+/// A 4-byte function selector used to identify contract functions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FunctionSelector(pub [u8; 4]);
 
 impl FunctionSelector {
+    /// Parse a function selector from a hex string (e.g. `"0xaabbccdd"`).
     pub fn from_hex(value: &str) -> Result<Self, Error> {
         Ok(Self(decode_selector_hex(value)?))
     }
 
+    /// Derive a function selector from a function name.
+    ///
+    /// Not yet implemented — returns an error.
     pub fn from_name(_name: &str) -> Result<Self, Error> {
         Err(Error::Abi(
             "function selector derivation is not implemented yet".to_owned(),
@@ -63,91 +68,137 @@ impl<'de> Deserialize<'de> for FunctionSelector {
     }
 }
 
+/// A field-element event selector used to identify contract events.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventSelector(pub Fr);
 
+/// The type of a contract function.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FunctionType {
+    /// A private function executed in the user's PXE.
     Private,
+    /// A public function executed by the sequencer.
     Public,
+    /// A utility (view/unconstrained) function for read-only queries.
     Utility,
 }
 
+/// ABI type representation for function parameters and return values.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AbiType {
+    /// A BN254 field element.
     Field,
+    /// A boolean value.
     Boolean,
+    /// A signed or unsigned integer with a specific bit width.
     Integer {
+        /// `"signed"` or `"unsigned"`.
         sign: String,
+        /// Bit width of the integer.
         width: u16,
     },
+    /// A fixed-length array of elements.
     Array {
+        /// Element type.
         element: Box<Self>,
+        /// Fixed array length.
         length: usize,
     },
+    /// A fixed-length string.
     String {
+        /// Maximum string length.
         length: usize,
     },
+    /// A named struct with typed fields.
     Struct {
+        /// Struct type name.
         name: String,
+        /// Struct fields.
         fields: Vec<AbiParameter>,
     },
+    /// An anonymous tuple of types.
     Tuple {
+        /// Element types.
         elements: Vec<Self>,
     },
 }
 
+/// A concrete ABI value used as a function argument or return value.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum AbiValue {
+    /// A BN254 field element value.
     Field(Fr),
+    /// A boolean value.
     Boolean(bool),
+    /// An integer value.
     Integer(i128),
+    /// An array of values.
     Array(Vec<Self>),
+    /// A string value.
     String(String),
+    /// A struct value with named fields.
     Struct(BTreeMap<String, Self>),
+    /// A tuple of values.
     Tuple(Vec<Self>),
 }
 
+/// A named, typed parameter in a function ABI.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AbiParameter {
+    /// Parameter name.
     pub name: String,
+    /// Parameter type.
     #[serde(rename = "type")]
     pub typ: AbiType,
+    /// Visibility (e.g. `"private"`, `"public"`).
     #[serde(default)]
     pub visibility: Option<String>,
 }
 
+/// Metadata for a single function within a contract artifact.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionArtifact {
+    /// Function name.
     pub name: String,
+    /// Whether this is a private, public, or utility function.
     pub function_type: FunctionType,
+    /// Whether this function is a contract initializer (constructor).
     #[serde(default)]
     pub is_initializer: bool,
+    /// Whether this function is a static (read-only) call.
     #[serde(default)]
     pub is_static: bool,
+    /// Function parameters.
     #[serde(default)]
     pub parameters: Vec<AbiParameter>,
+    /// Return types.
     #[serde(default)]
     pub return_types: Vec<AbiType>,
+    /// Pre-computed function selector.
     #[serde(default)]
     pub selector: Option<FunctionSelector>,
 }
 
+/// A deserialized contract artifact containing function metadata.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContractArtifact {
+    /// Contract name.
     pub name: String,
+    /// Functions defined in the contract.
     #[serde(default)]
     pub functions: Vec<FunctionArtifact>,
 }
 
 impl ContractArtifact {
+    /// Deserialize a contract artifact from a JSON string.
     pub fn from_json(json: &str) -> Result<Self, Error> {
         serde_json::from_str(json).map_err(Error::from)
     }
 
+    /// Find a function by name, returning an error if not found.
     pub fn find_function(&self, name: &str) -> Result<&FunctionArtifact, Error> {
         self.functions
             .iter()
@@ -160,6 +211,7 @@ impl ContractArtifact {
             })
     }
 
+    /// Find a function by name and type, returning an error if not found.
     pub fn find_function_by_type(
         &self,
         name: &str,

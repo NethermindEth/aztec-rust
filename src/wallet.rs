@@ -19,7 +19,9 @@ use crate::types::{AztecAddress, ContractInstanceWithAddress, Fr};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChainInfo {
+    /// The L2 chain ID.
     pub chain_id: Fr,
+    /// The rollup protocol version.
     pub version: Fr,
 }
 
@@ -27,7 +29,9 @@ pub struct ChainInfo {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Aliased<T> {
+    /// Human-readable alias.
     pub alias: String,
+    /// The aliased value.
     pub item: T,
 }
 
@@ -35,10 +39,15 @@ pub struct Aliased<T> {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContractMetadata {
+    /// The contract instance, if registered.
     pub instance: Option<ContractInstanceWithAddress>,
+    /// Whether the contract has been initialized.
     pub is_contract_initialized: bool,
+    /// Whether the contract class has been published on-chain.
     pub is_contract_published: bool,
+    /// Whether the contract has been upgraded.
     pub is_contract_updated: bool,
+    /// Updated contract class ID after an upgrade.
     pub updated_contract_class_id: Option<Fr>,
 }
 
@@ -46,7 +55,9 @@ pub struct ContractMetadata {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContractClassMetadata {
+    /// Whether the artifact has been registered locally.
     pub is_artifact_registered: bool,
+    /// Whether the class has been published on-chain.
     pub is_contract_class_publicly_registered: bool,
 }
 
@@ -54,15 +65,21 @@ pub struct ContractClassMetadata {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SimulateOptions {
+    /// Address of the simulating account.
     pub from: AztecAddress,
+    /// Skip validation checks during simulation.
     #[serde(default)]
     pub skip_validation: bool,
+    /// Additional authorization witnesses.
     #[serde(default)]
     pub auth_witnesses: Vec<AuthWitness>,
+    /// Private data capsules for the simulation.
     #[serde(default)]
     pub capsules: Vec<Capsule>,
+    /// Additional note-discovery scopes.
     #[serde(default)]
     pub additional_scopes: Vec<AztecAddress>,
+    /// Gas settings for the simulation.
     pub gas_settings: Option<GasSettings>,
 }
 
@@ -70,13 +87,18 @@ pub struct SimulateOptions {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendOptions {
+    /// Address of the sending account.
     pub from: AztecAddress,
+    /// Additional authorization witnesses.
     #[serde(default)]
     pub auth_witnesses: Vec<AuthWitness>,
+    /// Private data capsules.
     #[serde(default)]
     pub capsules: Vec<Capsule>,
+    /// Additional note-discovery scopes.
     #[serde(default)]
     pub additional_scopes: Vec<AztecAddress>,
+    /// Gas settings for the transaction.
     pub gas_settings: Option<GasSettings>,
 }
 
@@ -84,14 +106,20 @@ pub struct SendOptions {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileOptions {
+    /// Address of the profiling account.
     pub from: AztecAddress,
+    /// Additional authorization witnesses.
     #[serde(default)]
     pub auth_witnesses: Vec<AuthWitness>,
+    /// Private data capsules.
     #[serde(default)]
     pub capsules: Vec<Capsule>,
+    /// Additional note-discovery scopes.
     #[serde(default)]
     pub additional_scopes: Vec<AztecAddress>,
+    /// Profiling mode (e.g. `"full"`, `"execution"`).
     pub profile_mode: Option<String>,
+    /// Gas settings for profiling.
     pub gas_settings: Option<GasSettings>,
 }
 
@@ -99,7 +127,9 @@ pub struct ProfileOptions {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecuteUtilityOptions {
+    /// Address scope for note discovery.
     pub scope: AztecAddress,
+    /// Additional authorization witnesses.
     #[serde(default)]
     pub auth_witnesses: Vec<AuthWitness>,
 }
@@ -107,27 +137,34 @@ pub struct ExecuteUtilityOptions {
 /// Result of a transaction simulation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TxSimulationResult {
+    /// Return values from the simulated execution.
     pub return_values: serde_json::Value,
+    /// Gas consumed during simulation.
     pub gas_used: Option<Gas>,
 }
 
 /// Result of a transaction profiling.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TxProfileResult {
+    /// Return values from the profiled execution.
     pub return_values: serde_json::Value,
+    /// Gas consumed during profiling.
     pub gas_used: Option<Gas>,
+    /// Detailed profiling data.
     pub profile_data: serde_json::Value,
 }
 
 /// Result of a utility function execution.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UtilityExecutionResult {
+    /// Return values from the utility function call.
     pub return_values: serde_json::Value,
 }
 
 /// Result of sending a transaction.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SendResult {
+    /// Hash of the submitted transaction.
     pub tx_hash: TxHash,
 }
 
@@ -135,8 +172,11 @@ pub struct SendResult {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EventMetadataDefinition {
+    /// Selector identifying the event type.
     pub event_selector: EventSelector,
+    /// ABI type describing the event's fields.
     pub abi_type: AbiType,
+    /// Ordered field names for decoding.
     pub field_names: Vec<String>,
 }
 
@@ -144,12 +184,18 @@ pub struct EventMetadataDefinition {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrivateEventFilter {
+    /// Contract to filter events from.
     pub contract_address: AztecAddress,
+    /// Note-discovery scopes.
     #[serde(default)]
     pub scopes: Vec<AztecAddress>,
+    /// Filter by transaction hash.
     pub tx_hash: Option<TxHash>,
+    /// Start block (inclusive).
     pub from_block: Option<u64>,
+    /// End block (inclusive).
     pub to_block: Option<u64>,
+    /// Cursor for pagination.
     pub after_log: Option<LogId>,
 }
 
@@ -157,8 +203,11 @@ pub struct PrivateEventFilter {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrivateEventMetadata {
+    /// Hash of the transaction that emitted the event.
     pub tx_hash: TxHash,
+    /// Block number, if available.
     pub block_number: Option<u64>,
+    /// Log index within the block.
     pub log_index: Option<u64>,
 }
 
@@ -169,7 +218,9 @@ pub struct PrivateEventMetadata {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrivateEvent {
+    /// Decoded event data (opaque JSON).
     pub event: serde_json::Value,
+    /// Event metadata (tx hash, block, index).
     pub metadata: PrivateEventMetadata,
 }
 
@@ -224,11 +275,16 @@ impl Default for ExecuteUtilityOptions {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MessageHashOrIntent {
+    /// A raw message hash.
     Hash {
+        /// The hash value.
         hash: Fr,
     },
+    /// A structured call intent.
     Intent {
+        /// The caller requesting authorization.
         caller: AztecAddress,
+        /// The function call to authorize.
         call: FunctionCall,
     },
 }

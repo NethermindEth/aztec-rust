@@ -46,23 +46,31 @@ fn encode_field_hex<F: PrimeField>(value: &F) -> String {
     encode_hex(&padded)
 }
 
+/// A BN254 scalar field element.
+///
+/// This is the main field type used throughout the Aztec protocol for
+/// addresses, hashes, note values, and other scalar quantities.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Fr(pub ArkFr);
 
 impl Fr {
+    /// The additive identity (zero).
     pub const fn zero() -> Self {
         Self(ArkFr::ZERO)
     }
 
+    /// The multiplicative identity (one).
     pub const fn one() -> Self {
         Self(ArkFr::ONE)
     }
 
+    /// Parse from a hex string (e.g. `"0x01"`).
     pub fn from_hex(value: &str) -> Result<Self, Error> {
         let bytes = decode_fixed_hex::<32>(value)?;
         Ok(Self(ArkFr::from_be_bytes_mod_order(&bytes)))
     }
 
+    /// Generate a random field element.
     pub fn random() -> Self {
         Self(ArkFr::rand(&mut rand::thread_rng()))
     }
@@ -111,10 +119,12 @@ impl<'de> Deserialize<'de> for Fr {
     }
 }
 
+/// A BN254 base field element.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Fq(pub ArkFq);
 
 impl Fq {
+    /// Parse from a hex string.
     pub fn from_hex(value: &str) -> Result<Self, Error> {
         let bytes = decode_fixed_hex::<32>(value)?;
         Ok(Self(ArkFq::from_be_bytes_mod_order(&bytes)))
@@ -152,15 +162,21 @@ impl<'de> Deserialize<'de> for Fq {
     }
 }
 
+/// Type alias for Grumpkin curve scalars (same as [`Fr`]).
 pub type GrumpkinScalar = Fr;
 
+/// A point on the Grumpkin curve, used for Aztec public keys.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Point {
+    /// X coordinate.
     pub x: Fr,
+    /// Y coordinate.
     pub y: Fr,
+    /// Whether this is the point at infinity.
     pub is_infinite: bool,
 }
 
+/// An Aztec L2 address, represented as a single field element.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct AztecAddress(pub Fr);
 
@@ -200,6 +216,7 @@ impl<'de> Deserialize<'de> for AztecAddress {
     }
 }
 
+/// An Ethereum L1 address (20 bytes).
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EthAddress(pub [u8; 20]);
 
@@ -241,35 +258,55 @@ impl<'de> Deserialize<'de> for EthAddress {
     }
 }
 
+/// The set of master public keys associated with an Aztec account.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PublicKeys {
+    /// Key used for nullifier derivation.
     pub master_nullifier_public_key: Point,
+    /// Key used to encrypt incoming notes.
     pub master_incoming_viewing_public_key: Point,
+    /// Key used to encrypt outgoing note logs.
     pub master_outgoing_viewing_public_key: Point,
+    /// Key used for note tagging.
     pub master_tagging_public_key: Point,
 }
 
+/// A complete address combining the Aztec address, public keys, and partial address.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompleteAddress {
+    /// The Aztec L2 address.
     pub address: AztecAddress,
+    /// The account's public keys.
     pub public_keys: PublicKeys,
+    /// The partial address (used in address derivation).
     pub partial_address: Fr,
 }
 
+/// An Aztec contract instance (without address).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContractInstance {
+    /// Instance version.
     pub version: u8,
+    /// Deployment salt for address derivation.
     pub salt: Fr,
+    /// Address of the deployer.
     pub deployer: AztecAddress,
+    /// Current contract class ID (may differ from original after upgrades).
     pub current_contract_class_id: Fr,
+    /// Original contract class ID at deployment time.
     pub original_contract_class_id: Fr,
+    /// Hash of the initialization arguments.
     pub initialization_hash: Fr,
+    /// Public keys associated with this instance.
     pub public_keys: PublicKeys,
 }
 
+/// An Aztec contract instance with its derived address.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContractInstanceWithAddress {
+    /// The contract's derived address.
     pub address: AztecAddress,
+    /// The contract instance data.
     #[serde(flatten)]
     pub inner: ContractInstance,
 }

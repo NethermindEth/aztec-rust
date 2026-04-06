@@ -17,9 +17,13 @@ use crate::wallet::EventMetadataDefinition;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicEventMetadata {
+    /// Address of the contract that emitted the event.
     pub contract_address: AztecAddress,
+    /// Hash of the transaction that emitted the event.
     pub tx_hash: Option<TxHash>,
+    /// Block number containing the event.
     pub block_number: u64,
+    /// Log index within the block.
     pub log_index: u64,
 }
 
@@ -27,7 +31,9 @@ pub struct PublicEventMetadata {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicEvent<T> {
+    /// Decoded event data.
     pub event: T,
+    /// Event metadata (contract, block, index).
     pub metadata: PublicEventMetadata,
 }
 
@@ -38,14 +44,19 @@ pub struct PublicEvent<T> {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicEventFilter {
+    /// Filter by transaction hash.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tx_hash: Option<TxHash>,
+    /// Start block (inclusive).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub from_block: Option<u64>,
+    /// End block (inclusive).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub to_block: Option<u64>,
+    /// Filter by emitting contract address.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contract_address: Option<AztecAddress>,
+    /// Cursor for pagination.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub after_log: Option<LogId>,
 }
@@ -54,7 +65,9 @@ pub struct PublicEventFilter {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetPublicEventsResult<T> {
+    /// Decoded events.
     pub events: Vec<PublicEvent<T>>,
+    /// Whether the response was truncated due to the log limit.
     pub max_logs_hit: bool,
 }
 
