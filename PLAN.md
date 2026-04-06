@@ -436,7 +436,7 @@ Verification:
 
 - deterministic constructor/unit tests for account manager state
 
-## Phase 8 — Deployment
+## Phase 8 — Deployment **COMPLETED**
 
 ### Step 8.1: Deployment helpers
 
