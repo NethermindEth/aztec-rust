@@ -1,0 +1,82 @@
+{
+  "name": "EscrowContract",
+  "functions": [
+    {
+      "name": "constructor",
+      "function_type": "private",
+      "is_initializer": true,
+      "is_static": false,
+      "parameters": [
+        {
+          "name": "owner",
+          "type": { "kind": "field" },
+          "visibility": "private"
+        }
+      ],
+      "return_types": [],
+      "selector": "0x11223344"
+    },
+    {
+      "name": "deposit",
+      "function_type": "private",
+      "is_initializer": false,
+      "is_static": false,
+      "parameters": [
+        {
+          "name": "token",
+          "type": { "kind": "field" },
+          "visibility": "private"
+        },
+        {
+          "name": "amount",
+          "type": { "kind": "integer", "sign": "unsigned", "width": 64 },
+          "visibility": "private"
+        }
+      ],
+      "return_types": [],
+      "selector": "0x22334455"
+    },
+    {
+      "name": "withdraw",
+      "function_type": "private",
+      "is_initializer": false,
+      "is_static": false,
+      "parameters": [
+        {
+          "name": "token",
+          "type": { "kind": "field" },
+          "visibility": "private"
+        },
+        {
+          "name": "amount",
+          "type": { "kind": "integer", "sign": "unsigned", "width": 64 },
+          "visibility": "private"
+        },
+        {
+          "name": "recipient",
+          "type": { "kind": "field" },
+          "visibility": "private"
+        }
+      ],
+      "return_types": [],
+      "selector": "0x33445566"
+    },
+    {
+      "name": "get_balance",
+      "function_type": "utility",
+      "is_initializer": false,
+      "is_static": true,
+      "parameters": [
+        {
+          "name": "token",
+          "type": { "kind": "field" },
+          "visibility": "private"
+        }
+      ],
+      "return_types": [
+        { "kind": "integer", "sign": "unsigned", "width": 64 }
+      ],
+      "selector": "0x44556677"
+    }
+  ]
+}

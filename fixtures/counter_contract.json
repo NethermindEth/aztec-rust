@@ -1,0 +1,57 @@
+{
+  "name": "CounterContract",
+  "functions": [
+    {
+      "name": "constructor",
+      "function_type": "private",
+      "is_initializer": true,
+      "is_static": false,
+      "parameters": [
+        {
+          "name": "initial_count",
+          "type": { "kind": "integer", "sign": "unsigned", "width": 64 },
+          "visibility": "private"
+        },
+        {
+          "name": "owner",
+          "type": { "kind": "field" },
+          "visibility": "private"
+        }
+      ],
+      "return_types": [],
+      "selector": "0xa1b2c3d4"
+    },
+    {
+      "name": "increment",
+      "function_type": "private",
+      "is_initializer": false,
+      "is_static": false,
+      "parameters": [
+        {
+          "name": "owner",
+          "type": { "kind": "field" },
+          "visibility": "private"
+        }
+      ],
+      "return_types": [],
+      "selector": "0xb2c3d4e5"
+    },
+    {
+      "name": "get_counter",
+      "function_type": "utility",
+      "is_initializer": false,
+      "is_static": true,
+      "parameters": [
+        {
+          "name": "owner",
+          "type": { "kind": "field" },
+          "visibility": "private"
+        }
+      ],
+      "return_types": [
+        { "kind": "integer", "sign": "unsigned", "width": 64 }
+      ],
+      "selector": "0xc3d4e5f6"
+    }
+  ]
+}

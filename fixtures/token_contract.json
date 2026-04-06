@@ -1,0 +1,241 @@
+{
+  "name": "TokenContract",
+  "functions": [
+    {
+      "name": "constructor",
+      "function_type": "private",
+      "is_initializer": true,
+      "is_static": false,
+      "parameters": [
+        {
+          "name": "admin",
+          "type": { "kind": "field" },
+          "visibility": "private"
+        },
+        {
+          "name": "name",
+          "type": { "kind": "string", "length": 31 },
+          "visibility": "private"
+        },
+        {
+          "name": "symbol",
+          "type": { "kind": "string", "length": 31 },
+          "visibility": "private"
+        },
+        {
+          "name": "decimals",
+          "type": { "kind": "integer", "sign": "unsigned", "width": 8 },
+          "visibility": "private"
+        }
+      ],
+      "return_types": [],
+      "selector": "0xe5fb6c81"
+    },
+    {
+      "name": "transfer",
+      "function_type": "private",
+      "is_initializer": false,
+      "is_static": false,
+      "parameters": [
+        {
+          "name": "from",
+          "type": { "kind": "field" },
+          "visibility": "private"
+        },
+        {
+          "name": "to",
+          "type": { "kind": "field" },
+          "visibility": "private"
+        },
+        {
+          "name": "amount",
+          "type": { "kind": "integer", "sign": "unsigned", "width": 64 },
+          "visibility": "private"
+        },
+        {
+          "name": "nonce",
+          "type": { "kind": "field" },
+          "visibility": "private"
+        }
+      ],
+      "return_types": [],
+      "selector": "0xd6f42325"
+    },
+    {
+      "name": "transfer_in_public",
+      "function_type": "public",
+      "is_initializer": false,
+      "is_static": false,
+      "parameters": [
+        {
+          "name": "from",
+          "type": { "kind": "field" },
+          "visibility": "private"
+        },
+        {
+          "name": "to",
+          "type": { "kind": "field" },
+          "visibility": "private"
+        },
+        {
+          "name": "amount",
+          "type": { "kind": "integer", "sign": "unsigned", "width": 64 },
+          "visibility": "private"
+        },
+        {
+          "name": "nonce",
+          "type": { "kind": "field" },
+          "visibility": "private"
+        }
+      ],
+      "return_types": [],
+      "selector": "0x7b3a3c8a"
+    },
+    {
+      "name": "mint_to_public",
+      "function_type": "public",
+      "is_initializer": false,
+      "is_static": false,
+      "parameters": [
+        {
+          "name": "to",
+          "type": { "kind": "field" },
+          "visibility": "private"
+        },
+        {
+          "name": "amount",
+          "type": { "kind": "integer", "sign": "unsigned", "width": 64 },
+          "visibility": "private"
+        }
+      ],
+      "return_types": [],
+      "selector": "0x4a0c18a3"
+    },
+    {
+      "name": "mint_to_private",
+      "function_type": "private",
+      "is_initializer": false,
+      "is_static": false,
+      "parameters": [
+        {
+          "name": "to",
+          "type": { "kind": "field" },
+          "visibility": "private"
+        },
+        {
+          "name": "amount",
+          "type": { "kind": "integer", "sign": "unsigned", "width": 64 },
+          "visibility": "private"
+        }
+      ],
+      "return_types": [],
+      "selector": "0x9b4e6d12"
+    },
+    {
+      "name": "burn_public",
+      "function_type": "public",
+      "is_initializer": false,
+      "is_static": false,
+      "parameters": [
+        {
+          "name": "from",
+          "type": { "kind": "field" },
+          "visibility": "private"
+        },
+        {
+          "name": "amount",
+          "type": { "kind": "integer", "sign": "unsigned", "width": 64 },
+          "visibility": "private"
+        },
+        {
+          "name": "nonce",
+          "type": { "kind": "field" },
+          "visibility": "private"
+        }
+      ],
+      "return_types": [],
+      "selector": "0x2c5a4f0e"
+    },
+    {
+      "name": "burn_private",
+      "function_type": "private",
+      "is_initializer": false,
+      "is_static": false,
+      "parameters": [
+        {
+          "name": "from",
+          "type": { "kind": "field" },
+          "visibility": "private"
+        },
+        {
+          "name": "amount",
+          "type": { "kind": "integer", "sign": "unsigned", "width": 64 },
+          "visibility": "private"
+        },
+        {
+          "name": "nonce",
+          "type": { "kind": "field" },
+          "visibility": "private"
+        }
+      ],
+      "return_types": [],
+      "selector": "0x1a7e5d3b"
+    },
+    {
+      "name": "balance_of_public",
+      "function_type": "utility",
+      "is_initializer": false,
+      "is_static": true,
+      "parameters": [
+        {
+          "name": "owner",
+          "type": { "kind": "field" },
+          "visibility": "private"
+        }
+      ],
+      "return_types": [
+        { "kind": "integer", "sign": "unsigned", "width": 64 }
+      ],
+      "selector": "0x12345678"
+    },
+    {
+      "name": "balance_of_private",
+      "function_type": "utility",
+      "is_initializer": false,
+      "is_static": true,
+      "parameters": [
+        {
+          "name": "owner",
+          "type": { "kind": "field" },
+          "visibility": "private"
+        }
+      ],
+      "return_types": [
+        { "kind": "integer", "sign": "unsigned", "width": 64 }
+      ],
+      "selector": "0x23456789"
+    },
+    {
+      "name": "total_supply",
+      "function_type": "utility",
+      "is_initializer": false,
+      "is_static": true,
+      "parameters": [],
+      "return_types": [
+        { "kind": "integer", "sign": "unsigned", "width": 64 }
+      ],
+      "selector": "0xabcdef01"
+    },
+    {
+      "name": "admin",
+      "function_type": "utility",
+      "is_initializer": false,
+      "is_static": true,
+      "parameters": [],
+      "return_types": [
+        { "kind": "field" }
+      ],
+      "selector": "0xfed12345"
+    }
+  ]
+}
