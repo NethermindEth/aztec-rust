@@ -1,5 +1,5 @@
 use ark_bn254::{Fq as ArkFq, Fr as ArkFr};
-use ark_ff::{AdditiveGroup, BigInteger, Field, PrimeField};
+use ark_ff::{AdditiveGroup, BigInteger, Field, PrimeField, UniformRand};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
@@ -61,6 +61,10 @@ impl Fr {
     pub fn from_hex(value: &str) -> Result<Self, Error> {
         let bytes = decode_fixed_hex::<32>(value)?;
         Ok(Self(ArkFr::from_be_bytes_mod_order(&bytes)))
+    }
+
+    pub fn random() -> Self {
+        Self(ArkFr::rand(&mut rand::thread_rng()))
     }
 }
 

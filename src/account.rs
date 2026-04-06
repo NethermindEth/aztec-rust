@@ -1,1 +1,1162 @@
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
+use crate::abi::{AbiValue, ContractArtifact};
+use crate::error::Error;
+use crate::fee::GasSettings;
+use crate::tx::{AuthWitness, Capsule, ExecutionPayload, FunctionCall, HashedValues};
+use crate::types::{
+    AztecAddress, CompleteAddress, ContractInstance, ContractInstanceWithAddress, Fr, PublicKeys,
+};
+use crate::wallet::{
+    ChainInfo, MessageHashOrIntent, SendOptions, SendResult, SimulateOptions, TxSimulationResult,
+    Wallet,
+};
+
+// ---------------------------------------------------------------------------
+// Supporting types
+// ---------------------------------------------------------------------------
+
+/// Options for account entrypoint execution.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntrypointOptions {
+    /// Override the fee payer for this transaction.
+    pub fee_payer: Option<AztecAddress>,
+    /// Gas settings for the entrypoint call.
+    pub gas_settings: Option<GasSettings>,
+}
+
+/// A transaction execution request produced by an account's entrypoint.
+///
+/// This is the processed form of an [`ExecutionPayload`] after the account
+/// entrypoint has wrapped it with authentication and gas handling.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TxExecutionRequest {
+    /// The origin account address.
+    pub origin: AztecAddress,
+    /// Function calls in this request.
+    pub calls: Vec<FunctionCall>,
+    /// Authorization witnesses.
+    pub auth_witnesses: Vec<AuthWitness>,
+    /// Capsules (private data) for the transaction.
+    pub capsules: Vec<Capsule>,
+    /// Extra hashed arguments.
+    pub extra_hashed_args: Vec<HashedValues>,
+    /// Gas settings for the transaction.
+    pub gas_settings: Option<GasSettings>,
+    /// Fee payer override.
+    pub fee_payer: Option<AztecAddress>,
+}
+
+/// Specification for the initialization function of an account contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InitializationSpec {
+    /// Name of the initializer function in the contract artifact.
+    pub constructor_name: String,
+    /// Arguments to pass to the initializer function.
+    pub constructor_args: Vec<AbiValue>,
+}
+
+// ---------------------------------------------------------------------------
+// Traits
+// ---------------------------------------------------------------------------
+
+/// Provides authorization witnesses for transaction authentication.
+///
+/// This trait is the foundation of the Aztec account model. Implementations
+/// produce [`AuthWitness`] values that prove the caller is authorized to
+/// execute a given intent.
+#[async_trait]
+pub trait AuthorizationProvider: Send + Sync {
+    /// Create an authorization witness for the given intent.
+    async fn create_auth_wit(
+        &self,
+        intent: MessageHashOrIntent,
+        chain_info: &ChainInfo,
+    ) -> Result<AuthWitness, Error>;
+}
+
+/// An Aztec account -- combines an entrypoint, auth-witness provider, and
+/// complete address.
+///
+/// The `Account` trait is the main abstraction for account-based transaction
+/// creation. It wraps execution payloads through the account's entrypoint
+/// contract, adding authentication and fee payment.
+#[async_trait]
+pub trait Account: Send + Sync + AuthorizationProvider {
+    /// Get the complete address of this account.
+    fn complete_address(&self) -> &CompleteAddress;
+
+    /// Get the account address.
+    fn address(&self) -> AztecAddress;
+
+    /// Create a full transaction execution request from a payload.
+    ///
+    /// This processes the payload through the account's entrypoint,
+    /// adding authentication and gas handling.
+    async fn create_tx_execution_request(
+        &self,
+        exec: ExecutionPayload,
+        gas_settings: GasSettings,
+        chain_info: &ChainInfo,
+        options: EntrypointOptions,
+    ) -> Result<TxExecutionRequest, Error>;
+
+    /// Wrap an execution payload through the account's entrypoint.
+    ///
+    /// Similar to [`Account::create_tx_execution_request`] but returns an
+    /// [`ExecutionPayload`] rather than a full request.
+    async fn wrap_execution_payload(
+        &self,
+        exec: ExecutionPayload,
+        options: EntrypointOptions,
+    ) -> Result<ExecutionPayload, Error>;
+}
+
+/// Defines an account contract type (e.g., Schnorr, ECDSA).
+///
+/// Implementations provide the contract artifact, initialization parameters,
+/// and the ability to produce [`Account`] and [`AuthorizationProvider`]
+/// instances for a given address.
+#[async_trait]
+pub trait AccountContract: Send + Sync {
+    /// Get the contract artifact for this account type.
+    async fn contract_artifact(&self) -> Result<ContractArtifact, Error>;
+
+    /// Get the initialization function name and arguments, if any.
+    async fn initialization_function_and_args(&self) -> Result<Option<InitializationSpec>, Error>;
+
+    /// Create an [`Account`] instance for the given address.
+    fn account(&self, address: CompleteAddress) -> Box<dyn Account>;
+
+    /// Create an [`AuthorizationProvider`] for the given address.
+    fn auth_witness_provider(&self, address: CompleteAddress) -> Box<dyn AuthorizationProvider>;
+}
+
+// ---------------------------------------------------------------------------
+// AccountWithSecretKey
+// ---------------------------------------------------------------------------
+
+/// An account paired with its secret key.
+///
+/// Returned by [`AccountManager::account`] and provides both the account
+/// interface and the secret key needed for signing operations.
+pub struct AccountWithSecretKey {
+    /// The underlying account implementation.
+    pub account: Box<dyn Account>,
+    /// The secret key associated with this account.
+    pub secret_key: Fr,
+    /// Deployment salt for this account contract.
+    pub salt: Fr,
+}
+
+impl std::fmt::Debug for AccountWithSecretKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AccountWithSecretKey")
+            .field("secret_key", &self.secret_key)
+            .field("salt", &self.salt)
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+impl AuthorizationProvider for AccountWithSecretKey {
+    async fn create_auth_wit(
+        &self,
+        intent: MessageHashOrIntent,
+        chain_info: &ChainInfo,
+    ) -> Result<AuthWitness, Error> {
+        self.account.create_auth_wit(intent, chain_info).await
+    }
+}
+
+#[async_trait]
+impl Account for AccountWithSecretKey {
+    fn complete_address(&self) -> &CompleteAddress {
+        self.account.complete_address()
+    }
+
+    fn address(&self) -> AztecAddress {
+        self.account.address()
+    }
+
+    async fn create_tx_execution_request(
+        &self,
+        exec: ExecutionPayload,
+        gas_settings: GasSettings,
+        chain_info: &ChainInfo,
+        options: EntrypointOptions,
+    ) -> Result<TxExecutionRequest, Error> {
+        self.account
+            .create_tx_execution_request(exec, gas_settings, chain_info, options)
+            .await
+    }
+
+    async fn wrap_execution_payload(
+        &self,
+        exec: ExecutionPayload,
+        options: EntrypointOptions,
+    ) -> Result<ExecutionPayload, Error> {
+        self.account.wrap_execution_payload(exec, options).await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DeployAccountMethod
+// ---------------------------------------------------------------------------
+
+/// A deployment method for account contracts.
+///
+/// Packages the account contract deployment as a wallet-compatible
+/// interaction (simulate/send). Full deployment logic is deferred to
+/// Phase 8; this provides the structural scaffolding.
+pub struct DeployAccountMethod<'a, W> {
+    wallet: &'a W,
+    artifact_name: String,
+    instance: ContractInstanceWithAddress,
+}
+
+impl<W: Wallet> DeployAccountMethod<'_, W> {
+    /// Build the execution payload for this account deployment.
+    ///
+    /// In the full implementation, this will construct the registration and
+    /// initialization calls for the account contract. Until Phase 8 lands,
+    /// keep this explicit rather than silently returning an empty payload.
+    pub fn request(&self) -> Result<ExecutionPayload, Error> {
+        Err(Error::InvalidData(format!(
+            "account deployment payload construction for '{}' is deferred to Phase 8",
+            self.artifact_name
+        )))
+    }
+
+    /// Simulate the account deployment without sending.
+    pub async fn simulate(&self, opts: SimulateOptions) -> Result<TxSimulationResult, Error> {
+        let payload = self.request()?;
+        self.wallet.simulate_tx(payload, opts).await
+    }
+
+    /// Send the account deployment transaction.
+    pub async fn send(&self, opts: SendOptions) -> Result<SendResult, Error> {
+        let payload = self.request()?;
+        self.wallet.send_tx(payload, opts).await
+    }
+
+    /// Get the contract instance that will be deployed.
+    pub const fn instance(&self) -> &ContractInstanceWithAddress {
+        &self.instance
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AccountManager
+// ---------------------------------------------------------------------------
+
+/// Manages account creation, address computation, and deployment.
+///
+/// `AccountManager` is the main entry point for working with Aztec accounts.
+/// It combines a wallet backend, a secret key, and an account contract type
+/// to provide deterministic address computation, account instance creation,
+/// and deployment method generation.
+pub struct AccountManager<W> {
+    wallet: W,
+    secret_key: Fr,
+    account_contract: Box<dyn AccountContract>,
+    artifact_name: String,
+    has_initializer: bool,
+    instance: ContractInstanceWithAddress,
+    salt: Fr,
+}
+
+impl<W: Wallet> AccountManager<W> {
+    /// Create a new account manager.
+    ///
+    /// Validates the account contract by fetching its artifact and
+    /// initializer metadata. Contract instance hashing and key derivation
+    /// are not implemented yet, so the stored instance remains an explicit
+    /// placeholder until the deployment/key path lands.
+    pub async fn create(
+        wallet: W,
+        secret_key: Fr,
+        account_contract: Box<dyn AccountContract>,
+        salt: Option<Fr>,
+    ) -> Result<Self, Error> {
+        let salt = salt.unwrap_or_else(Fr::random);
+
+        let artifact = account_contract.contract_artifact().await?;
+        let init_spec = account_contract.initialization_function_and_args().await?;
+
+        if let Some(spec) = &init_spec {
+            let initializer = artifact.find_function(&spec.constructor_name)?;
+            if !initializer.is_initializer {
+                return Err(Error::Abi(format!(
+                    "function '{}' in account artifact '{}' is not marked as an initializer",
+                    spec.constructor_name, artifact.name
+                )));
+            }
+
+            let expected = initializer.parameters.len();
+            let actual = spec.constructor_args.len();
+            if actual != expected {
+                return Err(Error::Abi(format!(
+                    "initializer '{}' in account artifact '{}' expects {expected} argument(s), got {actual}",
+                    spec.constructor_name, artifact.name
+                )));
+            }
+        }
+
+        // Placeholder instance. In the full implementation, the address and
+        // class IDs are derived from the artifact bytecode hash, salt,
+        // initialization hash, deployer, and public keys.
+        let instance = ContractInstanceWithAddress {
+            address: AztecAddress(Fr::zero()),
+            inner: ContractInstance {
+                version: 1,
+                salt,
+                deployer: AztecAddress(Fr::zero()),
+                current_contract_class_id: Fr::zero(),
+                original_contract_class_id: Fr::zero(),
+                initialization_hash: Fr::zero(),
+                public_keys: PublicKeys::default(),
+            },
+        };
+
+        Ok(Self {
+            wallet,
+            secret_key,
+            account_contract,
+            artifact_name: artifact.name,
+            has_initializer: init_spec.is_some(),
+            instance,
+            salt,
+        })
+    }
+
+    /// Get the complete address of this account.
+    ///
+    /// This requires account key derivation plus `CompleteAddress`
+    /// reconstruction from the secret key and contract instance. That path is
+    /// intentionally deferred until the underlying cryptographic primitives are
+    /// implemented in this crate.
+    #[allow(clippy::unused_async)]
+    pub async fn complete_address(&self) -> Result<CompleteAddress, Error> {
+        Err(Error::InvalidData(
+            "complete account address derivation is not implemented yet".to_owned(),
+        ))
+    }
+
+    /// Get the address currently associated with this account instance.
+    ///
+    /// Until contract instance hashing is implemented, this remains the
+    /// placeholder address stored in the manager.
+    pub const fn address(&self) -> AztecAddress {
+        self.instance.address
+    }
+
+    /// Get the contract instance for this account.
+    pub const fn instance(&self) -> &ContractInstanceWithAddress {
+        &self.instance
+    }
+
+    /// Get the salt used for this account.
+    pub const fn salt(&self) -> Fr {
+        self.salt
+    }
+
+    /// Get the secret key for this account.
+    pub const fn secret_key(&self) -> Fr {
+        self.secret_key
+    }
+
+    /// Return whether this account contract has an initializer function.
+    pub const fn has_initializer(&self) -> bool {
+        self.has_initializer
+    }
+
+    /// Get an [`Account`] implementation backed by this manager's account
+    /// contract, paired with the secret key.
+    pub async fn account(&self) -> Result<AccountWithSecretKey, Error> {
+        let complete_addr = self.complete_address().await?;
+        Ok(AccountWithSecretKey {
+            account: self.account_contract.account(complete_addr),
+            secret_key: self.secret_key,
+            salt: self.salt,
+        })
+    }
+
+    /// Get a deployment method for this account's contract.
+    #[allow(clippy::unused_async)]
+    pub async fn deploy_method(&self) -> Result<DeployAccountMethod<'_, W>, Error> {
+        if !self.has_initializer {
+            return Err(Error::InvalidData(format!(
+                "account contract '{}' does not have an initializer function to call",
+                self.artifact_name
+            )));
+        }
+
+        Ok(DeployAccountMethod {
+            wallet: &self.wallet,
+            artifact_name: self.artifact_name.clone(),
+            instance: self.instance.clone(),
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use crate::abi::{AbiParameter, AbiType, FunctionArtifact, FunctionSelector, FunctionType};
+    use crate::fee::Gas;
+    use crate::tx::TxHash;
+    use crate::wallet::MockWallet;
+
+    // -- Test helpers: mock account types -----------------------------------
+
+    struct MockAuthProvider {
+        addr: CompleteAddress,
+    }
+
+    #[async_trait]
+    impl AuthorizationProvider for MockAuthProvider {
+        async fn create_auth_wit(
+            &self,
+            _intent: MessageHashOrIntent,
+            _chain_info: &ChainInfo,
+        ) -> Result<AuthWitness, Error> {
+            Ok(AuthWitness {
+                fields: vec![self.addr.address.0],
+            })
+        }
+    }
+
+    struct MockAccount {
+        addr: CompleteAddress,
+    }
+
+    #[async_trait]
+    impl AuthorizationProvider for MockAccount {
+        async fn create_auth_wit(
+            &self,
+            _intent: MessageHashOrIntent,
+            _chain_info: &ChainInfo,
+        ) -> Result<AuthWitness, Error> {
+            Ok(AuthWitness {
+                fields: vec![self.addr.address.0],
+            })
+        }
+    }
+
+    #[async_trait]
+    impl Account for MockAccount {
+        fn complete_address(&self) -> &CompleteAddress {
+            &self.addr
+        }
+
+        fn address(&self) -> AztecAddress {
+            self.addr.address
+        }
+
+        async fn create_tx_execution_request(
+            &self,
+            exec: ExecutionPayload,
+            gas_settings: GasSettings,
+            _chain_info: &ChainInfo,
+            options: EntrypointOptions,
+        ) -> Result<TxExecutionRequest, Error> {
+            Ok(TxExecutionRequest {
+                origin: self.addr.address,
+                calls: exec.calls,
+                auth_witnesses: exec.auth_witnesses,
+                capsules: exec.capsules,
+                extra_hashed_args: exec.extra_hashed_args,
+                gas_settings: Some(gas_settings),
+                fee_payer: options.fee_payer.or(exec.fee_payer),
+            })
+        }
+
+        async fn wrap_execution_payload(
+            &self,
+            exec: ExecutionPayload,
+            options: EntrypointOptions,
+        ) -> Result<ExecutionPayload, Error> {
+            Ok(ExecutionPayload {
+                fee_payer: options.fee_payer.or(exec.fee_payer),
+                ..exec
+            })
+        }
+    }
+
+    struct MockAccountContract;
+
+    #[async_trait]
+    impl AccountContract for MockAccountContract {
+        async fn contract_artifact(&self) -> Result<ContractArtifact, Error> {
+            Ok(ContractArtifact {
+                name: "MockAccount".to_owned(),
+                functions: vec![FunctionArtifact {
+                    name: "constructor".to_owned(),
+                    function_type: FunctionType::Private,
+                    is_initializer: true,
+                    is_static: false,
+                    parameters: vec![AbiParameter {
+                        name: "owner".to_owned(),
+                        typ: AbiType::Field,
+                        visibility: None,
+                    }],
+                    return_types: vec![],
+                    selector: Some(
+                        FunctionSelector::from_hex("0x12345678").expect("valid selector"),
+                    ),
+                }],
+            })
+        }
+
+        async fn initialization_function_and_args(
+            &self,
+        ) -> Result<Option<InitializationSpec>, Error> {
+            Ok(Some(InitializationSpec {
+                constructor_name: "constructor".to_owned(),
+                constructor_args: vec![AbiValue::Field(Fr::from(42u64))],
+            }))
+        }
+
+        fn account(&self, address: CompleteAddress) -> Box<dyn Account> {
+            Box::new(MockAccount { addr: address })
+        }
+
+        fn auth_witness_provider(
+            &self,
+            address: CompleteAddress,
+        ) -> Box<dyn AuthorizationProvider> {
+            Box::new(MockAuthProvider { addr: address })
+        }
+    }
+
+    struct NoInitializerAccountContract;
+
+    #[async_trait]
+    impl AccountContract for NoInitializerAccountContract {
+        async fn contract_artifact(&self) -> Result<ContractArtifact, Error> {
+            Ok(ContractArtifact {
+                name: "NoInitializerAccount".to_owned(),
+                functions: vec![],
+            })
+        }
+
+        async fn initialization_function_and_args(
+            &self,
+        ) -> Result<Option<InitializationSpec>, Error> {
+            Ok(None)
+        }
+
+        fn account(&self, address: CompleteAddress) -> Box<dyn Account> {
+            Box::new(MockAccount { addr: address })
+        }
+
+        fn auth_witness_provider(
+            &self,
+            address: CompleteAddress,
+        ) -> Box<dyn AuthorizationProvider> {
+            Box::new(MockAuthProvider { addr: address })
+        }
+    }
+
+    struct BadInitializerNameAccountContract;
+
+    #[async_trait]
+    impl AccountContract for BadInitializerNameAccountContract {
+        async fn contract_artifact(&self) -> Result<ContractArtifact, Error> {
+            MockAccountContract.contract_artifact().await
+        }
+
+        async fn initialization_function_and_args(
+            &self,
+        ) -> Result<Option<InitializationSpec>, Error> {
+            Ok(Some(InitializationSpec {
+                constructor_name: "missing".to_owned(),
+                constructor_args: vec![AbiValue::Field(Fr::from(42u64))],
+            }))
+        }
+
+        fn account(&self, address: CompleteAddress) -> Box<dyn Account> {
+            Box::new(MockAccount { addr: address })
+        }
+
+        fn auth_witness_provider(
+            &self,
+            address: CompleteAddress,
+        ) -> Box<dyn AuthorizationProvider> {
+            Box::new(MockAuthProvider { addr: address })
+        }
+    }
+
+    struct BadInitializerArgsAccountContract;
+
+    #[async_trait]
+    impl AccountContract for BadInitializerArgsAccountContract {
+        async fn contract_artifact(&self) -> Result<ContractArtifact, Error> {
+            MockAccountContract.contract_artifact().await
+        }
+
+        async fn initialization_function_and_args(
+            &self,
+        ) -> Result<Option<InitializationSpec>, Error> {
+            Ok(Some(InitializationSpec {
+                constructor_name: "constructor".to_owned(),
+                constructor_args: vec![],
+            }))
+        }
+
+        fn account(&self, address: CompleteAddress) -> Box<dyn Account> {
+            Box::new(MockAccount { addr: address })
+        }
+
+        fn auth_witness_provider(
+            &self,
+            address: CompleteAddress,
+        ) -> Box<dyn AuthorizationProvider> {
+            Box::new(MockAuthProvider { addr: address })
+        }
+    }
+
+    fn sample_chain_info() -> ChainInfo {
+        ChainInfo {
+            chain_id: Fr::from(31337u64),
+            version: Fr::from(1u64),
+        }
+    }
+
+    fn sample_complete_address() -> CompleteAddress {
+        CompleteAddress {
+            address: AztecAddress(Fr::from(99u64)),
+            public_keys: PublicKeys::default(),
+            partial_address: Fr::from(1u64),
+        }
+    }
+
+    // -- Trait object safety -----------------------------------------------
+
+    #[test]
+    fn authorization_provider_is_object_safe() {
+        fn _assert(_: &dyn AuthorizationProvider) {}
+    }
+
+    #[test]
+    fn account_is_object_safe() {
+        fn _assert(_: &dyn Account) {}
+    }
+
+    #[test]
+    fn account_contract_is_object_safe() {
+        fn _assert(_: &dyn AccountContract) {}
+    }
+
+    // -- Send + Sync -------------------------------------------------------
+
+    #[test]
+    fn mock_account_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<MockAccount>();
+        assert_send_sync::<MockAuthProvider>();
+        assert_send_sync::<MockAccountContract>();
+    }
+
+    #[test]
+    fn account_with_secret_key_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<AccountWithSecretKey>();
+    }
+
+    // -- Supporting type serde ---------------------------------------------
+
+    #[test]
+    fn entrypoint_options_default() {
+        let opts = EntrypointOptions::default();
+        assert!(opts.fee_payer.is_none());
+        assert!(opts.gas_settings.is_none());
+    }
+
+    #[test]
+    fn entrypoint_options_roundtrip() {
+        let opts = EntrypointOptions {
+            fee_payer: Some(AztecAddress(Fr::from(1u64))),
+            gas_settings: Some(GasSettings {
+                gas_limits: Some(Gas {
+                    da_gas: 100,
+                    l2_gas: 200,
+                }),
+                ..GasSettings::default()
+            }),
+        };
+        let json = serde_json::to_string(&opts).expect("serialize EntrypointOptions");
+        let decoded: EntrypointOptions =
+            serde_json::from_str(&json).expect("deserialize EntrypointOptions");
+        assert_eq!(decoded, opts);
+    }
+
+    #[test]
+    fn tx_execution_request_roundtrip() {
+        let req = TxExecutionRequest {
+            origin: AztecAddress(Fr::from(1u64)),
+            calls: vec![],
+            auth_witnesses: vec![AuthWitness {
+                fields: vec![Fr::from(42u64)],
+            }],
+            capsules: vec![],
+            extra_hashed_args: vec![],
+            gas_settings: Some(GasSettings::default()),
+            fee_payer: Some(AztecAddress(Fr::from(2u64))),
+        };
+        let json = serde_json::to_string(&req).expect("serialize TxExecutionRequest");
+        let decoded: TxExecutionRequest =
+            serde_json::from_str(&json).expect("deserialize TxExecutionRequest");
+        assert_eq!(decoded, req);
+    }
+
+    #[test]
+    fn initialization_spec_fields() {
+        let spec = InitializationSpec {
+            constructor_name: "constructor".to_owned(),
+            constructor_args: vec![AbiValue::Field(Fr::from(1u64)), AbiValue::Boolean(true)],
+        };
+        assert_eq!(spec.constructor_name, "constructor");
+        assert_eq!(spec.constructor_args.len(), 2);
+    }
+
+    // -- AuthorizationProvider tests ---------------------------------------
+
+    #[tokio::test]
+    async fn mock_auth_provider_creates_witness() {
+        let provider = MockAuthProvider {
+            addr: sample_complete_address(),
+        };
+        let chain_info = sample_chain_info();
+        let wit = provider
+            .create_auth_wit(
+                MessageHashOrIntent::Hash {
+                    hash: Fr::from(1u64),
+                },
+                &chain_info,
+            )
+            .await
+            .expect("create auth wit");
+        assert_eq!(wit.fields.len(), 1);
+        assert_eq!(wit.fields[0], Fr::from(99u64));
+    }
+
+    // -- Account tests -----------------------------------------------------
+
+    #[tokio::test]
+    async fn mock_account_address() {
+        let account = MockAccount {
+            addr: sample_complete_address(),
+        };
+        assert_eq!(account.address(), AztecAddress(Fr::from(99u64)));
+        assert_eq!(
+            account.complete_address().address,
+            AztecAddress(Fr::from(99u64))
+        );
+    }
+
+    #[tokio::test]
+    async fn mock_account_creates_execution_request() {
+        let account = MockAccount {
+            addr: sample_complete_address(),
+        };
+        let chain_info = sample_chain_info();
+
+        let payload = ExecutionPayload {
+            calls: vec![],
+            auth_witnesses: vec![AuthWitness {
+                fields: vec![Fr::from(1u64)],
+            }],
+            capsules: vec![],
+            extra_hashed_args: vec![],
+            fee_payer: None,
+        };
+
+        let gas_settings = GasSettings {
+            gas_limits: Some(Gas {
+                da_gas: 100,
+                l2_gas: 200,
+            }),
+            ..GasSettings::default()
+        };
+
+        let options = EntrypointOptions {
+            fee_payer: Some(AztecAddress(Fr::from(5u64))),
+            gas_settings: None,
+        };
+
+        let req = account
+            .create_tx_execution_request(payload, gas_settings.clone(), &chain_info, options)
+            .await
+            .expect("create tx execution request");
+
+        assert_eq!(req.origin, AztecAddress(Fr::from(99u64)));
+        assert_eq!(req.auth_witnesses.len(), 1);
+        assert_eq!(req.gas_settings, Some(gas_settings));
+        assert_eq!(req.fee_payer, Some(AztecAddress(Fr::from(5u64))));
+    }
+
+    #[tokio::test]
+    async fn mock_account_wraps_payload() {
+        let account = MockAccount {
+            addr: sample_complete_address(),
+        };
+
+        let payload = ExecutionPayload {
+            calls: vec![],
+            auth_witnesses: vec![],
+            capsules: vec![],
+            extra_hashed_args: vec![],
+            fee_payer: Some(AztecAddress(Fr::from(3u64))),
+        };
+
+        let options = EntrypointOptions::default();
+
+        let wrapped = account
+            .wrap_execution_payload(payload, options)
+            .await
+            .expect("wrap execution payload");
+
+        assert_eq!(wrapped.fee_payer, Some(AztecAddress(Fr::from(3u64))));
+    }
+
+    #[tokio::test]
+    async fn mock_account_wrap_overrides_fee_payer() {
+        let account = MockAccount {
+            addr: sample_complete_address(),
+        };
+
+        let payload = ExecutionPayload {
+            calls: vec![],
+            auth_witnesses: vec![],
+            capsules: vec![],
+            extra_hashed_args: vec![],
+            fee_payer: Some(AztecAddress(Fr::from(3u64))),
+        };
+
+        let options = EntrypointOptions {
+            fee_payer: Some(AztecAddress(Fr::from(7u64))),
+            gas_settings: None,
+        };
+
+        let wrapped = account
+            .wrap_execution_payload(payload, options)
+            .await
+            .expect("wrap execution payload");
+
+        assert_eq!(wrapped.fee_payer, Some(AztecAddress(Fr::from(7u64))));
+    }
+
+    #[tokio::test]
+    async fn account_with_secret_key_delegates_to_inner_account() {
+        let account = AccountWithSecretKey {
+            account: Box::new(MockAccount {
+                addr: sample_complete_address(),
+            }),
+            secret_key: Fr::from(42u64),
+            salt: Fr::from(7u64),
+        };
+
+        let chain_info = sample_chain_info();
+        let wit = account
+            .create_auth_wit(
+                MessageHashOrIntent::Hash {
+                    hash: Fr::from(1u64),
+                },
+                &chain_info,
+            )
+            .await
+            .expect("create auth wit");
+
+        assert_eq!(account.address(), AztecAddress(Fr::from(99u64)));
+        assert_eq!(account.complete_address().partial_address, Fr::from(1u64));
+        assert_eq!(account.secret_key, Fr::from(42u64));
+        assert_eq!(account.salt, Fr::from(7u64));
+        assert_eq!(wit.fields, vec![Fr::from(99u64)]);
+    }
+
+    // -- AccountContract tests ---------------------------------------------
+
+    #[tokio::test]
+    async fn mock_account_contract_artifact() {
+        let contract = MockAccountContract;
+        let artifact = contract
+            .contract_artifact()
+            .await
+            .expect("get contract artifact");
+        assert_eq!(artifact.name, "MockAccount");
+        assert_eq!(artifact.functions.len(), 1);
+        assert!(artifact.functions[0].is_initializer);
+    }
+
+    #[tokio::test]
+    async fn mock_account_contract_init_spec() {
+        let contract = MockAccountContract;
+        let spec = contract
+            .initialization_function_and_args()
+            .await
+            .expect("get init spec")
+            .expect("should have init spec");
+        assert_eq!(spec.constructor_name, "constructor");
+        assert_eq!(spec.constructor_args.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn mock_account_contract_produces_account() {
+        let contract = MockAccountContract;
+        let addr = sample_complete_address();
+        let account = contract.account(addr);
+        assert_eq!(account.address(), AztecAddress(Fr::from(99u64)));
+    }
+
+    #[tokio::test]
+    async fn mock_account_contract_produces_auth_provider() {
+        let contract = MockAccountContract;
+        let addr = sample_complete_address();
+        let provider = contract.auth_witness_provider(addr);
+        let chain_info = sample_chain_info();
+
+        let wit = provider
+            .create_auth_wit(
+                MessageHashOrIntent::Hash {
+                    hash: Fr::from(1u64),
+                },
+                &chain_info,
+            )
+            .await
+            .expect("create auth wit");
+        assert_eq!(wit.fields.len(), 1);
+    }
+
+    // -- AccountManager tests ----------------------------------------------
+
+    #[tokio::test]
+    async fn account_manager_create() {
+        let wallet = MockWallet::new(sample_chain_info());
+        let manager = AccountManager::create(
+            wallet,
+            Fr::from(42u64),
+            Box::new(MockAccountContract),
+            Some(Fr::from(7u64)),
+        )
+        .await
+        .expect("create account manager");
+
+        assert_eq!(manager.salt(), Fr::from(7u64));
+        assert_eq!(manager.secret_key(), Fr::from(42u64));
+    }
+
+    #[tokio::test]
+    async fn account_manager_default_salt() {
+        let wallet = MockWallet::new(sample_chain_info());
+        let manager =
+            AccountManager::create(wallet, Fr::from(1u64), Box::new(MockAccountContract), None)
+                .await
+                .expect("create account manager");
+
+        assert_ne!(manager.salt(), Fr::zero());
+    }
+
+    #[tokio::test]
+    async fn account_manager_rejects_missing_initializer_function() {
+        let wallet = MockWallet::new(sample_chain_info());
+        let result = AccountManager::create(
+            wallet,
+            Fr::from(1u64),
+            Box::new(BadInitializerNameAccountContract),
+            None,
+        )
+        .await;
+        assert!(result.is_err());
+        let err = result.err().expect("initializer lookup should fail");
+
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn account_manager_rejects_initializer_argument_mismatch() {
+        let wallet = MockWallet::new(sample_chain_info());
+        let result = AccountManager::create(
+            wallet,
+            Fr::from(1u64),
+            Box::new(BadInitializerArgsAccountContract),
+            None,
+        )
+        .await;
+        assert!(result.is_err());
+        let err = result
+            .err()
+            .expect("initializer arg validation should fail");
+
+        assert!(err.to_string().contains("expects 1 argument(s), got 0"));
+    }
+
+    #[tokio::test]
+    async fn account_manager_address_accessors() {
+        let wallet = MockWallet::new(sample_chain_info());
+        let manager =
+            AccountManager::create(wallet, Fr::from(1u64), Box::new(MockAccountContract), None)
+                .await
+                .expect("create account manager");
+
+        assert_eq!(manager.address(), AztecAddress(Fr::zero()));
+
+        let err = manager
+            .complete_address()
+            .await
+            .expect_err("complete address should be unresolved");
+        assert!(err
+            .to_string()
+            .contains("complete account address derivation is not implemented yet"));
+
+        let instance = manager.instance();
+        assert_eq!(instance.inner.version, 1);
+    }
+
+    #[tokio::test]
+    async fn account_manager_account() {
+        let wallet = MockWallet::new(sample_chain_info());
+        let manager =
+            AccountManager::create(wallet, Fr::from(42u64), Box::new(MockAccountContract), None)
+                .await
+                .expect("create account manager");
+
+        let err = manager
+            .account()
+            .await
+            .expect_err("account construction should be unresolved");
+        assert!(err
+            .to_string()
+            .contains("complete account address derivation is not implemented yet"));
+    }
+
+    #[tokio::test]
+    async fn account_manager_account_creates_auth_wit() {
+        let wallet = MockWallet::new(sample_chain_info());
+        let manager =
+            AccountManager::create(wallet, Fr::from(42u64), Box::new(MockAccountContract), None)
+                .await
+                .expect("create account manager");
+
+        let err = manager
+            .account()
+            .await
+            .expect_err("account construction should be unresolved");
+        assert!(err
+            .to_string()
+            .contains("complete account address derivation is not implemented yet"));
+    }
+
+    // -- DeployAccountMethod tests -----------------------------------------
+
+    #[tokio::test]
+    async fn deploy_method_request() {
+        let wallet = MockWallet::new(sample_chain_info());
+        let manager =
+            AccountManager::create(wallet, Fr::from(1u64), Box::new(MockAccountContract), None)
+                .await
+                .expect("create account manager");
+
+        let deploy = manager.deploy_method().await.expect("build deploy method");
+        let err = deploy.request().expect_err("request should be deferred");
+        assert!(err
+            .to_string()
+            .contains("account deployment payload construction"));
+    }
+
+    #[tokio::test]
+    async fn deploy_method_requires_initializer() {
+        let wallet = MockWallet::new(sample_chain_info());
+        let manager = AccountManager::create(
+            wallet,
+            Fr::from(1u64),
+            Box::new(NoInitializerAccountContract),
+            None,
+        )
+        .await
+        .expect("create account manager");
+
+        assert!(!manager.has_initializer());
+
+        let result = manager.deploy_method().await;
+        assert!(result.is_err());
+        let err = result
+            .err()
+            .expect("deploy method should require initializer");
+        assert!(err
+            .to_string()
+            .contains("does not have an initializer function to call"));
+    }
+
+    #[tokio::test]
+    async fn deploy_method_instance() {
+        let wallet = MockWallet::new(sample_chain_info());
+        let manager = AccountManager::create(
+            wallet,
+            Fr::from(1u64),
+            Box::new(MockAccountContract),
+            Some(Fr::from(99u64)),
+        )
+        .await
+        .expect("create account manager");
+
+        let deploy = manager.deploy_method().await.expect("build deploy method");
+        assert_eq!(deploy.instance().inner.salt, Fr::from(99u64));
+    }
+
+    #[tokio::test]
+    async fn deploy_method_simulate_delegates_to_wallet() {
+        let wallet =
+            MockWallet::new(sample_chain_info()).with_simulate_result(TxSimulationResult {
+                return_values: serde_json::json!({"deployed": true}),
+                gas_used: Some(Gas {
+                    da_gas: 50,
+                    l2_gas: 100,
+                }),
+            });
+        let manager =
+            AccountManager::create(wallet, Fr::from(1u64), Box::new(MockAccountContract), None)
+                .await
+                .expect("create account manager");
+
+        let deploy = manager.deploy_method().await.expect("build deploy method");
+        let err = deploy
+            .simulate(SimulateOptions::default())
+            .await
+            .expect_err("simulate should be deferred");
+        assert!(err
+            .to_string()
+            .contains("account deployment payload construction"));
+    }
+
+    #[tokio::test]
+    async fn deploy_method_send_delegates_to_wallet() {
+        let tx_hash =
+            TxHash::from_hex("0x00000000000000000000000000000000000000000000000000000000deadbeef")
+                .expect("valid hex");
+        let wallet = MockWallet::new(sample_chain_info()).with_send_result(SendResult { tx_hash });
+        let manager =
+            AccountManager::create(wallet, Fr::from(1u64), Box::new(MockAccountContract), None)
+                .await
+                .expect("create account manager");
+
+        let deploy = manager.deploy_method().await.expect("build deploy method");
+        let err = deploy
+            .send(SendOptions::default())
+            .await
+            .expect_err("send should be deferred");
+        assert!(err
+            .to_string()
+            .contains("account deployment payload construction"));
+    }
+}
