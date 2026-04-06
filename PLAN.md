@@ -371,7 +371,7 @@ Add `examples/contract_call.rs`:
 
 This example may use a mock wallet first, and later a real backend when available.
 
-## Phase 6 — Events
+## Phase 6 — Events **COMPLETED**
 
 ### Step 6.1: Public events helper
 
