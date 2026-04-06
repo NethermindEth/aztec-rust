@@ -398,7 +398,7 @@ Add the data types and wallet-facing interfaces for private events, but keep the
 
 Do not block the MVP on full private-event support.
 
-## Phase 7 — Account Model
+## Phase 7 — Account Model **COMPLETED**
 
 ### Step 7.1: Account traits
 
