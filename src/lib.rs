@@ -8,6 +8,7 @@ pub mod events;
 pub mod fee;
 pub mod messaging;
 pub mod node;
+mod rpc;
 pub mod tx;
 pub mod types;
 pub mod wallet;
