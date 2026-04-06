@@ -16,7 +16,7 @@ This plan is derived from [SPEC.md](/Users/alexmetelli/source/aztec-rust/SPEC.md
 - HTTP JSON-RPC only in early phases
 - first useful milestone is: connect to node, load artifact, build contract handle, simulate/send through a wallet abstraction
 
-## Phase 1 — Crate Skeleton
+## Phase 1 — Crate Skeleton **COMPLETED**
 
 ### Step 1.1: Initialize crate
 
@@ -65,7 +65,7 @@ Verification:
 cargo test error
 ```
 
-## Phase 2 — Core Types
+## Phase 2 — Core Types **COMPLETED**
 
 ### Step 2.1: Fields, points, addresses
 
