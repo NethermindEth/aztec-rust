@@ -211,25 +211,40 @@ impl Account for AccountWithSecretKey {
 /// A deployment method for account contracts.
 ///
 /// Packages the account contract deployment as a wallet-compatible
-/// interaction (simulate/send). Full deployment logic is deferred to
-/// Phase 8; this provides the structural scaffolding.
+/// interaction (simulate/send). Full account deployment still depends on the
+/// validated generic deployment path plus address derivation, so this remains
+/// explicit rather than speculative.
 pub struct DeployAccountMethod<'a, W> {
     wallet: &'a W,
-    artifact_name: String,
+    artifact: ContractArtifact,
     instance: ContractInstanceWithAddress,
+    init_spec: Option<InitializationSpec>,
+}
+
+impl<W> std::fmt::Debug for DeployAccountMethod<'_, W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeployAccountMethod")
+            .field("artifact", &self.artifact.name)
+            .field("has_init_spec", &self.init_spec.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<W: Wallet> DeployAccountMethod<'_, W> {
     /// Build the execution payload for this account deployment.
     ///
-    /// In the full implementation, this will construct the registration and
-    /// initialization calls for the account contract. Until Phase 8 lands,
-    /// keep this explicit rather than silently returning an empty payload.
+    /// Account deployment requires a fully validated deployment path. Until the
+    /// generic deployer can derive addresses and encode publication calls,
+    /// return an explicit error instead of emitting a misleading constructor
+    /// call to a placeholder address.
     pub fn request(&self) -> Result<ExecutionPayload, Error> {
-        Err(Error::InvalidData(format!(
-            "account deployment payload construction for '{}' is deferred to Phase 8",
-            self.artifact_name
-        )))
+        let _ = &self.artifact;
+        let _ = &self.instance;
+        let _ = &self.init_spec;
+        Err(Error::InvalidData(
+            "account deployment payload construction requires deployment address derivation and publication helpers"
+                .to_owned(),
+        ))
     }
 
     /// Simulate the account deployment without sending.
@@ -387,7 +402,10 @@ impl<W: Wallet> AccountManager<W> {
     }
 
     /// Get a deployment method for this account's contract.
-    #[allow(clippy::unused_async)]
+    ///
+    /// Fetches the artifact and initialization spec from the account contract
+    /// and builds a [`DeployAccountMethod`] that can simulate or send the
+    /// deployment transaction.
     pub async fn deploy_method(&self) -> Result<DeployAccountMethod<'_, W>, Error> {
         if !self.has_initializer {
             return Err(Error::InvalidData(format!(
@@ -396,10 +414,17 @@ impl<W: Wallet> AccountManager<W> {
             )));
         }
 
+        let artifact = self.account_contract.contract_artifact().await?;
+        let init_spec = self
+            .account_contract
+            .initialization_function_and_args()
+            .await?;
+
         Ok(DeployAccountMethod {
             wallet: &self.wallet,
-            artifact_name: self.artifact_name.clone(),
+            artifact,
             instance: self.instance.clone(),
+            init_spec,
         })
     }
 }
@@ -1088,11 +1113,10 @@ mod tests {
 
         assert!(!manager.has_initializer());
 
-        let result = manager.deploy_method().await;
-        assert!(result.is_err());
-        let err = result
-            .err()
-            .expect("deploy method should require initializer");
+        let err = manager
+            .deploy_method()
+            .await
+            .expect_err("deploy method should require initializer");
         assert!(err
             .to_string()
             .contains("does not have an initializer function to call"));
