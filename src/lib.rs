@@ -46,9 +46,14 @@ pub mod error {
 pub mod events {
     pub use aztec_contract::events::*;
 }
+/// Protocol contract addresses and constants.
+pub mod constants {
+    pub use aztec_core::constants::*;
+}
 /// Gas and fee payment types.
 pub mod fee {
     pub use aztec_core::fee::*;
+    pub use aztec_fee::*;
 }
 /// L1-L2 messaging helpers.
 pub use aztec_ethereum::messaging;

@@ -1,6 +1,7 @@
 //! Core types shared across the Aztec Rust workspace.
 
 pub mod abi;
+pub mod constants;
 pub mod error;
 pub mod fee;
 pub mod tx;

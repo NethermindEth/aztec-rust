@@ -228,6 +228,47 @@ pub struct ExecutionPayload {
     pub fee_payer: Option<AztecAddress>,
 }
 
+impl ExecutionPayload {
+    /// Merge multiple execution payloads into a single payload.
+    ///
+    /// Combines all calls, auth witnesses, capsules, and hashed args.
+    /// If multiple payloads specify a `fee_payer`, they must all agree
+    /// on the same address — otherwise this returns an error.
+    pub fn merge(payloads: Vec<ExecutionPayload>) -> Result<Self, Error> {
+        let mut calls = Vec::new();
+        let mut auth_witnesses = Vec::new();
+        let mut capsules = Vec::new();
+        let mut extra_hashed_args = Vec::new();
+        let mut fee_payer: Option<AztecAddress> = None;
+
+        for payload in payloads {
+            calls.extend(payload.calls);
+            auth_witnesses.extend(payload.auth_witnesses);
+            capsules.extend(payload.capsules);
+            extra_hashed_args.extend(payload.extra_hashed_args);
+
+            if let Some(payer) = payload.fee_payer {
+                if let Some(existing) = fee_payer {
+                    if existing != payer {
+                        return Err(Error::InvalidData(format!(
+                            "conflicting fee payers: {existing} vs {payer}"
+                        )));
+                    }
+                }
+                fee_payer = Some(payer);
+            }
+        }
+
+        Ok(ExecutionPayload {
+            calls,
+            auth_witnesses,
+            capsules,
+            extra_hashed_args,
+            fee_payer,
+        })
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
@@ -428,6 +469,126 @@ mod tests {
         let payload = ExecutionPayload::default();
         let json = serde_json::to_string(&payload).expect("serialize ExecutionPayload");
         assert!(json.contains("\"calls\":[]"));
+    }
+
+    #[test]
+    fn merge_empty_payloads() {
+        let result = ExecutionPayload::merge(vec![]).expect("merge empty");
+        assert!(result.calls.is_empty());
+        assert!(result.auth_witnesses.is_empty());
+        assert!(result.capsules.is_empty());
+        assert!(result.extra_hashed_args.is_empty());
+        assert!(result.fee_payer.is_none());
+    }
+
+    #[test]
+    fn merge_single_payload() {
+        let payer = AztecAddress(Fr::from(1u64));
+        let payload = ExecutionPayload {
+            calls: vec![FunctionCall {
+                to: AztecAddress(Fr::from(2u64)),
+                selector: FunctionSelector::from_hex("0x11223344").expect("valid"),
+                args: vec![],
+                function_type: FunctionType::Private,
+                is_static: false,
+            }],
+            auth_witnesses: vec![AuthWitness {
+                fields: vec![Fr::from(9u64)],
+            }],
+            capsules: vec![],
+            extra_hashed_args: vec![],
+            fee_payer: Some(payer),
+        };
+
+        let merged = ExecutionPayload::merge(vec![payload.clone()]).expect("merge single");
+        assert_eq!(merged, payload);
+    }
+
+    #[test]
+    fn merge_concatenates_fields() {
+        let p1 = ExecutionPayload {
+            calls: vec![FunctionCall {
+                to: AztecAddress(Fr::from(1u64)),
+                selector: FunctionSelector::from_hex("0x11111111").expect("valid"),
+                args: vec![],
+                function_type: FunctionType::Private,
+                is_static: false,
+            }],
+            auth_witnesses: vec![AuthWitness {
+                fields: vec![Fr::from(1u64)],
+            }],
+            capsules: vec![],
+            extra_hashed_args: vec![],
+            fee_payer: None,
+        };
+
+        let p2 = ExecutionPayload {
+            calls: vec![FunctionCall {
+                to: AztecAddress(Fr::from(2u64)),
+                selector: FunctionSelector::from_hex("0x22222222").expect("valid"),
+                args: vec![],
+                function_type: FunctionType::Public,
+                is_static: false,
+            }],
+            auth_witnesses: vec![AuthWitness {
+                fields: vec![Fr::from(2u64)],
+            }],
+            capsules: vec![],
+            extra_hashed_args: vec![],
+            fee_payer: None,
+        };
+
+        let merged = ExecutionPayload::merge(vec![p1, p2]).expect("merge two");
+        assert_eq!(merged.calls.len(), 2);
+        assert_eq!(merged.auth_witnesses.len(), 2);
+        assert!(merged.fee_payer.is_none());
+    }
+
+    #[test]
+    fn merge_same_fee_payer_succeeds() {
+        let payer = AztecAddress(Fr::from(5u64));
+        let p1 = ExecutionPayload {
+            fee_payer: Some(payer),
+            ..Default::default()
+        };
+        let p2 = ExecutionPayload {
+            fee_payer: Some(payer),
+            ..Default::default()
+        };
+
+        let merged = ExecutionPayload::merge(vec![p1, p2]).expect("same payer");
+        assert_eq!(merged.fee_payer, Some(payer));
+    }
+
+    #[test]
+    fn merge_conflicting_fee_payer_errors() {
+        let p1 = ExecutionPayload {
+            fee_payer: Some(AztecAddress(Fr::from(1u64))),
+            ..Default::default()
+        };
+        let p2 = ExecutionPayload {
+            fee_payer: Some(AztecAddress(Fr::from(2u64))),
+            ..Default::default()
+        };
+
+        let result = ExecutionPayload::merge(vec![p1, p2]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn merge_mixed_fee_payer_takes_defined() {
+        let payer = AztecAddress(Fr::from(3u64));
+        let p1 = ExecutionPayload {
+            fee_payer: None,
+            ..Default::default()
+        };
+        let p2 = ExecutionPayload {
+            fee_payer: Some(payer),
+            ..Default::default()
+        };
+
+        let merged = ExecutionPayload::merge(vec![p1, p2]).expect("mixed payer");
+        assert_eq!(merged.fee_payer, Some(payer));
     }
 
     #[test]

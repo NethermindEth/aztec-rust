@@ -33,6 +33,23 @@ impl FunctionSelector {
         Ok(Self(decode_selector_hex(value)?))
     }
 
+    /// Compute a function selector from a Noir function signature string.
+    ///
+    /// The selector is the first 4 bytes of the Keccak-256 hash of the signature.
+    ///
+    /// # Example
+    /// ```
+    /// # use aztec_core::abi::FunctionSelector;
+    /// let selector = FunctionSelector::from_signature("sponsor_unconditionally()");
+    /// ```
+    pub fn from_signature(signature: &str) -> Self {
+        use sha3::{Digest, Keccak256};
+        let hash = Keccak256::digest(signature.as_bytes());
+        let mut bytes = [0u8; 4];
+        bytes.copy_from_slice(&hash[..4]);
+        Self(bytes)
+    }
+
     /// Derive a function selector from a function name.
     ///
     /// Not yet implemented — returns an error.
@@ -505,5 +522,35 @@ mod tests {
     fn artifact_from_invalid_json_fails() {
         let result = ContractArtifact::from_json("not json");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_signature_is_deterministic() {
+        let a = FunctionSelector::from_signature("sponsor_unconditionally()");
+        let b = FunctionSelector::from_signature("sponsor_unconditionally()");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn from_signature_different_inputs_differ() {
+        let a = FunctionSelector::from_signature("sponsor_unconditionally()");
+        let b = FunctionSelector::from_signature(
+            "claim_and_end_setup((Field),u128,Field,Field)",
+        );
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn from_signature_empty_string() {
+        // Should not panic and should produce a deterministic result
+        let a = FunctionSelector::from_signature("");
+        let b = FunctionSelector::from_signature("");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn from_signature_produces_4_bytes() {
+        let selector = FunctionSelector::from_signature("transfer(Field,Field,u64)");
+        assert_eq!(selector.0.len(), 4);
     }
 }
