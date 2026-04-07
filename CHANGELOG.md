@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- None yet; everything in progress is targeted for the next release.
+
+## [0.2.2] - 2026-04-07
+
+### Added
+
+- `FeePaymentMethod` async trait defining the fee payment strategy interface (`aztec-fee`)
+- `NativeFeePaymentMethod` — pay fees using existing Fee Juice balance (`aztec-fee`)
+- `SponsoredFeePaymentMethod` — gasless transactions via a sponsor contract (`aztec-fee`)
+- `FeeJuicePaymentMethodWithClaim` — claim bridged Fee Juice from L1 and pay fees in one transaction (`aztec-fee`)
+- `L2AmountClaim` type for L1-to-L2 bridge deposit claim data (`aztec-fee`)
+- `FunctionSelector::from_signature()` — compute 4-byte selectors from Noir function signature strings via Keccak-256 (`aztec-core`)
+- `ExecutionPayload::merge()` — combine multiple execution payloads with fee payer conflict detection (`aztec-core`)
+- `protocol_contract_address::fee_juice()` — well-known Fee Juice contract address constant (`aztec-core`)
+- Fee types and constants re-exported from the `aztec-rs` umbrella crate
+- 30+ new unit tests across `aztec-core` (selectors, merge) and `aztec-fee` (all three payment methods)
+
 ## [0.2.1] - 2026-04-07
 
 ### Added
@@ -86,7 +105,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Implementation plan and spec documents
 
-[Unreleased]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/NethermindEth/aztec-rust/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/NethermindEth/aztec-rust/compare/v0.1.0...v0.1.1
