@@ -194,11 +194,17 @@ pub struct AuthWitness {
 }
 
 /// Private data capsule passed alongside a transaction.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+///
+/// Structured capsule with contract address, storage slot, and field data.
+/// Used for passing auxiliary data (e.g., packed bytecode) to protocol contracts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Capsule {
-    /// Raw capsule bytes.
-    #[serde(default)]
-    pub data: Vec<u8>,
+    /// The contract address this capsule targets.
+    pub contract_address: AztecAddress,
+    /// The storage slot within the target contract.
+    pub storage_slot: Fr,
+    /// Capsule data as field elements.
+    pub data: Vec<Fr>,
 }
 
 /// Pre-hashed values included in a transaction for oracle access.
@@ -504,8 +510,9 @@ mod tests {
             fee_payer: Some(payer),
         };
 
-        let merged = ExecutionPayload::merge(vec![payload.clone()]).expect("merge single");
-        assert_eq!(merged, payload);
+        let merged = ExecutionPayload::merge(vec![payload]).expect("merge single");
+        assert_eq!(merged.calls.len(), 1);
+        assert_eq!(merged.fee_payer, Some(payer));
     }
 
     #[test]

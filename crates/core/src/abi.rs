@@ -43,6 +43,30 @@ fn selector_from_signature(signature: &str) -> [u8; 4] {
     field_to_selector_bytes(hash)
 }
 
+/// Convert an ABI type to its canonical Noir signature representation.
+pub fn abi_type_signature(typ: &AbiType) -> String {
+    match typ {
+        AbiType::Field => "Field".to_owned(),
+        AbiType::Boolean => "bool".to_owned(),
+        AbiType::Integer { sign, width } => {
+            let prefix = if sign == "signed" { "i" } else { "u" };
+            format!("{prefix}{width}")
+        }
+        AbiType::Array { element, length } => {
+            format!("[{};{length}]", abi_type_signature(element))
+        }
+        AbiType::String { length } => format!("str<{length}>"),
+        AbiType::Struct { fields, .. } => {
+            let inner: Vec<String> = fields.iter().map(|f| abi_type_signature(&f.typ)).collect();
+            format!("({})", inner.join(","))
+        }
+        AbiType::Tuple { elements } => {
+            let inner: Vec<String> = elements.iter().map(abi_type_signature).collect();
+            format!("({})", inner.join(","))
+        }
+    }
+}
+
 /// A 4-byte function selector used to identify contract functions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FunctionSelector(pub [u8; 4]);
@@ -72,13 +96,14 @@ impl FunctionSelector {
         Self(selector_from_signature(signature))
     }
 
-    /// Derive a function selector from a function name.
+    /// Derive a function selector from a function name and its ABI parameters.
     ///
-    /// Not yet implemented — returns an error.
-    pub fn from_name(_name: &str) -> Result<Self, Error> {
-        Err(Error::Abi(
-            "function selector derivation is not implemented yet".to_owned(),
-        ))
+    /// Constructs the canonical Noir signature (e.g., `transfer(Field,Field,u64)`)
+    /// and computes the Poseidon2-based selector from it.
+    pub fn from_name_and_parameters(name: &str, params: &[AbiParameter]) -> Self {
+        let param_sigs: Vec<String> = params.iter().map(|p| abi_type_signature(&p.typ)).collect();
+        let sig = format!("{}({})", name, param_sigs.join(","));
+        Self::from_signature(&sig)
     }
 
     /// Convert this selector to its field representation.
@@ -197,6 +222,7 @@ pub enum AbiType {
     /// A fixed-length array of elements.
     Array {
         /// Element type.
+        #[serde(rename = "type", alias = "element")]
         element: Box<Self>,
         /// Fixed array length.
         length: usize,
@@ -208,7 +234,8 @@ pub enum AbiType {
     },
     /// A named struct with typed fields.
     Struct {
-        /// Struct type name.
+        /// Struct type name / path.
+        #[serde(alias = "path")]
         name: String,
         /// Struct fields.
         fields: Vec<AbiParameter>,
@@ -216,6 +243,7 @@ pub enum AbiType {
     /// An anonymous tuple of types.
     Tuple {
         /// Element types.
+        #[serde(alias = "fields")]
         elements: Vec<Self>,
     },
 }
@@ -259,22 +287,59 @@ pub struct FunctionArtifact {
     /// Function name.
     pub name: String,
     /// Whether this is a private, public, or utility function.
+    #[serde(alias = "functionType")]
     pub function_type: FunctionType,
     /// Whether this function is a contract initializer (constructor).
-    #[serde(default)]
+    #[serde(default, alias = "isInitializer")]
     pub is_initializer: bool,
     /// Whether this function is a static (read-only) call.
-    #[serde(default)]
+    #[serde(default, alias = "isStatic")]
     pub is_static: bool,
+    /// Whether this function is only callable by the contract itself.
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "isOnlySelf")]
+    pub is_only_self: Option<bool>,
     /// Function parameters.
     #[serde(default)]
     pub parameters: Vec<AbiParameter>,
     /// Return types.
-    #[serde(default)]
+    #[serde(default, alias = "returnTypes")]
     pub return_types: Vec<AbiType>,
+    /// Error types thrown by the function.
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "errorTypes")]
+    pub error_types: Option<serde_json::Value>,
     /// Pre-computed function selector.
     #[serde(default)]
     pub selector: Option<FunctionSelector>,
+    /// Compiled bytecode (base64 or hex encoded).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytecode: Option<String>,
+    /// Hash of the verification key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_key_hash: Option<Fr>,
+    /// Raw verification key (base64 or hex encoded).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_key: Option<String>,
+    /// Custom attributes / annotations from the Noir source.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "customAttributes"
+    )]
+    pub custom_attributes: Option<Vec<String>>,
+    /// Whether this is an unconstrained function.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "isUnconstrained"
+    )]
+    pub is_unconstrained: Option<bool>,
+    /// Debug symbols (opaque JSON).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "debugSymbols"
+    )]
+    pub debug_symbols: Option<serde_json::Value>,
 }
 
 /// A deserialized contract artifact containing function metadata.
@@ -285,6 +350,12 @@ pub struct ContractArtifact {
     /// Functions defined in the contract.
     #[serde(default)]
     pub functions: Vec<FunctionArtifact>,
+    /// Compiler output metadata (opaque JSON).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outputs: Option<serde_json::Value>,
+    /// Source file map (opaque JSON).
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "fileMap")]
+    pub file_map: Option<serde_json::Value>,
 }
 
 impl ContractArtifact {
@@ -321,6 +392,93 @@ impl ContractArtifact {
                     function_type, name, self.name
                 ))
             })
+    }
+}
+
+/// ABI-encode a function's arguments into field elements.
+pub fn encode_arguments(function: &FunctionArtifact, args: &[AbiValue]) -> Result<Vec<Fr>, Error> {
+    if function.parameters.len() != args.len() {
+        return Err(Error::Abi(format!(
+            "function '{}' expects {} argument(s), got {}",
+            function.name,
+            function.parameters.len(),
+            args.len()
+        )));
+    }
+
+    let mut out = Vec::new();
+    for (param, value) in function.parameters.iter().zip(args) {
+        encode_value(&param.typ, value, &mut out)?;
+    }
+    Ok(out)
+}
+
+fn encode_value(typ: &AbiType, value: &AbiValue, out: &mut Vec<Fr>) -> Result<(), Error> {
+    match (typ, value) {
+        (AbiType::Field, AbiValue::Field(field)) => {
+            out.push(*field);
+            Ok(())
+        }
+        (AbiType::Boolean, AbiValue::Boolean(boolean)) => {
+            out.push(if *boolean { Fr::one() } else { Fr::zero() });
+            Ok(())
+        }
+        (AbiType::Integer { .. }, AbiValue::Integer(integer)) => {
+            out.push(Fr::from(*integer as u64));
+            Ok(())
+        }
+        (AbiType::Array { element, length }, AbiValue::Array(items)) => {
+            if items.len() != *length {
+                return Err(Error::Abi(format!(
+                    "expected array of length {}, got {}",
+                    length,
+                    items.len()
+                )));
+            }
+            for item in items {
+                encode_value(element, item, out)?;
+            }
+            Ok(())
+        }
+        (AbiType::String { length }, AbiValue::String(string)) => {
+            let bytes = string.as_bytes();
+            if bytes.len() > *length {
+                return Err(Error::Abi(format!(
+                    "string exceeds fixed ABI length {}",
+                    length
+                )));
+            }
+            for byte in bytes {
+                out.push(Fr::from(u64::from(*byte)));
+            }
+            for _ in bytes.len()..*length {
+                out.push(Fr::zero());
+            }
+            Ok(())
+        }
+        (AbiType::Struct { fields, .. }, AbiValue::Struct(values)) => {
+            for field in fields {
+                let field_value = values
+                    .get(&field.name)
+                    .ok_or_else(|| Error::Abi(format!("missing struct field '{}'", field.name)))?;
+                encode_value(&field.typ, field_value, out)?;
+            }
+            Ok(())
+        }
+        (AbiType::Tuple { elements }, AbiValue::Tuple(values)) => {
+            if elements.len() != values.len() {
+                return Err(Error::Abi(format!(
+                    "expected tuple of length {}, got {}",
+                    elements.len(),
+                    values.len()
+                )));
+            }
+            for (element, value) in elements.iter().zip(values) {
+                encode_value(element, value, out)?;
+            }
+            Ok(())
+        }
+        _ => Err(Error::Abi("argument type/value mismatch".to_owned())),
     }
 }
 

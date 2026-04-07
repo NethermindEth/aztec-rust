@@ -271,6 +271,73 @@ pub struct PublicKeys {
     pub master_tagging_public_key: Point,
 }
 
+impl Point {
+    /// Returns `true` if this is the zero/default point (all fields zero).
+    pub fn is_zero(&self) -> bool {
+        self.x == Fr::zero() && self.y == Fr::zero() && !self.is_infinite
+    }
+}
+
+impl PublicKeys {
+    /// Returns `true` if all keys are zero (default/empty public keys).
+    pub fn is_empty(&self) -> bool {
+        self.master_nullifier_public_key.is_zero()
+            && self.master_incoming_viewing_public_key.is_zero()
+            && self.master_outgoing_viewing_public_key.is_zero()
+            && self.master_tagging_public_key.is_zero()
+    }
+
+    /// Compute the public keys hash.
+    ///
+    /// Returns `Fr::zero()` if all keys are empty, matching the upstream
+    /// TS behavior in `public_keys.ts`.
+    ///
+    /// Otherwise hashes the four key points with the `PUBLIC_KEYS_HASH`
+    /// domain separator using Poseidon2.
+    pub fn hash(&self) -> Fr {
+        if self.is_empty() {
+            return Fr::zero();
+        }
+
+        use crate::constants::domain_separator;
+        use crate::hash::poseidon2_hash_with_separator;
+
+        // Flatten each point to [x, y, is_infinite] and hash.
+        let fields = [
+            self.master_nullifier_public_key.x,
+            self.master_nullifier_public_key.y,
+            if self.master_nullifier_public_key.is_infinite {
+                Fr::one()
+            } else {
+                Fr::zero()
+            },
+            self.master_incoming_viewing_public_key.x,
+            self.master_incoming_viewing_public_key.y,
+            if self.master_incoming_viewing_public_key.is_infinite {
+                Fr::one()
+            } else {
+                Fr::zero()
+            },
+            self.master_outgoing_viewing_public_key.x,
+            self.master_outgoing_viewing_public_key.y,
+            if self.master_outgoing_viewing_public_key.is_infinite {
+                Fr::one()
+            } else {
+                Fr::zero()
+            },
+            self.master_tagging_public_key.x,
+            self.master_tagging_public_key.y,
+            if self.master_tagging_public_key.is_infinite {
+                Fr::one()
+            } else {
+                Fr::zero()
+            },
+        ];
+
+        poseidon2_hash_with_separator(&fields, domain_separator::PUBLIC_KEYS_HASH)
+    }
+}
+
 /// A complete address combining the Aztec address, public keys, and partial address.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompleteAddress {
