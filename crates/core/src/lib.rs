@@ -4,6 +4,7 @@ pub mod abi;
 pub mod constants;
 pub mod error;
 pub mod fee;
+pub mod hash;
 pub mod tx;
 pub mod types;
 

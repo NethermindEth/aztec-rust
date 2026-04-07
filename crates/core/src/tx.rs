@@ -185,6 +185,9 @@ pub struct FunctionCall {
 /// An authorization witness proving the caller's intent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AuthWitness {
+    /// The message hash this witness authorizes.
+    #[serde(default)]
+    pub request_hash: Fr,
     /// Field elements comprising the witness data.
     #[serde(default)]
     pub fields: Vec<Fr>,
@@ -494,6 +497,7 @@ mod tests {
             }],
             auth_witnesses: vec![AuthWitness {
                 fields: vec![Fr::from(9u64)],
+                ..Default::default()
             }],
             capsules: vec![],
             extra_hashed_args: vec![],
@@ -516,6 +520,7 @@ mod tests {
             }],
             auth_witnesses: vec![AuthWitness {
                 fields: vec![Fr::from(1u64)],
+                ..Default::default()
             }],
             capsules: vec![],
             extra_hashed_args: vec![],
@@ -532,6 +537,7 @@ mod tests {
             }],
             auth_witnesses: vec![AuthWitness {
                 fields: vec![Fr::from(2u64)],
+                ..Default::default()
             }],
             capsules: vec![],
             extra_hashed_args: vec![],
@@ -604,6 +610,7 @@ mod tests {
             }],
             auth_witnesses: vec![AuthWitness {
                 fields: vec![Fr::from(1u64)],
+                ..Default::default()
             }],
             capsules: vec![],
             extra_hashed_args: vec![],

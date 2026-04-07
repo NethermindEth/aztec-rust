@@ -29,7 +29,13 @@ pub mod account {
     pub use aztec_account::SingleAccountProvider;
 }
 /// Authorization witness types and helpers.
-pub use aztec_account::authorization;
+pub mod authorization {
+    pub use aztec_account::authorization::*;
+}
+/// Authwit interaction helpers (public authwit, validity checking).
+pub mod authwit {
+    pub use aztec_contract::authwit::*;
+}
 /// Contract handles and function interactions.
 pub mod contract {
     pub use aztec_contract::contract::*;
@@ -49,6 +55,10 @@ pub mod events {
 /// Protocol contract addresses and constants.
 pub mod constants {
     pub use aztec_core::constants::*;
+}
+/// Poseidon2 hash functions and authwit hash computation.
+pub mod hash {
+    pub use aztec_core::hash::*;
 }
 /// Gas and fee payment types.
 pub mod fee {

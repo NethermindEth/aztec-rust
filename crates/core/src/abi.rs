@@ -1,7 +1,9 @@
+use ark_ff::{BigInteger, PrimeField};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
 use std::fmt;
 
+use crate::hash::poseidon2_hash_bytes;
 use crate::types::Fr;
 use crate::Error;
 
@@ -23,6 +25,24 @@ fn decode_selector_hex(s: &str) -> Result<[u8; 4], Error> {
     Ok(out)
 }
 
+fn field_to_selector_bytes(field: Fr) -> [u8; 4] {
+    let raw = field.0.into_bigint().to_bytes_be();
+    let mut padded = [0u8; 32];
+    padded[32 - raw.len()..].copy_from_slice(&raw);
+    let mut out = [0u8; 4];
+    out.copy_from_slice(&padded[28..]);
+    out
+}
+
+fn selector_bytes_to_field(bytes: [u8; 4]) -> Fr {
+    Fr::from(u64::from(u32::from_be_bytes(bytes)))
+}
+
+fn selector_from_signature(signature: &str) -> [u8; 4] {
+    let hash = poseidon2_hash_bytes(signature.as_bytes());
+    field_to_selector_bytes(hash)
+}
+
 /// A 4-byte function selector used to identify contract functions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FunctionSelector(pub [u8; 4]);
@@ -33,9 +53,15 @@ impl FunctionSelector {
         Ok(Self(decode_selector_hex(value)?))
     }
 
+    /// Convert a field element to a function selector using its low 32 bits.
+    pub fn from_field(field: Fr) -> Self {
+        Self(field_to_selector_bytes(field))
+    }
+
     /// Compute a function selector from a Noir function signature string.
     ///
-    /// The selector is the first 4 bytes of the Keccak-256 hash of the signature.
+    /// Aztec computes selectors by Poseidon2-hashing the raw signature bytes and
+    /// taking the low 32 bits of the resulting field element.
     ///
     /// # Example
     /// ```
@@ -43,11 +69,7 @@ impl FunctionSelector {
     /// let selector = FunctionSelector::from_signature("sponsor_unconditionally()");
     /// ```
     pub fn from_signature(signature: &str) -> Self {
-        use sha3::{Digest, Keccak256};
-        let hash = Keccak256::digest(signature.as_bytes());
-        let mut bytes = [0u8; 4];
-        bytes.copy_from_slice(&hash[..4]);
-        Self(bytes)
+        Self(selector_from_signature(signature))
     }
 
     /// Derive a function selector from a function name.
@@ -57,6 +79,11 @@ impl FunctionSelector {
         Err(Error::Abi(
             "function selector derivation is not implemented yet".to_owned(),
         ))
+    }
+
+    /// Convert this selector to its field representation.
+    pub fn to_field(self) -> Fr {
+        selector_bytes_to_field(self.0)
     }
 }
 
@@ -76,6 +103,57 @@ impl Serialize for FunctionSelector {
 }
 
 impl<'de> Deserialize<'de> for FunctionSelector {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Self::from_hex(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+/// A 4-byte authorization selector used to identify authwit request types.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct AuthorizationSelector(pub [u8; 4]);
+
+impl AuthorizationSelector {
+    /// Parse an authorization selector from a hex string.
+    pub fn from_hex(value: &str) -> Result<Self, Error> {
+        Ok(Self(decode_selector_hex(value)?))
+    }
+
+    /// Convert a field element to an authorization selector using its low 32 bits.
+    pub fn from_field(field: Fr) -> Self {
+        Self(field_to_selector_bytes(field))
+    }
+
+    /// Compute an authorization selector from an authorization signature.
+    pub fn from_signature(signature: &str) -> Self {
+        Self(selector_from_signature(signature))
+    }
+
+    /// Convert this selector to its field representation.
+    pub fn to_field(self) -> Fr {
+        selector_bytes_to_field(self.0)
+    }
+}
+
+impl fmt::Display for AuthorizationSelector {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "0x{}", hex::encode(self.0))
+    }
+}
+
+impl Serialize for AuthorizationSelector {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for AuthorizationSelector {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -349,6 +427,18 @@ mod tests {
     }
 
     #[test]
+    fn authorization_selector_hex_roundtrip() {
+        let selector = AuthorizationSelector::from_hex("0x01020304").expect("valid hex");
+        assert_eq!(selector.0, [0x01, 0x02, 0x03, 0x04]);
+        assert_eq!(selector.to_string(), "0x01020304");
+
+        let json = serde_json::to_string(&selector).expect("serialize selector");
+        let decoded: AuthorizationSelector =
+            serde_json::from_str(&json).expect("deserialize selector");
+        assert_eq!(decoded, selector);
+    }
+
+    #[test]
     fn function_selector_rejects_too_long() {
         let result = FunctionSelector::from_hex("0xaabbccddee");
         assert!(result.is_err());
@@ -550,5 +640,21 @@ mod tests {
     fn from_signature_produces_4_bytes() {
         let selector = FunctionSelector::from_signature("transfer(Field,Field,u64)");
         assert_eq!(selector.0.len(), 4);
+    }
+
+    #[test]
+    fn function_selector_roundtrips_through_field() {
+        let selector = FunctionSelector::from_signature("set_authorized(Field,bool)");
+        assert_eq!(FunctionSelector::from_field(selector.to_field()), selector);
+    }
+
+    #[test]
+    fn authorization_selector_roundtrips_through_field() {
+        let selector =
+            AuthorizationSelector::from_signature("CallAuthorization((Field),(u32),Field)");
+        assert_eq!(
+            AuthorizationSelector::from_field(selector.to_field()),
+            selector
+        );
     }
 }

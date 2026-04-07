@@ -11,19 +11,13 @@ use crate::node::LogId;
 use crate::tx::{AuthWitness, Capsule, ExecutionPayload, FunctionCall, TxHash};
 use crate::types::{AztecAddress, ContractInstanceWithAddress, Fr};
 
+// Re-export ChainInfo and MessageHashOrIntent from aztec-core::hash
+// so existing consumers of aztec-wallet continue to find them here.
+pub use aztec_core::hash::{ChainInfo, MessageHashOrIntent};
+
 // ---------------------------------------------------------------------------
 // Supporting types
 // ---------------------------------------------------------------------------
-
-/// Chain identification information.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChainInfo {
-    /// The L2 chain ID.
-    pub chain_id: Fr,
-    /// The rollup protocol version.
-    pub version: Fr,
-}
 
 /// A value with an optional human-readable alias.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -288,24 +282,6 @@ const fn default_skip_fee_enforcement() -> bool {
 
 const fn default_skip_proof_generation() -> bool {
     true
-}
-
-/// Either a raw message hash or a structured authorization intent.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum MessageHashOrIntent {
-    /// A raw message hash.
-    Hash {
-        /// The hash value.
-        hash: Fr,
-    },
-    /// A structured call intent.
-    Intent {
-        /// The caller requesting authorization.
-        caller: AztecAddress,
-        /// The function call to authorize.
-        call: FunctionCall,
-    },
 }
 
 // ---------------------------------------------------------------------------
