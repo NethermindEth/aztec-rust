@@ -7,16 +7,16 @@ use crate::tx::{Capsule, ExecutionPayload, FunctionCall};
 use crate::types::{AztecAddress, ContractInstance, ContractInstanceWithAddress, Fr, PublicKeys};
 use crate::wallet::{SendOptions, SendResult, SimulateOptions, TxSimulationResult, Wallet};
 
-use aztec_core::abi::FunctionSelector;
+use aztec_core::abi::{buffer_as_fields, FunctionSelector};
 use aztec_core::constants::{
     contract_class_registry_bytecode_capsule_slot, protocol_contract_address,
     MAX_PACKED_PUBLIC_BYTECODE_SIZE_IN_FIELDS, MAX_PROCESSABLE_L2_GAS,
 };
 use aztec_core::fee::Gas;
 use aztec_core::hash::{
-    buffer_as_fields, compute_artifact_hash, compute_contract_address_from_instance,
-    compute_contract_class_id, compute_initialization_hash,
-    compute_private_functions_root_from_artifact, compute_public_bytecode_commitment,
+    compute_artifact_hash, compute_contract_address_from_instance, compute_contract_class_id,
+    compute_initialization_hash, compute_private_functions_root_from_artifact,
+    compute_public_bytecode_commitment,
 };
 
 // ---------------------------------------------------------------------------
@@ -113,7 +113,7 @@ pub async fn publish_contract_class<'a, W: Wallet>(
     let bytecode_fields = if packed_bytecode.is_empty() {
         vec![]
     } else {
-        buffer_as_fields(&packed_bytecode, MAX_PACKED_PUBLIC_BYTECODE_SIZE_IN_FIELDS)
+        buffer_as_fields(&packed_bytecode, MAX_PACKED_PUBLIC_BYTECODE_SIZE_IN_FIELDS)?
     };
 
     // 3. Build function call to the Contract Class Registry.

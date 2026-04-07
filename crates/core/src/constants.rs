@@ -85,7 +85,7 @@ pub mod domain_separator {
     pub const CONTRACT_ADDRESS_V1: u32 = 1_788_365_517;
 }
 
-/// Size constants for deployment computations.
+// Size constants for deployment computations.
 
 /// Height of the private functions Merkle tree.
 pub const FUNCTION_TREE_HEIGHT: usize = 7;
