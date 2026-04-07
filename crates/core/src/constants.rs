@@ -83,6 +83,31 @@ pub mod domain_separator {
 
     /// Domain separator for contract address V1 derivation.
     pub const CONTRACT_ADDRESS_V1: u32 = 1_788_365_517;
+
+    /// Master nullifier hiding key derivation.
+    ///
+    /// TS: `DomainSeparator.NHK_M = 242137788`
+    pub const NHK_M: u32 = 242_137_788;
+
+    /// Master incoming viewing secret key derivation.
+    ///
+    /// TS: `DomainSeparator.IVSK_M = 2747825907`
+    pub const IVSK_M: u32 = 2_747_825_907;
+
+    /// Master outgoing viewing secret key derivation.
+    ///
+    /// TS: `DomainSeparator.OVSK_M = 4272201051`
+    pub const OVSK_M: u32 = 4_272_201_051;
+
+    /// Master tagging secret key derivation.
+    ///
+    /// TS: `DomainSeparator.TSK_M = 1546190975`
+    pub const TSK_M: u32 = 1_546_190_975;
+
+    /// Secret hash (for L1-L2 messages and TransparentNote).
+    ///
+    /// TS: `DomainSeparator.SECRET_HASH = 4199652938`
+    pub const SECRET_HASH: u32 = 4_199_652_938;
 }
 
 // Size constants for deployment computations.
@@ -134,6 +159,12 @@ mod tests {
         assert_eq!(domain_separator::PUBLIC_BYTECODE, 260_313_585);
         assert_eq!(domain_separator::INITIALIZER, 385_396_519);
         assert_eq!(domain_separator::CONTRACT_ADDRESS_V1, 1_788_365_517);
+        // Key derivation separators
+        assert_eq!(domain_separator::NHK_M, 242_137_788);
+        assert_eq!(domain_separator::IVSK_M, 2_747_825_907);
+        assert_eq!(domain_separator::OVSK_M, 4_272_201_051);
+        assert_eq!(domain_separator::TSK_M, 1_546_190_975);
+        assert_eq!(domain_separator::SECRET_HASH, 4_199_652_938);
     }
 
     #[test]
