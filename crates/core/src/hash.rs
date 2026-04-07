@@ -242,6 +242,7 @@ pub enum MessageHashOrIntent {
 ///   1. `inner_hash = compute_inner_auth_wit_hash_from_action(caller, call)`
 ///   2. `consumer = call.to` (the contract being called)
 ///   3. `outer_hash = compute_outer_auth_wit_hash(consumer, chain_id, version, inner_hash)`
+///
 /// For `MessageHashOrIntent::InnerHash { consumer, inner_hash }`:
 ///   1. `outer_hash = compute_outer_auth_wit_hash(consumer, chain_id, version, inner_hash)`
 ///
@@ -348,7 +349,7 @@ fn poseidon_merkle_root(leaves: &[Fr]) -> Fr {
 
     let mut current = leaves.to_vec();
     while current.len() > 1 {
-        let mut next = Vec::with_capacity((current.len() + 1) / 2);
+        let mut next = Vec::with_capacity(current.len().div_ceil(2));
         for chunk in current.chunks(2) {
             let left = chunk[0];
             let right = if chunk.len() > 1 {
@@ -373,10 +374,10 @@ fn sha256_merkle_root(leaves: &[Fr]) -> Fr {
 
     let mut current = leaves.to_vec();
     while current.len() > 1 {
-        let mut next = Vec::with_capacity((current.len() + 1) / 2);
+        let mut next = Vec::with_capacity(current.len().div_ceil(2));
         for chunk in current.chunks(2) {
-            let left = fr_to_be_bytes(&chunk[0]);
-            let right = fr_to_be_bytes(chunk.get(1).unwrap_or(&Fr::zero()));
+            let left = chunk[0].to_be_bytes();
+            let right = chunk.get(1).unwrap_or(&Fr::zero()).to_be_bytes();
             next.push(sha256_to_field(
                 &[left.as_slice(), right.as_slice()].concat(),
             ));
@@ -404,26 +405,10 @@ pub fn compute_artifact_hash(artifact: &ContractArtifact) -> Fr {
 
     let mut data = Vec::new();
     data.push(1u8);
-    data.extend_from_slice(&fr_to_be_bytes(&private_fn_tree_root));
-    data.extend_from_slice(&fr_to_be_bytes(&unconstrained_fn_tree_root));
-    data.extend_from_slice(&fr_to_be_bytes(&metadata_hash));
+    data.extend_from_slice(&private_fn_tree_root.to_be_bytes());
+    data.extend_from_slice(&unconstrained_fn_tree_root.to_be_bytes());
+    data.extend_from_slice(&metadata_hash.to_be_bytes());
     sha256_to_field(&data)
-}
-
-fn fr_to_be_bytes(f: &Fr) -> [u8; 32] {
-    use ark_ff::{BigInteger, PrimeField};
-    let raw = f.0.into_bigint().to_bytes_be();
-    let mut out = [0u8; 32];
-    out[32 - raw.len()..].copy_from_slice(&raw);
-    out
-}
-
-fn fr_to_usize(f: &Fr) -> usize {
-    use ark_ff::{BigInteger, PrimeField};
-
-    let raw = f.0.into_bigint().to_bytes_be();
-    raw.into_iter()
-        .fold(0usize, |acc, byte| (acc << 8) | usize::from(byte))
 }
 
 fn canonical_json_string(value: &serde_json::Value) -> String {
@@ -499,8 +484,8 @@ fn compute_artifact_function_tree_root(artifact: &ContractArtifact, unconstraine
             let mut leaf_data = Vec::new();
             leaf_data.push(1u8);
             leaf_data.extend_from_slice(&selector.0);
-            leaf_data.extend_from_slice(&fr_to_be_bytes(&metadata_hash));
-            leaf_data.extend_from_slice(&fr_to_be_bytes(&bytecode_hash));
+            leaf_data.extend_from_slice(&metadata_hash.to_be_bytes());
+            leaf_data.extend_from_slice(&bytecode_hash.to_be_bytes());
             sha256_to_field(&leaf_data)
         })
         .collect();
@@ -549,34 +534,16 @@ fn compute_artifact_metadata_hash(artifact: &ContractArtifact) -> Fr {
 ///
 /// Encodes bytecode as field elements (31 bytes each) and hashes with Poseidon2.
 pub fn compute_public_bytecode_commitment(packed_bytecode: &[u8]) -> Fr {
-    let fields = buffer_as_fields(
+    let fields = crate::abi::buffer_as_fields(
         packed_bytecode,
         constants::MAX_PACKED_PUBLIC_BYTECODE_SIZE_IN_FIELDS,
-    );
-    let byte_length = fr_to_usize(&fields[0]) as u64;
+    )
+    .expect("packed bytecode exceeds maximum field count");
+    let byte_length = fields[0].to_usize() as u64;
     let length_in_fields = byte_length.div_ceil(31) as usize;
 
     let separator = Fr::from(u64::from(domain_separator::PUBLIC_BYTECODE) + (byte_length << 32));
     poseidon2_hash_with_separator_field(&fields[1..1 + length_in_fields], separator)
-}
-
-/// Encode a byte buffer as field elements (31 bytes per field).
-pub fn buffer_as_fields(bytes: &[u8], max_fields: usize) -> Vec<Fr> {
-    let mut fields = vec![Fr::from(bytes.len() as u64)];
-    fields.extend(bytes.chunks(31).map(|chunk| {
-        let mut field_bytes = [0u8; 32];
-        field_bytes[1..1 + chunk.len()].copy_from_slice(chunk);
-        Fr::from(field_bytes)
-    }));
-
-    assert!(
-        fields.len() <= max_fields,
-        "packed bytecode exceeds maximum field count ({} > {max_fields})",
-        fields.len()
-    );
-
-    fields.resize(max_fields, Fr::zero());
-    fields
 }
 
 /// Compute the contract class ID from its components.
@@ -725,7 +692,7 @@ pub fn compute_contract_address_from_instance(
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::abi::{FunctionSelector, FunctionType};
+    use crate::abi::{buffer_as_fields, FunctionSelector, FunctionType};
 
     #[test]
     fn var_args_hash_empty_returns_zero() {
@@ -1020,7 +987,7 @@ mod tests {
     #[test]
     fn buffer_as_fields_basic() {
         let data = vec![0u8; 31];
-        let fields = buffer_as_fields(&data, 100);
+        let fields = buffer_as_fields(&data, 100).expect("encode");
         // Result is padded to max_fields; first field is the length prefix,
         // second is the single 31-byte chunk, rest are zero-padding.
         assert_eq!(fields.len(), 100);
@@ -1030,7 +997,7 @@ mod tests {
     #[test]
     fn buffer_as_fields_multiple_chunks() {
         let data = vec![0xffu8; 62]; // 2 chunks of 31 bytes
-        let fields = buffer_as_fields(&data, 100);
+        let fields = buffer_as_fields(&data, 100).expect("encode");
         assert_eq!(fields.len(), 100);
         assert_eq!(fields[0], Fr::from(62u64)); // length prefix
     }
