@@ -2,6 +2,7 @@ use ark_bn254::{Fq as ArkFq, Fr as ArkFr};
 use ark_ff::{AdditiveGroup, BigInteger, Field, PrimeField, UniformRand};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
+use std::ops;
 
 use crate::Error;
 
@@ -170,15 +171,92 @@ impl<'de> Deserialize<'de> for Fr {
     }
 }
 
-/// A BN254 base field element.
+/// A BN254 base field element (also the Grumpkin scalar field).
 #[derive(Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Fq(pub ArkFq);
 
 impl Fq {
-    /// Parse from a hex string.
+    /// The additive identity (zero).
+    pub const fn zero() -> Self {
+        Self(ArkFq::ZERO)
+    }
+
+    /// The multiplicative identity (one).
+    pub const fn one() -> Self {
+        Self(ArkFq::ONE)
+    }
+
+    /// Parse from a hex string (e.g. `"0x01"`).
     pub fn from_hex(value: &str) -> Result<Self, Error> {
         let bytes = decode_fixed_hex::<32>(value)?;
         Ok(Self(ArkFq::from_be_bytes_mod_order(&bytes)))
+    }
+
+    /// Serialize to 32-byte big-endian representation.
+    pub fn to_be_bytes(&self) -> [u8; 32] {
+        let raw = self.0.into_bigint().to_bytes_be();
+        let mut out = [0u8; 32];
+        out[32 - raw.len()..].copy_from_slice(&raw);
+        out
+    }
+
+    /// Interpret a variable-length big-endian byte slice as an Fq element,
+    /// reducing modulo the field order.
+    ///
+    /// This accepts slices of any length (e.g. 64 bytes from SHA-512).
+    pub fn from_be_bytes_mod_order(bytes: &[u8]) -> Self {
+        Self(ArkFq::from_be_bytes_mod_order(bytes))
+    }
+
+    /// Returns `true` if this field element is zero.
+    pub fn is_zero(&self) -> bool {
+        *self == Self::zero()
+    }
+
+    /// Generate a random field element.
+    pub fn random() -> Self {
+        Self(ArkFq::rand(&mut rand::thread_rng()))
+    }
+
+    /// Upper 128 bits as an Fr element.
+    ///
+    /// Matches the TS `Fq.hi` getter: `new Fr(this.toBigInt() >> 128n)`.
+    pub fn hi(&self) -> Fr {
+        let bytes = self.to_be_bytes();
+        // bytes[0..16] are the upper 128 bits
+        let mut padded = [0u8; 32];
+        padded[16..].copy_from_slice(&bytes[..16]);
+        Fr(ArkFr::from_be_bytes_mod_order(&padded))
+    }
+
+    /// Lower 128 bits as an Fr element.
+    ///
+    /// Matches the TS `Fq.lo` getter: `new Fr(this.toBigInt() & ((1n << 128n) - 1n))`.
+    pub fn lo(&self) -> Fr {
+        let bytes = self.to_be_bytes();
+        // bytes[16..32] are the lower 128 bits
+        let mut padded = [0u8; 32];
+        padded[16..].copy_from_slice(&bytes[16..]);
+        Fr(ArkFr::from_be_bytes_mod_order(&padded))
+    }
+}
+
+impl From<u64> for Fq {
+    fn from(value: u64) -> Self {
+        Self(ArkFq::from(value))
+    }
+}
+
+impl From<[u8; 32]> for Fq {
+    fn from(value: [u8; 32]) -> Self {
+        Self(ArkFq::from_be_bytes_mod_order(&value))
+    }
+}
+
+impl ops::Mul for Fq {
+    type Output = Self;
+    fn mul(self, rhs: Self) -> Self::Output {
+        Self(self.0 * rhs.0)
     }
 }
 
@@ -213,8 +291,11 @@ impl<'de> Deserialize<'de> for Fq {
     }
 }
 
-/// Type alias for Grumpkin curve scalars (same as [`Fr`]).
-pub type GrumpkinScalar = Fr;
+/// Type alias for Grumpkin curve scalars.
+///
+/// Grumpkin scalars live in the BN254 base field (Fq), not the scalar field (Fr).
+/// This matches the TS codebase where `GrumpkinScalar = Fq`.
+pub type GrumpkinScalar = Fq;
 
 /// A point on the Grumpkin curve, used for Aztec public keys.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
