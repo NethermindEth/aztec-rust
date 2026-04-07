@@ -24,8 +24,8 @@ pub mod wallet {
     pub use aztec_wallet::*;
 }
 
-pub mod authorization;
 pub mod account;
+pub mod authorization;
 
 pub use account::*;
 pub use error::Error;

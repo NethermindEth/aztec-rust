@@ -1,6 +1,6 @@
 [package]
 name = "aztec-account"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 description = "Account abstraction, AccountManager, and authorization for the Aztec Rust SDK"
 license = "Apache-2.0"

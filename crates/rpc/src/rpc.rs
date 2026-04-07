@@ -79,6 +79,32 @@ impl RpcTransport {
 
         serde_json::from_value(result).map_err(Into::into)
     }
+
+    /// Call a JSON-RPC method that returns no meaningful value.
+    ///
+    /// A null or missing result is accepted without error. Only JSON-RPC
+    /// error responses are propagated.
+    pub async fn call_void(&self, method: &str, params: serde_json::Value) -> Result<(), Error> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let request = Request {
+            jsonrpc: "2.0",
+            method,
+            params,
+            id,
+        };
+
+        let resp = self.client.post(&self.url).json(&request).send().await?;
+        let body: Response = resp.json().await?;
+
+        if let Some(err) = body.error {
+            return Err(Error::Rpc {
+                code: err.code,
+                message: err.message,
+            });
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

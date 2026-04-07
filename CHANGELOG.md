@@ -7,16 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Aligned `aztec-pxe-client` request option payloads with upstream PXE semantics by adding `simulatePublic`, `overrides`, `profileMode`, `skipProofGeneration`, and `authwits` to the Rust wire types
+- Corrected private event transport types in `aztec-pxe-client` to use upstream field names and metadata (`packedEvent`, `contractAddress`, `txHash`, `afterLog`, `l2BlockNumber`, `l2BlockHash`, `eventSelector`)
+- Corrected `UtilityExecutionResult` to deserialize the upstream PXE response shape (`result` plus optional `stats`)
+- Expanded PXE client tests to cover the corrected wire formats and added local `BlockHash` / `LogId` transport helpers needed for event parity
+
+## [0.2.0] - 2026-04-07
+
+### Added
+
+- `Pxe` trait in `aztec-pxe-client` mirroring the TypeScript PXE interface (18 methods: `simulate_tx`, `prove_tx`, `register_account`, `register_contract`, `get_private_events`, etc.)
+- `HttpPxeClient` — HTTP/JSON-RPC client for connecting to a running PXE node
+- `create_pxe_client(url)` factory function with 30s default timeout
+- `wait_for_pxe()` polling helper (120s timeout, 1s interval)
+- PXE-specific types: `BlockHeader`, `TxExecutionRequest`, `TxProvingResult`, `TxSimulationResult`, `TxProfileResult`, `UtilityExecutionResult`, `PackedPrivateEvent`, `PrivateEventFilter`, `RegisterContractRequest`
+- PXE option types: `SimulateTxOpts`, `ProfileTxOpts`, `ExecuteUtilityOpts`
+- `RpcTransport::call_void()` for void-returning JSON-RPC methods
+- PXE module re-exported from the `aztec-rs` umbrella crate
+- 34 unit tests covering serde roundtrips, mock PXE, trait safety, and polling
+
 ### Changed
 
 - Restructured codebase from a single flat crate into a Cargo workspace with 10 internal crates (`aztec-core`, `aztec-crypto`, `aztec-rpc`, `aztec-node-client`, `aztec-pxe-client`, `aztec-wallet`, `aztec-contract`, `aztec-account`, `aztec-fee`, `aztec-ethereum`)
 - Migrated all existing modules into their respective workspace crates while preserving the public API via umbrella re-exports in `aztec-rs`
 - Root `Cargo.toml` now defines a workspace and the `aztec-rs` umbrella crate depends on all workspace members
-
-### Added
-
-- Stub crates for future functionality: `aztec-crypto`, `aztec-pxe-client`, `aztec-fee`, `aztec-ethereum`
-- Gap analysis and refactor plan documents (`GAP_ANALYSIS.md`, `REFACTOR_PLAN.md`)
 
 ### Removed
 
@@ -53,6 +69,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Implementation plan and spec documents
 
-[Unreleased]: https://github.com/NethermindEth/aztec-rust/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/NethermindEth/aztec-rust/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/NethermindEth/aztec-rust/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/NethermindEth/aztec-rust/releases/tag/v0.1.0

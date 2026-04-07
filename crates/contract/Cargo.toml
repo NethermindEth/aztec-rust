@@ -1,6 +1,6 @@
 [package]
 name = "aztec-contract"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 description = "Contract interaction, deployment, and event decoding for the Aztec Rust SDK"
 license = "Apache-2.0"

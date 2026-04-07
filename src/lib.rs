@@ -55,6 +55,10 @@ pub use aztec_ethereum::messaging;
 pub mod node {
     pub use aztec_node_client::node::*;
 }
+/// PXE client, readiness polling, and PXE trait.
+pub mod pxe {
+    pub use aztec_pxe_client::pxe::*;
+}
 /// Transaction types, receipts, statuses, and execution payloads.
 pub mod tx {
     pub use aztec_core::tx::*;

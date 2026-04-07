@@ -32,7 +32,7 @@ pub mod contract;
 pub mod deployment;
 pub mod events;
 
-pub use error::Error;
 pub use contract::*;
 pub use deployment::*;
+pub use error::Error;
 pub use events::*;
