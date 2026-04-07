@@ -6,9 +6,9 @@ description = "Contract interaction, deployment, and event decoding for the Azte
 license = "Apache-2.0"
 
 [dependencies]
-aztec-core = { path = "../core" }
-aztec-wallet = { path = "../wallet" }
-aztec-node-client = { path = "../node-client" }
+aztec-core = { path = "../core", version = "0.2.0" }
+aztec-wallet = { path = "../wallet", version = "0.2.0" }
+aztec-node-client = { path = "../node-client", version = "0.2.0" }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

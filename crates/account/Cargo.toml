@@ -6,8 +6,8 @@ description = "Account abstraction, AccountManager, and authorization for the Az
 license = "Apache-2.0"
 
 [dependencies]
-aztec-core = { path = "../core" }
-aztec-wallet = { path = "../wallet" }
+aztec-core = { path = "../core", version = "0.2.0" }
+aztec-wallet = { path = "../wallet", version = "0.2.0" }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
