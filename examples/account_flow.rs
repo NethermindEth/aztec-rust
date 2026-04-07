@@ -116,7 +116,17 @@ impl AccountContract for DemoAccountContract {
                 }],
                 return_types: vec![],
                 selector: Some(FunctionSelector::from_hex("0xaabb1122")?),
+                bytecode: None,
+                verification_key_hash: None,
+                verification_key: None,
+                custom_attributes: None,
+                is_unconstrained: None,
+                debug_symbols: None,
+                error_types: None,
+                is_only_self: None,
             }],
+            outputs: None,
+            file_map: None,
         })
     }
 

@@ -541,7 +541,17 @@ mod tests {
                     selector: Some(
                         FunctionSelector::from_hex("0x12345678").expect("valid selector"),
                     ),
+                    bytecode: None,
+                    verification_key_hash: None,
+                    verification_key: None,
+                    custom_attributes: None,
+                    is_unconstrained: None,
+                    debug_symbols: None,
+                    error_types: None,
+                    is_only_self: None,
                 }],
+                outputs: None,
+                file_map: None,
             })
         }
 
@@ -574,6 +584,8 @@ mod tests {
             Ok(ContractArtifact {
                 name: "NoInitializerAccount".to_owned(),
                 functions: vec![],
+                outputs: None,
+                file_map: None,
             })
         }
 

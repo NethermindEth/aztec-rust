@@ -861,6 +861,8 @@ mod tests {
         ContractArtifact {
             name: "TestContract".to_owned(),
             functions: vec![],
+            outputs: None,
+            file_map: None,
         }
     }
 
@@ -1313,7 +1315,9 @@ mod tests {
                         ..Default::default()
                     }],
                     capsules: vec![crate::tx::Capsule {
-                        data: vec![1, 2, 3],
+                        contract_address: AztecAddress(Fr::zero()),
+                        storage_slot: Fr::zero(),
+                        data: vec![Fr::from(1u64), Fr::from(2u64), Fr::from(3u64)],
                     }],
                     ..Default::default()
                 },

@@ -817,6 +817,8 @@ mod tests {
             artifact: Some(ContractArtifact {
                 name: "TestContract".into(),
                 functions: vec![],
+                outputs: None,
+                file_map: None,
             }),
         };
         let json = serde_json::to_string(&request).unwrap();

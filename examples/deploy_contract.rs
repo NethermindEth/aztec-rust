@@ -2,8 +2,7 @@
 //!
 //! Demonstrates how to use `ContractDeployer` to prepare a contract
 //! deployment using a representative fixture artifact. Uses a mock wallet
-//! since full deployment (class publication, instance publication, address
-//! derivation) is not yet implemented.
+//! since the real PXE node is not available.
 //!
 //! Run with:
 //! ```bash
@@ -66,25 +65,35 @@ async fn main() -> Result<(), aztec_rs::Error> {
     ])?;
     println!("Deploy method: {deploy_method:?}");
 
-    // Get the computed contract instance (uses placeholder address).
+    // Get the computed contract instance.
     let opts = DeployOptions {
         contract_address_salt: Some(Fr::from(42u64)),
+        universal_deploy: true,
         ..DeployOptions::default()
     };
-    let instance = deploy_method.get_instance(&opts);
+    let instance = deploy_method.get_instance(&opts)?;
     println!("\nContract instance:");
-    println!("  address (placeholder): {}", instance.address);
-    println!("  version:               {}", instance.inner.version);
-    println!("  salt:                  {}", instance.inner.salt);
+    println!("  address:  {}", instance.address);
+    println!("  version:  {}", instance.inner.version);
+    println!("  salt:     {}", instance.inner.salt);
+    println!("  class_id: {}", instance.inner.current_contract_class_id);
 
-    // Attempting to build the full deployment payload is expected to fail
-    // because address derivation and publication helpers are not yet implemented.
-    match deploy_method.request(&opts) {
-        Ok(_) => println!("\nDeployment payload built successfully."),
-        Err(e) => println!("\nDeployment request (expected deferred): {e}"),
+    // Build the full deployment payload.
+    let opts_with_skip = DeployOptions {
+        contract_address_salt: Some(Fr::from(42u64)),
+        universal_deploy: true,
+        skip_registration: true,
+        ..DeployOptions::default()
+    };
+    match deploy_method.request(&opts_with_skip).await {
+        Ok(payload) => {
+            println!("\nDeployment payload built successfully.");
+            println!("  calls: {}", payload.calls.len());
+        }
+        Err(e) => println!("\nDeployment request failed: {e}"),
     }
 
-    println!("\nDone. Full deployment requires protocol primitives not yet implemented.");
+    println!("\nDone.");
 
     Ok(())
 }
