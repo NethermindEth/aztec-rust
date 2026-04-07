@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-04-07
+
 ### Added
 
 - `BaseWallet<P, N, A>` — production `Wallet` implementation backed by PXE + Aztec node connections (`aztec-wallet`)
@@ -27,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Corrected private event transport types in `aztec-pxe-client` to use upstream field names and metadata (`packedEvent`, `contractAddress`, `txHash`, `afterLog`, `l2BlockNumber`, `l2BlockHash`, `eventSelector`)
 - Corrected `UtilityExecutionResult` to deserialize the upstream PXE response shape (`result` plus optional `stats`)
 - Expanded PXE client tests to cover the corrected wire formats and added local `BlockHash` / `LogId` transport helpers needed for event parity
+- Added `PartialEq` derive to `ExecuteUtilityOpts` for test assertions
 
 ## [0.2.0] - 2026-04-07
 
@@ -83,7 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Implementation plan and spec documents
 
-[Unreleased]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/NethermindEth/aztec-rust/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/NethermindEth/aztec-rust/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/NethermindEth/aztec-rust/releases/tag/v0.1.0
