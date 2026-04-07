@@ -64,6 +64,27 @@ jobs:
                 return 0
               fi
 
+              if grep -Eq "status 429 Too Many Requests|published too many new crates in a short period of time" "${log_file}"; then
+                local retry_after
+                retry_after="$(sed -n 's/.*Please try again after \(.* GMT\).*/\1/p' "${log_file}" | tail -n1)"
+
+                if [ -n "${retry_after}" ]; then
+                  local target_epoch
+                  local now_epoch
+                  target_epoch="$(date -u -d "${retry_after}" +%s)"
+                  now_epoch="$(date -u +%s)"
+                  sleep_seconds="$(( target_epoch - now_epoch + 5 ))"
+                  if [ "${sleep_seconds}" -lt 5 ]; then
+                    sleep_seconds=5
+                  fi
+                fi
+
+                rm -f "${log_file}"
+                echo "crates.io rate limit hit while publishing ${package_name}; retrying in ${sleep_seconds}s (${attempt}/${max_attempts})"
+                sleep "${sleep_seconds}"
+                continue
+              fi
+
               if grep -Eq "no matching package named|failed to select a version|not found in registry|does not exist in the registry index" "${log_file}"; then
                 rm -f "${log_file}"
                 echo "Dependency index not ready for ${package_name} yet; retrying in ${sleep_seconds}s (${attempt}/${max_attempts})"
