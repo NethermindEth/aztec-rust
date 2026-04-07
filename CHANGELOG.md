@@ -9,7 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- None yet; everything in progress is targeted for the next release.
+- Poseidon2 hash module with `poseidon2_hash_with_separator`, `poseidon2_hash_bytes`, `compute_var_args_hash` matching barretenberg/TS SDK output (`aztec-core`)
+- Authwit hash computation functions: `compute_inner_auth_wit_hash`, `compute_outer_auth_wit_hash`, `compute_inner_auth_wit_hash_from_action`, `compute_auth_wit_message_hash` (`aztec-core`)
+- `abi_values_to_fields` helper for flattening `AbiValue` to `Vec<Fr>` for hash input (`aztec-core`)
+- Domain separator constants: `AUTHWIT_INNER`, `AUTHWIT_OUTER`, `FUNCTION_ARGS` (`aztec-core`)
+- `protocol_contract_address::auth_registry()` — AuthRegistry protocol contract at address 1 (`aztec-core`)
+- `AuthWitness.request_hash` field identifying which message a witness authorizes (`aztec-core`)
+- `MessageHashOrIntent::InnerHash` variant for pre-computed inner hashes with consumer address (`aztec-core`)
+- `CallAuthorizationRequest` struct with `new()`, `selector()`, and `from_fields()` for authwit preimage handling (`aztec-account`)
+- `AuthorizationSelector` type for authorization request type identification (`aztec-core`)
+- `FunctionSelector::from_field()` and `FunctionSelector::to_field()` field-element conversions (`aztec-core`)
+- `SetPublicAuthWitInteraction` — convenience type for setting public authwits in the AuthRegistry (`aztec-contract`)
+- `lookup_validity()` — check authwit validity in both private and public contexts (`aztec-contract`)
+- `AuthWitValidity` result type for validity checks (`aztec-contract`)
+- Intent-to-hash resolution in `SingleAccountProvider.create_auth_wit()` so `AuthorizationProvider` implementations always receive resolved hashes (`aztec-account`)
+- Hash functions, authwit helpers, and authorization types re-exported from the `aztec-rs` umbrella crate
+- 25+ new unit tests across `aztec-core` (hash, constants), `aztec-account` (authorization), and `aztec-contract` (authwit)
+
+### Changed
+
+- `ChainInfo` and `MessageHashOrIntent` moved from `aztec-wallet` to `aztec-core::hash` to avoid circular dependencies; re-exported from `aztec-wallet` for backward compatibility
+
+### Fixed
+
+- Corrected selector derivation to use Aztec-compatible Poseidon2-over-bytes semantics rather than Keccak-based hashing (`aztec-core`)
+- Added `AuthorizationSelector`-aware authwit request decoding so `CallAuthorizationRequest` now validates the upstream selector field and deserializes the correct field order (`aztec-account`)
+- Corrected authwit validity helper selectors for Aztec address-typed arguments (`lookup_validity((Field),Field)` and `utility_is_consumable((Field),Field)`) and added `SetPublicAuthWitInteraction::profile()` parity (`aztec-contract`)
+- Removed the now-unused `sha3` dependency from `aztec-core`
 
 ## [0.2.2] - 2026-04-07
 
@@ -20,7 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SponsoredFeePaymentMethod` — gasless transactions via a sponsor contract (`aztec-fee`)
 - `FeeJuicePaymentMethodWithClaim` — claim bridged Fee Juice from L1 and pay fees in one transaction (`aztec-fee`)
 - `L2AmountClaim` type for L1-to-L2 bridge deposit claim data (`aztec-fee`)
-- `FunctionSelector::from_signature()` — compute 4-byte selectors from Noir function signature strings via Keccak-256 (`aztec-core`)
+- `FunctionSelector::from_signature()` — compute 4-byte selectors from Noir function signature strings (`aztec-core`)
 - `ExecutionPayload::merge()` — combine multiple execution payloads with fee payer conflict detection (`aztec-core`)
 - `protocol_contract_address::fee_juice()` — well-known Fee Juice contract address constant (`aztec-core`)
 - Fee types and constants re-exported from the `aztec-rs` umbrella crate
