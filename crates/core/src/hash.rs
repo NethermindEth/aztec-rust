@@ -11,7 +11,7 @@ use crate::abi::{
 use crate::constants::{self, domain_separator};
 use crate::grumpkin;
 use crate::tx::FunctionCall;
-use crate::types::{AztecAddress, ContractInstance, Fr};
+use crate::types::{AztecAddress, ContractInstance, Fq, Fr, PublicKeys};
 use crate::Error;
 
 /// Compute a Poseidon2 sponge hash over `inputs`.
@@ -92,6 +92,15 @@ pub fn poseidon2_hash_with_separator_field(inputs: &[Fr], separator: Fr) -> Fr {
     full_input.push(separator);
     full_input.extend_from_slice(inputs);
     poseidon2_hash(&full_input)
+}
+
+/// Hash a secret for use in L1-L2 message flow and TransparentNote.
+///
+/// `secret_hash = poseidon2([secret], SECRET_HASH)`
+///
+/// Mirrors TS `computeSecretHash(secret)`.
+pub fn compute_secret_hash(secret: &Fr) -> Fr {
+    poseidon2_hash_with_separator(&[*secret], domain_separator::SECRET_HASH)
 }
 
 /// Hash function arguments using Poseidon2 with the `FUNCTION_ARGS` separator.
@@ -641,6 +650,46 @@ pub fn compute_partial_address(
     )
 }
 
+/// Compute an Aztec address from public keys and a partial address.
+///
+/// Algorithm:
+///   1. `preaddress = poseidon2([public_keys_hash, partial_address], CONTRACT_ADDRESS_V1)`
+///   2. `address_point = (Fq(preaddress) * G) + ivpk_m`
+///   3. `address = address_point.x`
+pub fn compute_address(
+    public_keys: &PublicKeys,
+    partial_address: &Fr,
+) -> Result<AztecAddress, Error> {
+    let public_keys_hash = public_keys.hash();
+    let preaddress = poseidon2_hash_with_separator(
+        &[public_keys_hash, *partial_address],
+        domain_separator::CONTRACT_ADDRESS_V1,
+    );
+
+    // Convert Fr preaddress to Fq for Grumpkin scalar multiplication
+    // (matches TS: `new Fq(preaddress.toBigInt())`)
+    let preaddress_fq = Fq::from_be_bytes_mod_order(&preaddress.to_be_bytes());
+
+    let g = grumpkin::generator();
+    let preaddress_point = grumpkin::scalar_mul(&preaddress_fq, &g);
+
+    let ivpk_m = &public_keys.master_incoming_viewing_public_key;
+    // Point::is_zero() already checks !is_infinite, so no extra guard needed.
+    let address_point = if ivpk_m.is_zero() {
+        preaddress_point
+    } else {
+        grumpkin::point_add(&preaddress_point, ivpk_m)
+    };
+
+    if address_point.is_infinite {
+        return Err(Error::InvalidData(
+            "address derivation resulted in point at infinity".to_owned(),
+        ));
+    }
+
+    Ok(AztecAddress(address_point.x))
+}
+
 /// Compute the contract address from a `ContractInstance`.
 ///
 /// ```text
@@ -652,40 +701,15 @@ pub fn compute_partial_address(
 pub fn compute_contract_address_from_instance(
     instance: &ContractInstance,
 ) -> Result<AztecAddress, Error> {
-    let public_keys_hash = instance.public_keys.hash();
-
     let salted_init_hash = compute_salted_initialization_hash(
         instance.salt,
         instance.initialization_hash,
         instance.deployer,
     );
-
     let partial_address =
         compute_partial_address(instance.original_contract_class_id, salted_init_hash);
 
-    let preaddress = poseidon2_hash_with_separator(
-        &[public_keys_hash, partial_address],
-        domain_separator::CONTRACT_ADDRESS_V1,
-    );
-
-    // address = (preaddress * G + ivpk_m).x
-    let g = grumpkin::generator();
-    let preaddress_point = grumpkin::scalar_mul(&preaddress, &g);
-    let ivpk_m = &instance.public_keys.master_incoming_viewing_public_key;
-
-    let address_point = if ivpk_m.is_zero() && !ivpk_m.is_infinite {
-        preaddress_point
-    } else {
-        grumpkin::point_add(&preaddress_point, ivpk_m)
-    };
-
-    if address_point.is_infinite {
-        return Err(Error::InvalidData(
-            "contract address derivation resulted in point at infinity".to_owned(),
-        ));
-    }
-
-    Ok(AztecAddress(address_point.x))
+    compute_address(&instance.public_keys, &partial_address)
 }
 
 #[cfg(test)]
@@ -723,6 +747,24 @@ mod tests {
         let result = poseidon2_hash_with_separator(&[a, b], sep);
         let manual = poseidon2_hash(&[Fr::from(u64::from(sep)), a, b]);
         assert_eq!(result, manual);
+    }
+
+    #[test]
+    fn secret_hash_uses_correct_separator() {
+        let secret = Fr::from(42u64);
+        let result = compute_secret_hash(&secret);
+        let expected = poseidon2_hash_with_separator(&[secret], domain_separator::SECRET_HASH);
+        assert_eq!(result, expected);
+        // Must be non-zero for a non-zero secret
+        assert!(!result.is_zero());
+    }
+
+    #[test]
+    fn secret_hash_is_deterministic() {
+        let secret = Fr::from(12345u64);
+        let h1 = compute_secret_hash(&secret);
+        let h2 = compute_secret_hash(&secret);
+        assert_eq!(h1, h2);
     }
 
     #[test]

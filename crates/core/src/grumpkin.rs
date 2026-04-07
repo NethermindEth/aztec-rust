@@ -8,7 +8,7 @@
 use ark_bn254::Fr as ArkFr;
 use ark_ff::{AdditiveGroup, BigInteger, Field, PrimeField};
 
-use crate::types::{Fr, Point};
+use crate::types::{Fq, Fr, Point};
 
 /// Grumpkin curve parameter: y^2 = x^3 + B, where B = -17.
 const B: i64 = -17;
@@ -102,11 +102,13 @@ fn point_double(p: &Point) -> Point {
 }
 
 /// Scalar multiplication via double-and-add.
-pub fn scalar_mul(scalar: &Fr, point: &Point) -> Point {
+///
+/// The scalar is an `Fq` element (BN254 base field = Grumpkin scalar field).
+pub fn scalar_mul(scalar: &Fq, point: &Point) -> Point {
     if point.is_infinite {
         return *point;
     }
-    if scalar.0 == ArkFr::ZERO {
+    if scalar.is_zero() {
         return Point {
             x: Fr::zero(),
             y: Fr::zero(),
@@ -165,7 +167,7 @@ mod tests {
     #[test]
     fn scalar_mul_one() {
         let g = generator();
-        let result = scalar_mul(&Fr::one(), &g);
+        let result = scalar_mul(&Fq::one(), &g);
         assert_eq!(result, g);
     }
 
@@ -173,14 +175,14 @@ mod tests {
     fn scalar_mul_two_equals_double() {
         let g = generator();
         let doubled = point_double(&g);
-        let result = scalar_mul(&Fr::from(2u64), &g);
+        let result = scalar_mul(&Fq::from(2u64), &g);
         assert_eq!(result, doubled);
     }
 
     #[test]
     fn scalar_mul_zero_returns_infinity() {
         let g = generator();
-        let result = scalar_mul(&Fr::zero(), &g);
+        let result = scalar_mul(&Fq::zero(), &g);
         assert!(result.is_infinite);
     }
 
@@ -200,16 +202,16 @@ mod tests {
     fn scalar_mul_associative() {
         let g = generator();
         // 3G = G + 2G
-        let two_g = scalar_mul(&Fr::from(2u64), &g);
+        let two_g = scalar_mul(&Fq::from(2u64), &g);
         let three_g_add = point_add(&g, &two_g);
-        let three_g_mul = scalar_mul(&Fr::from(3u64), &g);
+        let three_g_mul = scalar_mul(&Fq::from(3u64), &g);
         assert_eq!(three_g_add, three_g_mul);
     }
 
     #[test]
     fn result_is_on_curve() {
         let g = generator();
-        let p = scalar_mul(&Fr::from(12345u64), &g);
+        let p = scalar_mul(&Fq::from(12345u64), &g);
         assert!(!p.is_infinite);
         let lhs = p.y.0 * p.y.0;
         let rhs = p.x.0 * p.x.0 * p.x.0 - ArkFr::from(17u64);
