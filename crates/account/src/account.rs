@@ -351,15 +351,38 @@ impl<W: Wallet> AccountManager<W> {
 
     /// Get the complete address of this account.
     ///
-    /// This requires account key derivation plus `CompleteAddress`
-    /// reconstruction from the secret key and contract instance. That path is
-    /// intentionally deferred until the underlying cryptographic primitives are
-    /// implemented in this crate.
+    /// Derives the full key set from the secret key, computes the partial
+    /// address from the contract instance, and returns the complete address.
+    ///
+    /// Note: correct results require `create()` to have populated the instance
+    /// fields (contract class ID, initialization hash, deployer) properly.
+    /// Until that is done, the computed address will be based on zero placeholders.
     #[allow(clippy::unused_async)]
     pub async fn complete_address(&self) -> Result<CompleteAddress, Error> {
-        Err(Error::InvalidData(
-            "complete account address derivation is not implemented yet".to_owned(),
-        ))
+        use aztec_core::hash::{
+            compute_address, compute_partial_address, compute_salted_initialization_hash,
+        };
+        use aztec_crypto::derive_keys;
+
+        let derived = derive_keys(&self.secret_key);
+
+        let salted_init_hash = compute_salted_initialization_hash(
+            self.instance.inner.salt,
+            self.instance.inner.initialization_hash,
+            self.instance.inner.deployer,
+        );
+        let partial_address = compute_partial_address(
+            self.instance.inner.original_contract_class_id,
+            salted_init_hash,
+        );
+
+        let address = compute_address(&derived.public_keys, &partial_address)?;
+
+        Ok(CompleteAddress {
+            address,
+            public_keys: derived.public_keys,
+            partial_address,
+        })
     }
 
     /// Get the address currently associated with this account instance.
@@ -1050,15 +1073,16 @@ mod tests {
                 .await
                 .expect("create account manager");
 
+        // Placeholder address is zero until instance fields are populated
         assert_eq!(manager.address(), AztecAddress(Fr::zero()));
 
-        let err = manager
+        // complete_address() now works (derives keys from secret key)
+        let complete = manager
             .complete_address()
             .await
-            .expect_err("complete address should be unresolved");
-        assert!(err
-            .to_string()
-            .contains("complete account address derivation is not implemented yet"));
+            .expect("complete address derivation");
+        assert!(!complete.public_keys.is_empty());
+        assert!(!complete.address.0.is_zero());
 
         let instance = manager.instance();
         assert_eq!(instance.inner.version, 1);
@@ -1072,13 +1096,9 @@ mod tests {
                 .await
                 .expect("create account manager");
 
-        let err = manager
-            .account()
-            .await
-            .expect_err("account construction should be unresolved");
-        assert!(err
-            .to_string()
-            .contains("complete account address derivation is not implemented yet"));
+        // account() now works since complete_address() is implemented
+        let account = manager.account().await.expect("account construction");
+        assert_eq!(account.secret_key, Fr::from(42u64));
     }
 
     #[tokio::test]
@@ -1089,13 +1109,19 @@ mod tests {
                 .await
                 .expect("create account manager");
 
-        let err = manager
-            .account()
+        let account = manager.account().await.expect("account construction");
+        // Verify the account can create auth witnesses
+        let chain_info = sample_chain_info();
+        let wit = account
+            .create_auth_wit(
+                MessageHashOrIntent::Hash {
+                    hash: Fr::from(999u64),
+                },
+                &chain_info,
+            )
             .await
-            .expect_err("account construction should be unresolved");
-        assert!(err
-            .to_string()
-            .contains("complete account address derivation is not implemented yet"));
+            .expect("create auth wit");
+        assert!(!wit.fields.is_empty());
     }
 
     // -- DeployAccountMethod tests -----------------------------------------
