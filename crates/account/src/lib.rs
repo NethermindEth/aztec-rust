@@ -26,6 +26,8 @@ pub mod wallet {
 
 pub mod account;
 pub mod authorization;
+pub mod single_account_provider;
 
 pub use account::*;
 pub use error::Error;
+pub use single_account_provider::SingleAccountProvider;

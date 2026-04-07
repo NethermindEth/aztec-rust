@@ -7,7 +7,7 @@ use crate::abi::EventSelector;
 use crate::error::Error;
 use crate::rpc::RpcTransport;
 use crate::tx::{TxHash, TxReceipt, TxStatus};
-use crate::types::{AztecAddress, Fr};
+use crate::types::{AztecAddress, ContractInstanceWithAddress, Fr};
 
 // ---------------------------------------------------------------------------
 // Supporting types
@@ -133,6 +133,15 @@ pub trait AztecNode: Send + Sync {
     async fn get_tx_receipt(&self, tx_hash: &TxHash) -> Result<TxReceipt, Error>;
     /// Query public logs matching the given filter.
     async fn get_public_logs(&self, filter: PublicLogFilter) -> Result<PublicLogsResponse, Error>;
+    /// Send a proven transaction to the network for inclusion.
+    async fn send_tx(&self, tx: &serde_json::Value) -> Result<TxHash, Error>;
+    /// Get a publicly deployed contract instance by address.
+    async fn get_contract(
+        &self,
+        address: &AztecAddress,
+    ) -> Result<Option<ContractInstanceWithAddress>, Error>;
+    /// Get a publicly registered contract class by ID.
+    async fn get_contract_class(&self, id: &Fr) -> Result<Option<serde_json::Value>, Error>;
 }
 
 // ---------------------------------------------------------------------------
@@ -175,6 +184,27 @@ impl AztecNode for HttpNodeClient {
     async fn get_public_logs(&self, filter: PublicLogFilter) -> Result<PublicLogsResponse, Error> {
         self.transport
             .call("node_getPublicLogs", serde_json::json!([filter]))
+            .await
+    }
+
+    async fn send_tx(&self, tx: &serde_json::Value) -> Result<TxHash, Error> {
+        self.transport
+            .call("node_sendTx", serde_json::json!([tx]))
+            .await
+    }
+
+    async fn get_contract(
+        &self,
+        address: &AztecAddress,
+    ) -> Result<Option<ContractInstanceWithAddress>, Error> {
+        self.transport
+            .call("node_getContract", serde_json::json!([address]))
+            .await
+    }
+
+    async fn get_contract_class(&self, id: &Fr) -> Result<Option<serde_json::Value>, Error> {
+        self.transport
+            .call("node_getContractClass", serde_json::json!([id]))
             .await
     }
 }
@@ -537,6 +567,21 @@ mod tests {
                 logs: vec![],
                 max_logs_hit: false,
             })
+        }
+
+        async fn send_tx(&self, _tx: &serde_json::Value) -> Result<TxHash, Error> {
+            Ok(TxHash::zero())
+        }
+
+        async fn get_contract(
+            &self,
+            _address: &AztecAddress,
+        ) -> Result<Option<ContractInstanceWithAddress>, Error> {
+            Ok(None)
+        }
+
+        async fn get_contract_class(&self, _id: &Fr) -> Result<Option<serde_json::Value>, Error> {
+            Ok(None)
         }
     }
 

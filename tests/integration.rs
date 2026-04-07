@@ -17,17 +17,12 @@ use aztec_rs::types::{AztecAddress, Fr};
 use aztec_rs::wallet::{ChainInfo, MockWallet, SimulateOptions};
 use std::time::Duration;
 
-fn node_url() -> Option<String> {
-    std::env::var("AZTEC_NODE_URL").ok()
+fn node_url() -> String {
+    std::env::var("AZTEC_NODE_URL").unwrap_or_else(|_| "http://localhost:8080".to_owned())
 }
 
 async fn require_live_node() -> Option<(impl AztecNode, NodeInfo)> {
-    let Some(url) = node_url() else {
-        eprintln!("skipping ignored integration test: AZTEC_NODE_URL is not set");
-        return None;
-    };
-
-    let node = create_aztec_node_client(url);
+    let node = create_aztec_node_client(node_url());
     let info = match wait_for_node(&node).await {
         Ok(info) => info,
         Err(err) => {

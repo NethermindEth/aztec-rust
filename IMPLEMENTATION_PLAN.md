@@ -17,7 +17,7 @@ Each step below produces a publishable release. We follow semver:
 
 ---
 
-## Step 1: PXE Trait & Client (`aztec-pxe-client`) — Release 0.2.0
+## Step 1: PXE Trait & Client (`aztec-pxe-client`) — Release 0.2.0 **COMPLETED**
 
 **Why first:** Without PXE connectivity, no private execution is possible. This is the single biggest architectural gap.
 

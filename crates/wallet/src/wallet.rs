@@ -70,6 +70,9 @@ pub struct SimulateOptions {
     /// Skip validation checks during simulation.
     #[serde(default)]
     pub skip_validation: bool,
+    /// Whether to skip fee enforcement during simulation.
+    #[serde(default = "default_skip_fee_enforcement")]
+    pub skip_fee_enforcement: bool,
     /// Additional authorization witnesses.
     #[serde(default)]
     pub auth_witnesses: Vec<AuthWitness>,
@@ -119,6 +122,9 @@ pub struct ProfileOptions {
     pub additional_scopes: Vec<AztecAddress>,
     /// Profiling mode (e.g. `"full"`, `"execution"`).
     pub profile_mode: Option<String>,
+    /// Whether proof generation should be skipped while profiling.
+    #[serde(default = "default_skip_proof_generation")]
+    pub skip_proof_generation: bool,
     /// Gas settings for profiling.
     pub gas_settings: Option<GasSettings>,
 }
@@ -158,7 +164,10 @@ pub struct TxProfileResult {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UtilityExecutionResult {
     /// Return values from the utility function call.
-    pub return_values: serde_json::Value,
+    pub result: serde_json::Value,
+    /// Optional simulation stats payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats: Option<serde_json::Value>,
 }
 
 /// Result of sending a transaction.
@@ -229,6 +238,7 @@ impl Default for SimulateOptions {
         Self {
             from: AztecAddress(Fr::zero()),
             skip_validation: false,
+            skip_fee_enforcement: default_skip_fee_enforcement(),
             auth_witnesses: vec![],
             capsules: vec![],
             additional_scopes: vec![],
@@ -257,6 +267,7 @@ impl Default for ProfileOptions {
             capsules: vec![],
             additional_scopes: vec![],
             profile_mode: None,
+            skip_proof_generation: default_skip_proof_generation(),
             gas_settings: None,
         }
     }
@@ -269,6 +280,14 @@ impl Default for ExecuteUtilityOptions {
             auth_witnesses: vec![],
         }
     }
+}
+
+const fn default_skip_fee_enforcement() -> bool {
+    true
+}
+
+const fn default_skip_proof_generation() -> bool {
+    true
 }
 
 /// Either a raw message hash or a structured authorization intent.
@@ -548,7 +567,8 @@ impl Wallet for MockWallet {
         _opts: ExecuteUtilityOptions,
     ) -> Result<UtilityExecutionResult, Error> {
         Ok(UtilityExecutionResult {
-            return_values: serde_json::Value::Null,
+            result: serde_json::Value::Null,
+            stats: None,
         })
     }
 
@@ -666,6 +686,7 @@ mod tests {
         let opts = SimulateOptions::default();
         assert_eq!(opts.from, AztecAddress(Fr::zero()));
         assert!(!opts.skip_validation);
+        assert!(opts.skip_fee_enforcement);
         assert!(opts.gas_settings.is_none());
         assert!(opts.auth_witnesses.is_empty());
         assert!(opts.capsules.is_empty());
@@ -687,6 +708,7 @@ mod tests {
         let opts = ProfileOptions::default();
         assert_eq!(opts.from, AztecAddress(Fr::zero()));
         assert!(opts.profile_mode.is_none());
+        assert!(opts.skip_proof_generation);
         assert!(opts.gas_settings.is_none());
     }
 
@@ -991,7 +1013,8 @@ mod tests {
             .execute_utility(call, ExecuteUtilityOptions::default())
             .await
             .expect("execute utility");
-        assert_eq!(result.return_values, serde_json::Value::Null);
+        assert_eq!(result.result, serde_json::Value::Null);
+        assert!(result.stats.is_none());
     }
 
     // -- MockWallet: profile --

@@ -26,6 +26,7 @@ pub mod abi {
 /// Account abstraction: traits, account manager, and deployment.
 pub mod account {
     pub use aztec_account::account::*;
+    pub use aztec_account::SingleAccountProvider;
 }
 /// Authorization witness types and helpers.
 pub use aztec_account::authorization;
@@ -67,8 +68,10 @@ pub mod tx {
 pub mod types {
     pub use aztec_core::types::*;
 }
-/// Wallet trait and mock implementation.
+/// Wallet trait, `BaseWallet`, and account provider abstractions.
 pub mod wallet {
+    pub use aztec_wallet::account_provider::*;
+    pub use aztec_wallet::base_wallet::*;
     pub use aztec_wallet::wallet::*;
 }
 

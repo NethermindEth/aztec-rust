@@ -229,7 +229,7 @@ impl Default for ProfileTxOpts {
 }
 
 /// Options for executing a utility function via the PXE.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecuteUtilityOpts {
     /// Authentication witnesses required for the call.

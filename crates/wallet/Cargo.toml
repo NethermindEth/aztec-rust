@@ -8,9 +8,11 @@ license = "Apache-2.0"
 [dependencies]
 aztec-core = { path = "../core", version = "0.2.0" }
 aztec-node-client = { path = "../node-client", version = "0.2.0" }
+aztec-pxe-client = { path = "../pxe-client", version = "0.2.0" }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tracing = "0.1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

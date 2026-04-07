@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `BaseWallet<P, N, A>` — production `Wallet` implementation backed by PXE + Aztec node connections (`aztec-wallet`)
+- `AccountProvider` trait decoupling wallet implementations from specific account types (`aztec-wallet`)
+- `SingleAccountProvider` for the common single-account wallet pattern (`aztec-account`)
+- `create_wallet()` convenience factory function
+- `send_tx`, `get_contract`, `get_contract_class` methods on `AztecNode` trait and `HttpNodeClient` (`aztec-node-client`)
+- Private event decoding from PXE `PackedPrivateEvent` to wallet-level `PrivateEvent` objects
+- PXE module re-exported from `aztec-wallet` crate
+- 19 new unit tests for `BaseWallet` covering all `Wallet` trait methods with mock PXE/node/account backends
+- `BaseWallet`, `AccountProvider`, `SingleAccountProvider`, and `create_wallet` re-exported from the `aztec-rs` umbrella crate
+- PXE integration tests (`tests/pxe_integration.rs`) — 9 tests covering connectivity, account/sender lifecycle, contract queries, and wire-format roundtrips against a live PXE
+- `BaseWallet` integration tests (`tests/wallet_integration.rs`) — 7 tests covering chain info, address book, contract metadata, and contract registration against a live PXE + node
+
 ### Fixed
 
 - Aligned `aztec-pxe-client` request option payloads with upstream PXE semantics by adding `simulatePublic`, `overrides`, `profileMode`, `skipProofGeneration`, and `authwits` to the Rust wire types

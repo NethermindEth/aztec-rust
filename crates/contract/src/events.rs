@@ -243,6 +243,21 @@ mod tests {
             *self.captured_filter.lock().unwrap() = Some(filter);
             Ok(self.logs_response.lock().unwrap().clone())
         }
+
+        async fn send_tx(&self, _tx: &serde_json::Value) -> Result<TxHash, Error> {
+            unimplemented!("not needed for event tests")
+        }
+
+        async fn get_contract(
+            &self,
+            _address: &AztecAddress,
+        ) -> Result<Option<aztec_core::types::ContractInstanceWithAddress>, Error> {
+            unimplemented!("not needed for event tests")
+        }
+
+        async fn get_contract_class(&self, _id: &Fr) -> Result<Option<serde_json::Value>, Error> {
+            unimplemented!("not needed for event tests")
+        }
     }
 
     fn sample_event_metadata() -> EventMetadataDefinition {
