@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-04-08
+
 ### Added
 
 - Poseidon2 hash module with `poseidon2_hash_with_separator`, `poseidon2_hash_bytes`, `compute_var_args_hash` matching barretenberg/TS SDK output (`aztec-core`)
@@ -131,7 +133,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Implementation plan and spec documents
 
-[Unreleased]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/NethermindEth/aztec-rust/compare/v0.1.1...v0.2.0

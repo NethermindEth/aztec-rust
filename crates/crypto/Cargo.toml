@@ -1,9 +1,9 @@
 [package]
 name = "aztec-crypto"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 description = "Cryptographic primitives and key derivation for the Aztec Rust SDK"
 license = "Apache-2.0"
 
 [dependencies]
-aztec-core = { path = "../core", version = "0.2.2" }
+aztec-core = { path = "../core", version = "0.2.3" }

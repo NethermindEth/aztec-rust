@@ -14,22 +14,22 @@ members = [
 
 [package]
 name = "aztec-rs"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 description = "Rust SDK for the Aztec Network"
 license = "Apache-2.0"
 
 [dependencies]
-aztec-core = { path = "crates/core", version = "0.2.2" }
-aztec-rpc = { path = "crates/rpc", version = "0.2.2" }
-aztec-crypto = { path = "crates/crypto", version = "0.2.2" }
-aztec-node-client = { path = "crates/node-client", version = "0.2.2" }
-aztec-pxe-client = { path = "crates/pxe-client", version = "0.2.2" }
-aztec-wallet = { path = "crates/wallet", version = "0.2.2" }
-aztec-contract = { path = "crates/contract", version = "0.2.2" }
-aztec-account = { path = "crates/account", version = "0.2.2" }
-aztec-fee = { path = "crates/fee", version = "0.2.2" }
-aztec-ethereum = { path = "crates/ethereum", version = "0.2.2" }
+aztec-core = { path = "crates/core", version = "0.2.3" }
+aztec-rpc = { path = "crates/rpc", version = "0.2.3" }
+aztec-crypto = { path = "crates/crypto", version = "0.2.3" }
+aztec-node-client = { path = "crates/node-client", version = "0.2.3" }
+aztec-pxe-client = { path = "crates/pxe-client", version = "0.2.3" }
+aztec-wallet = { path = "crates/wallet", version = "0.2.3" }
+aztec-contract = { path = "crates/contract", version = "0.2.3" }
+aztec-account = { path = "crates/account", version = "0.2.3" }
+aztec-fee = { path = "crates/fee", version = "0.2.3" }
+aztec-ethereum = { path = "crates/ethereum", version = "0.2.3" }
 
 # Re-export key external dependencies so consumers don't need to add them separately
 async-trait = "0.1"
