@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Full key derivation pipeline in `aztec-crypto`: `derive_keys`, `derive_master_nullifier_hiding_key`, `derive_master_incoming_viewing_secret_key`, `derive_master_outgoing_viewing_secret_key`, `derive_master_tagging_secret_key`, `derive_signing_key`, `derive_public_key_from_secret_key` (`aztec-crypto`)
+- `sha512_to_grumpkin_scalar` — SHA-512 hash reduced to a Grumpkin scalar for master key derivation (`aztec-crypto`)
+- `DerivedKeys` struct containing all four master secret keys and their corresponding `PublicKeys` (`aztec-crypto`)
+- App-scoped key derivation: `KeyType` enum, `compute_app_secret_key`, `compute_app_nullifier_hiding_key`, `compute_ovsk_app` (`aztec-crypto`)
+- `complete_address_from_secret_key_and_partial_address` for deriving a `CompleteAddress` from a secret key and partial address (`aztec-crypto`)
+- `compute_address` — extracted address derivation from public keys and partial address as a standalone function (`aztec-core`)
+- `compute_secret_hash` — Poseidon2 hash with `SECRET_HASH` domain separator for L1-L2 messages (`aztec-core`)
+- Domain separators for key derivation: `NHK_M`, `IVSK_M`, `OVSK_M`, `TSK_M`, `SECRET_HASH` (`aztec-core`)
+- `Fq` type expanded with `zero()`, `one()`, `to_be_bytes()`, `from_be_bytes_mod_order()`, `is_zero()`, `random()`, `hi()`, `lo()`, `From<u64>`, `From<[u8; 32]>`, `Mul` (`aztec-core`)
+- `aztec-rs::crypto` module re-exporting the full `aztec-crypto` public API from the umbrella crate
+- `sha2` dependency added to `aztec-crypto`
+- 15+ new unit tests cross-validated against TypeScript SDK test vectors (secret_key = 8923)
+
+### Changed
+
+- `GrumpkinScalar` type alias changed from `Fr` to `Fq` for type correctness — Grumpkin scalars live in the BN254 base field (`aztec-core`)
+- `grumpkin::scalar_mul` now accepts `&Fq` instead of `&Fr` as the scalar argument (`aztec-core`)
+- `compute_contract_address_from_instance` refactored to delegate to the new `compute_address` function (`aztec-core`)
+- `AccountManager::complete_address()` now performs real key derivation and address computation instead of returning an error (`aztec-account`)
+- `aztec-account` now depends on `aztec-crypto` for key derivation
+
 ## [0.2.5] - 2026-04-08
 
 ### Added
