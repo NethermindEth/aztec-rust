@@ -56,6 +56,10 @@ pub mod events {
 pub mod constants {
     pub use aztec_core::constants::*;
 }
+/// Cryptographic primitives and key derivation.
+pub mod crypto {
+    pub use aztec_crypto::*;
+}
 /// Poseidon2 hash functions and authwit hash computation.
 pub mod hash {
     pub use aztec_core::hash::*;
