@@ -74,11 +74,62 @@ impl Fr {
     pub fn random() -> Self {
         Self(ArkFr::rand(&mut rand::thread_rng()))
     }
+
+    /// Serialize to 32-byte big-endian representation.
+    pub fn to_be_bytes(&self) -> [u8; 32] {
+        let raw = self.0.into_bigint().to_bytes_be();
+        let mut out = [0u8; 32];
+        out[32 - raw.len()..].copy_from_slice(&raw);
+        out
+    }
+
+    /// Extract as a `usize`. Only valid for small field elements.
+    ///
+    /// Panics on overflow if the field element exceeds `usize::MAX`.
+    pub fn to_usize(&self) -> usize {
+        let raw = self.0.into_bigint().to_bytes_be();
+        raw.into_iter()
+            .fold(0usize, |acc, byte| (acc << 8) | usize::from(byte))
+    }
+
+    /// Returns `true` if this field element is zero.
+    pub fn is_zero(&self) -> bool {
+        *self == Self::zero()
+    }
 }
 
 impl From<u64> for Fr {
     fn from(value: u64) -> Self {
         Self(ArkFr::from(value))
+    }
+}
+
+impl From<i64> for Fr {
+    fn from(value: i64) -> Self {
+        if value >= 0 {
+            Self(ArkFr::from(value as u64))
+        } else {
+            Self(-ArkFr::from(value.unsigned_abs()))
+        }
+    }
+}
+
+impl From<u128> for Fr {
+    fn from(value: u128) -> Self {
+        let bytes = value.to_be_bytes();
+        let mut padded = [0u8; 32];
+        padded[16..].copy_from_slice(&bytes);
+        Self(ArkFr::from_be_bytes_mod_order(&padded))
+    }
+}
+
+impl From<bool> for Fr {
+    fn from(value: bool) -> Self {
+        if value {
+            Self::one()
+        } else {
+            Self::zero()
+        }
     }
 }
 
@@ -183,6 +234,32 @@ pub struct AztecAddress(pub Fr);
 impl From<Fr> for AztecAddress {
     fn from(value: Fr) -> Self {
         Self(value)
+    }
+}
+
+impl From<u64> for AztecAddress {
+    fn from(value: u64) -> Self {
+        Self(Fr::from(value))
+    }
+}
+
+impl From<AztecAddress> for Fr {
+    fn from(value: AztecAddress) -> Self {
+        value.0
+    }
+}
+
+impl From<EthAddress> for Fr {
+    fn from(value: EthAddress) -> Self {
+        let mut padded = [0u8; 32];
+        padded[12..].copy_from_slice(&value.0);
+        Self(ArkFr::from_be_bytes_mod_order(&padded))
+    }
+}
+
+impl From<crate::abi::FunctionSelector> for Fr {
+    fn from(value: crate::abi::FunctionSelector) -> Self {
+        value.to_field()
     }
 }
 
@@ -386,6 +463,16 @@ impl std::ops::Deref for ContractInstanceWithAddress {
     }
 }
 
+/// Any value that can be converted into a field element.
+/// This is the Rust equivalent of the TS `FieldLike` type.
+pub type FieldLike = Fr;
+
+/// Any value that can be converted into an Aztec L2 address.
+pub type AztecAddressLike = AztecAddress;
+
+/// Any value that can be converted into an Ethereum L1 address.
+pub type EthAddressLike = EthAddress;
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
@@ -545,5 +632,93 @@ mod tests {
         };
         assert_eq!(decoded, wrapped);
         assert_eq!(decoded.version, 1);
+    }
+
+    // -- Substep 6.0: Fr helper methods --
+
+    #[test]
+    fn fr_to_be_bytes_zero() {
+        assert_eq!(Fr::zero().to_be_bytes(), [0u8; 32]);
+    }
+
+    #[test]
+    fn fr_to_be_bytes_one() {
+        let bytes = Fr::from(1u64).to_be_bytes();
+        assert_eq!(bytes[31], 0x01);
+        assert_eq!(bytes[..31], [0u8; 31]);
+    }
+
+    #[test]
+    fn fr_to_usize_roundtrip() {
+        assert_eq!(Fr::from(42u64).to_usize(), 42);
+        assert_eq!(Fr::from(0u64).to_usize(), 0);
+        assert_eq!(Fr::from(255u64).to_usize(), 255);
+    }
+
+    #[test]
+    fn fr_is_zero() {
+        assert!(Fr::zero().is_zero());
+        assert!(!Fr::one().is_zero());
+        assert!(!Fr::from(42u64).is_zero());
+    }
+
+    // -- Substep 6.6: From impls --
+
+    #[test]
+    fn fr_from_bool() {
+        assert_eq!(Fr::from(true), Fr::one());
+        assert_eq!(Fr::from(false), Fr::zero());
+    }
+
+    #[test]
+    fn fr_from_i64_positive() {
+        assert_eq!(Fr::from(42i64), Fr::from(42u64));
+        assert_eq!(Fr::from(0i64), Fr::zero());
+    }
+
+    #[test]
+    fn fr_from_i64_negative() {
+        // -1 in the field should satisfy: Fr::from(-1i64) + Fr::one() == Fr::zero()
+        let neg_one = Fr::from(-1i64);
+        let sum = Fr(neg_one.0 + Fr::one().0);
+        assert_eq!(sum, Fr::zero());
+    }
+
+    #[test]
+    fn fr_from_u128() {
+        let big: u128 = (1u128 << 64) + 42;
+        let fr = Fr::from(big);
+        // Should not be zero (it's a big number)
+        assert!(!fr.is_zero());
+        // Small u128 should match u64
+        assert_eq!(Fr::from(100u128), Fr::from(100u64));
+    }
+
+    #[test]
+    fn fr_from_aztec_address() {
+        let addr = AztecAddress(Fr::from(7u64));
+        assert_eq!(Fr::from(addr), Fr::from(7u64));
+    }
+
+    #[test]
+    fn fr_from_eth_address() {
+        let eth = EthAddress([0x11; 20]);
+        let fr = Fr::from(eth);
+        // Should produce a field with the 20 bytes right-aligned in 32 bytes
+        let bytes = fr.to_be_bytes();
+        assert_eq!(&bytes[12..], &[0x11; 20]);
+        assert_eq!(&bytes[..12], &[0u8; 12]);
+    }
+
+    #[test]
+    fn fr_from_function_selector() {
+        let selector = crate::abi::FunctionSelector::from_hex("0xaabbccdd").expect("valid hex");
+        assert_eq!(Fr::from(selector), selector.to_field());
+    }
+
+    #[test]
+    fn aztec_address_from_u64() {
+        let addr = AztecAddress::from(42u64);
+        assert_eq!(addr.0, Fr::from(42u64));
     }
 }
