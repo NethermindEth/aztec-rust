@@ -530,6 +530,7 @@ mod tests {
             calls: vec![make_call(1, "0xaabbccdd")],
             auth_witnesses: vec![AuthWitness {
                 fields: vec![Fr::from(10u64)],
+                ..Default::default()
             }],
             capsules: vec![Capsule { data: vec![0x01] }],
             extra_hashed_args: vec![HashedValues {
@@ -541,6 +542,7 @@ mod tests {
             calls: vec![make_call(2, "0x11223344")],
             auth_witnesses: vec![AuthWitness {
                 fields: vec![Fr::from(30u64)],
+                ..Default::default()
             }],
             capsules: vec![],
             extra_hashed_args: vec![],

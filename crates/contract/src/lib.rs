@@ -28,10 +28,12 @@ pub mod wallet {
     pub use aztec_wallet::*;
 }
 
+pub mod authwit;
 pub mod contract;
 pub mod deployment;
 pub mod events;
 
+pub use authwit::{lookup_validity, AuthWitValidity, SetPublicAuthWitInteraction};
 pub use contract::*;
 pub use deployment::*;
 pub use error::Error;
