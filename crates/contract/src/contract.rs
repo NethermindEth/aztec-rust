@@ -64,6 +64,7 @@ impl<W: Wallet> Contract<W> {
         Ok(ContractFunctionInteraction {
             wallet: &self.wallet,
             call,
+            capsules: vec![],
         })
     }
 }
@@ -80,6 +81,7 @@ impl<W: Wallet> Contract<W> {
 pub struct ContractFunctionInteraction<'a, W> {
     wallet: &'a W,
     call: FunctionCall,
+    capsules: Vec<crate::tx::Capsule>,
 }
 
 impl<W> std::fmt::Debug for ContractFunctionInteraction<'_, W> {
@@ -90,11 +92,34 @@ impl<W> std::fmt::Debug for ContractFunctionInteraction<'_, W> {
     }
 }
 
-impl<W: Wallet> ContractFunctionInteraction<'_, W> {
+impl<'a, W: Wallet> ContractFunctionInteraction<'a, W> {
+    /// Create a new interaction for a single function call.
+    pub fn new(wallet: &'a W, call: FunctionCall) -> Self {
+        Self {
+            wallet,
+            call,
+            capsules: vec![],
+        }
+    }
+
+    /// Create a new interaction with capsules attached.
+    pub fn new_with_capsules(
+        wallet: &'a W,
+        call: FunctionCall,
+        capsules: Vec<crate::tx::Capsule>,
+    ) -> Self {
+        Self {
+            wallet,
+            call,
+            capsules,
+        }
+    }
+
     /// Build an [`ExecutionPayload`] containing this single call.
     pub fn request(&self) -> Result<ExecutionPayload, Error> {
         Ok(ExecutionPayload {
             calls: vec![self.call.clone()],
+            capsules: self.capsules.clone(),
             ..ExecutionPayload::default()
         })
     }
@@ -532,7 +557,11 @@ mod tests {
                 fields: vec![Fr::from(10u64)],
                 ..Default::default()
             }],
-            capsules: vec![Capsule { data: vec![0x01] }],
+            capsules: vec![Capsule {
+                contract_address: AztecAddress(Fr::from(10u64)),
+                storage_slot: Fr::from(1u64),
+                data: vec![Fr::from(1u64)],
+            }],
             extra_hashed_args: vec![HashedValues {
                 values: vec![Fr::from(20u64)],
             }],

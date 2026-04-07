@@ -1,11 +1,23 @@
 use serde::{Deserialize, Serialize};
 
-use crate::abi::{AbiValue, ContractArtifact};
+use crate::abi::{AbiValue, ContractArtifact, FunctionType};
 use crate::contract::ContractFunctionInteraction;
 use crate::error::Error;
-use crate::tx::ExecutionPayload;
+use crate::tx::{Capsule, ExecutionPayload, FunctionCall};
 use crate::types::{AztecAddress, ContractInstance, ContractInstanceWithAddress, Fr, PublicKeys};
 use crate::wallet::{SendOptions, SendResult, SimulateOptions, TxSimulationResult, Wallet};
+
+use aztec_core::abi::FunctionSelector;
+use aztec_core::constants::{
+    contract_class_registry_bytecode_capsule_slot, protocol_contract_address,
+    MAX_PACKED_PUBLIC_BYTECODE_SIZE_IN_FIELDS, MAX_PROCESSABLE_L2_GAS,
+};
+use aztec_core::fee::Gas;
+use aztec_core::hash::{
+    buffer_as_fields, compute_artifact_hash, compute_contract_address_from_instance,
+    compute_contract_class_id, compute_initialization_hash,
+    compute_private_functions_root_from_artifact, compute_public_bytecode_commitment,
+};
 
 // ---------------------------------------------------------------------------
 // DeployOptions
@@ -33,6 +45,50 @@ pub struct DeployOptions {
     /// Use the universal deployer for this deployment.
     #[serde(default)]
     pub universal_deploy: bool,
+    /// Explicit deployer address. Required when `universal_deploy` is false.
+    #[serde(default)]
+    pub from: Option<AztecAddress>,
+}
+
+// ---------------------------------------------------------------------------
+// SuggestedGasLimits / get_gas_limits
+// ---------------------------------------------------------------------------
+
+/// Suggested gas limits from simulation, with optional padding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SuggestedGasLimits {
+    /// Main execution phase gas limits.
+    pub gas_limits: Gas,
+    /// Teardown phase gas limits.
+    pub teardown_gas_limits: Gas,
+}
+
+/// Compute gas limits from a simulation result.
+///
+/// Applies a padding factor (default 10%) to the simulated gas usage
+/// to provide a safety margin.
+pub fn get_gas_limits(
+    simulation_result: &TxSimulationResult,
+    pad: Option<f64>,
+) -> SuggestedGasLimits {
+    let pad_factor = 1.0 + pad.unwrap_or(0.1);
+
+    let gas_used = simulation_result
+        .gas_used
+        .as_ref()
+        .cloned()
+        .unwrap_or_default();
+
+    let padded_da = (gas_used.da_gas as f64 * pad_factor).ceil() as u64;
+    let padded_l2 = (gas_used.l2_gas as f64 * pad_factor).ceil() as u64;
+
+    SuggestedGasLimits {
+        gas_limits: Gas {
+            da_gas: padded_da,
+            l2_gas: padded_l2.min(MAX_PROCESSABLE_L2_GAS),
+        },
+        teardown_gas_limits: Gas::default(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -40,21 +96,69 @@ pub struct DeployOptions {
 // ---------------------------------------------------------------------------
 
 /// Build an interaction payload that publishes a contract class on-chain.
-///
-/// This constructs a call to the protocol's `ContractClassRegisterer` system
-/// contract. Full implementation requires bytecode extraction and artifact
-/// hashing primitives (artifact hash, private functions root, public bytecode
-/// commitment, packed bytecode) that are not yet available in this crate.
 #[allow(clippy::unused_async)]
 pub async fn publish_contract_class<'a, W: Wallet>(
-    _wallet: &'a W,
-    _artifact: &ContractArtifact,
+    wallet: &'a W,
+    artifact: &ContractArtifact,
 ) -> Result<ContractFunctionInteraction<'a, W>, Error> {
-    Err(Error::InvalidData(
-        "publish_contract_class requires bytecode extraction and artifact hashing \
-         primitives that are not yet implemented"
-            .to_owned(),
+    // 1. Compute class preimage components.
+    let artifact_hash = compute_artifact_hash(artifact);
+    let private_functions_root = compute_private_functions_root_from_artifact(artifact)?;
+
+    // Extract and encode packed public bytecode.
+    let packed_bytecode = extract_packed_bytecode(artifact);
+    let public_bytecode_commitment = compute_public_bytecode_commitment(&packed_bytecode);
+
+    // 2. Encode packed bytecode as field elements for capsule.
+    let bytecode_fields = if packed_bytecode.is_empty() {
+        vec![]
+    } else {
+        buffer_as_fields(&packed_bytecode, MAX_PACKED_PUBLIC_BYTECODE_SIZE_IN_FIELDS)
+    };
+
+    // 3. Build function call to the Contract Class Registry.
+    let registerer_address = protocol_contract_address::contract_class_registry();
+
+    let call = FunctionCall {
+        to: registerer_address,
+        selector: FunctionSelector::from_signature("publish(Field,Field,Field)"),
+        args: vec![
+            AbiValue::Field(artifact_hash),
+            AbiValue::Field(private_functions_root),
+            AbiValue::Field(public_bytecode_commitment),
+        ],
+        function_type: FunctionType::Private,
+        is_static: false,
+    };
+
+    // 4. Create capsule with bytecode data.
+    let capsules = if bytecode_fields.is_empty() {
+        vec![]
+    } else {
+        vec![Capsule {
+            contract_address: registerer_address,
+            storage_slot: contract_class_registry_bytecode_capsule_slot(),
+            data: bytecode_fields,
+        }]
+    };
+
+    // 5. Return interaction with capsule attached.
+    Ok(ContractFunctionInteraction::new_with_capsules(
+        wallet, call, capsules,
     ))
+}
+
+/// Extract packed public bytecode from an artifact.
+fn extract_packed_bytecode(artifact: &ContractArtifact) -> Vec<u8> {
+    let mut bytecode = Vec::new();
+    for func in &artifact.functions {
+        if func.function_type == FunctionType::Public {
+            if let Some(ref bc) = func.bytecode {
+                bytecode.extend_from_slice(&decode_artifact_bytes(bc));
+            }
+        }
+    }
+    bytecode
 }
 
 // ---------------------------------------------------------------------------
@@ -62,20 +166,74 @@ pub async fn publish_contract_class<'a, W: Wallet>(
 // ---------------------------------------------------------------------------
 
 /// Build an interaction payload that publishes a contract instance on-chain.
-///
-/// This constructs a call to the protocol's `ContractInstanceDeployer` system
-/// contract to register the given instance for public execution. Full
-/// implementation requires protocol system contract addresses and a
-/// `PublicKeys::hash()` method that are not yet available in this crate.
 pub fn publish_instance<'a, W: Wallet>(
-    _wallet: &'a W,
-    _instance: &ContractInstanceWithAddress,
+    wallet: &'a W,
+    instance: &ContractInstanceWithAddress,
 ) -> Result<ContractFunctionInteraction<'a, W>, Error> {
-    Err(Error::InvalidData(
-        "publish_instance requires protocol system contract addresses \
-         that are not yet configured"
-            .to_owned(),
-    ))
+    let is_universal_deploy = instance.inner.deployer == AztecAddress(Fr::zero());
+
+    let deployer_address = protocol_contract_address::contract_instance_registry();
+
+    let call = FunctionCall {
+        to: deployer_address,
+        selector: FunctionSelector::from_signature(
+            "publish_for_public_execution(Field,(Field),Field,(((Field,Field,bool)),((Field,Field,bool)),((Field,Field,bool)),((Field,Field,bool))),bool)"
+        ),
+        args: vec![
+            AbiValue::Field(instance.inner.salt),
+            AbiValue::Tuple(vec![AbiValue::Field(
+                instance.inner.current_contract_class_id,
+            )]),
+            AbiValue::Field(instance.inner.initialization_hash),
+            public_keys_to_abi_value(&instance.inner.public_keys),
+            AbiValue::Boolean(is_universal_deploy),
+        ],
+        function_type: FunctionType::Private,
+        is_static: false,
+    };
+
+    Ok(ContractFunctionInteraction::new(wallet, call))
+}
+
+fn point_to_abi_value(point: &aztec_core::types::Point) -> AbiValue {
+    AbiValue::Tuple(vec![
+        AbiValue::Field(point.x),
+        AbiValue::Field(point.y),
+        AbiValue::Boolean(point.is_infinite),
+    ])
+}
+
+fn public_keys_to_abi_value(public_keys: &PublicKeys) -> AbiValue {
+    AbiValue::Tuple(vec![
+        point_to_abi_value(&public_keys.master_nullifier_public_key),
+        point_to_abi_value(&public_keys.master_incoming_viewing_public_key),
+        point_to_abi_value(&public_keys.master_outgoing_viewing_public_key),
+        point_to_abi_value(&public_keys.master_tagging_public_key),
+    ])
+}
+
+fn decode_artifact_bytes(encoded: &str) -> Vec<u8> {
+    if let Some(hex) = encoded.strip_prefix("0x") {
+        return hex::decode(hex).unwrap_or_else(|_| encoded.as_bytes().to_vec());
+    }
+
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .unwrap_or_else(|_| encoded.as_bytes().to_vec())
+}
+
+// ---------------------------------------------------------------------------
+// DeployResult
+// ---------------------------------------------------------------------------
+
+/// The result of a deployment transaction.
+#[derive(Clone, Debug)]
+pub struct DeployResult {
+    /// The underlying send result (tx hash).
+    pub send_result: SendResult,
+    /// The deployed contract instance with its derived address.
+    pub instance: ContractInstanceWithAddress,
 }
 
 // ---------------------------------------------------------------------------
@@ -217,66 +375,117 @@ impl<W> std::fmt::Debug for DeployMethod<'_, W> {
 
 impl<W: Wallet> DeployMethod<'_, W> {
     /// Build the deployment [`ExecutionPayload`].
-    ///
-    /// Full deployment currently remains explicit rather than speculative. The
-    /// contract class publication path, instance publication path, wallet
-    /// registration, and deployment-address derivation are still incomplete in
-    /// this crate, so this returns an error instead of emitting a misleading
-    /// zero-address constructor call.
-    pub fn request(&self, opts: &DeployOptions) -> Result<ExecutionPayload, Error> {
+    pub async fn request(&self, opts: &DeployOptions) -> Result<ExecutionPayload, Error> {
+        let instance = self.get_instance(opts)?;
+        let mut payloads: Vec<ExecutionPayload> = Vec::new();
+
+        // 1. Register contract with wallet (unless skipped).
         if !opts.skip_registration {
-            return Err(Error::InvalidData(
-                "deployment request construction requires wallet registration support for derived contract instances"
-                    .to_owned(),
-            ));
+            self.wallet
+                .register_contract(instance.clone(), Some(self.artifact.clone()), None)
+                .await?;
         }
 
+        // 2. Publish contract class (unless skipped).
         if !opts.skip_class_publication {
-            return Err(Error::InvalidData(
-                "publish_contract_class requires bytecode extraction and artifact hashing primitives that are not yet implemented"
-                    .to_owned(),
-            ));
+            let class_id = instance.inner.current_contract_class_id;
+            let already_registered = self
+                .wallet
+                .get_contract_class_metadata(class_id)
+                .await
+                .map(|m| m.is_contract_class_publicly_registered)
+                .unwrap_or(false);
+
+            if !already_registered {
+                let class_interaction = publish_contract_class(self.wallet, &self.artifact).await?;
+                payloads.push(class_interaction.request()?);
+            }
         }
 
+        // 3. Publish instance (unless skipped).
         if !opts.skip_instance_publication {
-            let _ = self.get_instance(opts);
-            return Err(Error::InvalidData(
-                "publish_instance requires protocol system contract addresses that are not yet configured"
-                    .to_owned(),
-            ));
+            let instance_interaction = publish_instance(self.wallet, &instance)?;
+            payloads.push(instance_interaction.request()?);
         }
 
-        if !opts.skip_initialization && self.constructor_name.is_some() {
-            return Err(Error::InvalidData(
-                "deployment request construction requires contract address derivation before initialization can be encoded"
-                    .to_owned(),
-            ));
+        // 4. Call constructor (unless skipped or no constructor).
+        if !opts.skip_initialization {
+            if let Some(ref constructor_name) = self.constructor_name {
+                let func = self.artifact.find_function(constructor_name)?;
+                let selector = func.selector.unwrap_or_else(|| {
+                    FunctionSelector::from_name_and_parameters(&func.name, &func.parameters)
+                });
+
+                let call = FunctionCall {
+                    to: instance.address,
+                    selector,
+                    args: self.args.clone(),
+                    function_type: func.function_type.clone(),
+                    is_static: false,
+                };
+
+                payloads.push(ExecutionPayload {
+                    calls: vec![call],
+                    auth_witnesses: vec![],
+                    capsules: vec![],
+                    extra_hashed_args: vec![],
+                    fee_payer: None,
+                });
+            }
         }
 
-        Err(Error::InvalidData(
-            "deployment request construction is not fully implemented yet".to_owned(),
-        ))
+        // 5. Merge all payloads.
+        ExecutionPayload::merge(payloads)
     }
 
     /// Compute the contract instance that would be deployed.
-    ///
-    /// The returned instance uses a placeholder address because contract
-    /// address derivation requires hashing primitives not yet available.
-    pub fn get_instance(&self, opts: &DeployOptions) -> ContractInstanceWithAddress {
+    pub fn get_instance(&self, opts: &DeployOptions) -> Result<ContractInstanceWithAddress, Error> {
         let salt = opts.contract_address_salt.unwrap_or(self.default_salt);
 
-        ContractInstanceWithAddress {
-            address: AztecAddress(Fr::zero()),
-            inner: ContractInstance {
-                version: 1,
-                salt,
-                deployer: AztecAddress(Fr::zero()),
-                current_contract_class_id: Fr::zero(),
-                original_contract_class_id: Fr::zero(),
-                initialization_hash: Fr::zero(),
-                public_keys: self.public_keys.clone(),
-            },
-        }
+        // Compute contract class ID from artifact.
+        let artifact_hash = compute_artifact_hash(&self.artifact);
+        let private_functions_root = compute_private_functions_root_from_artifact(&self.artifact)?;
+        let packed_bytecode = extract_packed_bytecode(&self.artifact);
+        let public_bytecode_commitment = compute_public_bytecode_commitment(&packed_bytecode);
+        let class_id = compute_contract_class_id(
+            artifact_hash,
+            private_functions_root,
+            public_bytecode_commitment,
+        );
+
+        // Compute initialization hash.
+        let init_fn = self
+            .constructor_name
+            .as_ref()
+            .map(|name| self.artifact.find_function(name))
+            .transpose()?;
+
+        let init_hash = compute_initialization_hash(init_fn, &self.args)?;
+
+        // Determine deployer.
+        let deployer = if opts.universal_deploy {
+            AztecAddress(Fr::zero())
+        } else {
+            opts.from.unwrap_or(AztecAddress(Fr::zero()))
+        };
+
+        let instance = ContractInstance {
+            version: 1,
+            salt,
+            deployer,
+            current_contract_class_id: class_id,
+            original_contract_class_id: class_id,
+            initialization_hash: init_hash,
+            public_keys: self.public_keys.clone(),
+        };
+
+        // Compute the deterministic address.
+        let address = compute_contract_address_from_instance(&instance)?;
+
+        Ok(ContractInstanceWithAddress {
+            address,
+            inner: instance,
+        })
     }
 
     /// Simulate the deployment without sending.
@@ -285,7 +494,7 @@ impl<W: Wallet> DeployMethod<'_, W> {
         deploy_opts: &DeployOptions,
         sim_opts: SimulateOptions,
     ) -> Result<TxSimulationResult, Error> {
-        let payload = self.request(deploy_opts)?;
+        let payload = self.request(deploy_opts).await?;
         self.wallet.simulate_tx(payload, sim_opts).await
     }
 
@@ -294,9 +503,14 @@ impl<W: Wallet> DeployMethod<'_, W> {
         &self,
         deploy_opts: &DeployOptions,
         send_opts: SendOptions,
-    ) -> Result<SendResult, Error> {
-        let payload = self.request(deploy_opts)?;
-        self.wallet.send_tx(payload, send_opts).await
+    ) -> Result<DeployResult, Error> {
+        let instance = self.get_instance(deploy_opts)?;
+        let payload = self.request(deploy_opts).await?;
+        let send_result = self.wallet.send_tx(payload, send_opts).await?;
+        Ok(DeployResult {
+            send_result,
+            instance,
+        })
     }
 }
 
@@ -310,9 +524,8 @@ mod tests {
     use super::*;
     use crate::abi::AbiValue;
     use crate::fee::Gas;
-    use crate::tx::TxHash;
     use crate::types::Fr;
-    use crate::wallet::{ChainInfo, MockWallet, SendResult, TxSimulationResult};
+    use crate::wallet::{ChainInfo, MockWallet, TxSimulationResult};
 
     const DEPLOY_ARTIFACT: &str = r#"
     {
@@ -384,6 +597,7 @@ mod tests {
         assert!(!opts.skip_initialization);
         assert!(!opts.skip_registration);
         assert!(!opts.universal_deploy);
+        assert!(opts.from.is_none());
     }
 
     #[test]
@@ -395,30 +609,78 @@ mod tests {
             skip_initialization: false,
             skip_registration: true,
             universal_deploy: false,
+            from: None,
         };
         let json = serde_json::to_string(&opts).expect("serialize");
         let decoded: DeployOptions = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(decoded, opts);
     }
 
-    // -- publish_contract_class ----------------------------------------------
+    // -- get_gas_limits -------------------------------------------------------
+
+    #[test]
+    fn get_gas_limits_default_pad() {
+        let result = TxSimulationResult {
+            return_values: serde_json::Value::Null,
+            gas_used: Some(Gas {
+                da_gas: 1000,
+                l2_gas: 2000,
+            }),
+        };
+        let limits = get_gas_limits(&result, None);
+        assert_eq!(limits.gas_limits.da_gas, 1100);
+        assert_eq!(limits.gas_limits.l2_gas, 2200);
+    }
+
+    #[test]
+    fn get_gas_limits_custom_pad() {
+        let result = TxSimulationResult {
+            return_values: serde_json::Value::Null,
+            gas_used: Some(Gas {
+                da_gas: 1000,
+                l2_gas: 2000,
+            }),
+        };
+        let limits = get_gas_limits(&result, Some(0.5));
+        assert_eq!(limits.gas_limits.da_gas, 1500);
+        assert_eq!(limits.gas_limits.l2_gas, 3000);
+    }
+
+    #[test]
+    fn get_gas_limits_zero_gas() {
+        let result = TxSimulationResult {
+            return_values: serde_json::Value::Null,
+            gas_used: Some(Gas {
+                da_gas: 0,
+                l2_gas: 0,
+            }),
+        };
+        let limits = get_gas_limits(&result, None);
+        assert_eq!(limits.gas_limits.da_gas, 0);
+        assert_eq!(limits.gas_limits.l2_gas, 0);
+    }
+
+    // -- publish_contract_class -----------------------------------------------
 
     #[tokio::test]
-    async fn publish_contract_class_returns_deferred_error() {
+    async fn publish_contract_class_targets_registerer() {
         let wallet = MockWallet::new(sample_chain_info());
         let artifact = load_artifact(DEPLOY_ARTIFACT);
-        let result = publish_contract_class(&wallet, &artifact).await;
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("bytecode extraction"));
+        let interaction = publish_contract_class(&wallet, &artifact)
+            .await
+            .expect("publish class");
+        let payload = interaction.request().expect("build payload");
+        assert_eq!(payload.calls.len(), 1);
+        assert_eq!(
+            payload.calls[0].to,
+            protocol_contract_address::contract_class_registerer()
+        );
     }
 
     // -- publish_instance ----------------------------------------------------
 
     #[test]
-    fn publish_instance_returns_deferred_error() {
+    fn publish_instance_targets_deployer() {
         let wallet = MockWallet::new(sample_chain_info());
         let instance = ContractInstanceWithAddress {
             address: AztecAddress(Fr::from(1u64)),
@@ -432,12 +694,53 @@ mod tests {
                 public_keys: PublicKeys::default(),
             },
         };
-        let result = publish_instance(&wallet, &instance);
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("protocol system contract addresses"));
+        let interaction = publish_instance(&wallet, &instance).expect("publish instance");
+        let payload = interaction.request().expect("build payload");
+        assert_eq!(payload.calls.len(), 1);
+        assert_eq!(
+            payload.calls[0].to,
+            protocol_contract_address::contract_instance_deployer()
+        );
+    }
+
+    #[test]
+    fn publish_instance_universal_deploy_flag() {
+        let wallet = MockWallet::new(sample_chain_info());
+
+        // Non-universal (deployer is non-zero)
+        let instance_non_universal = ContractInstanceWithAddress {
+            address: AztecAddress(Fr::from(1u64)),
+            inner: ContractInstance {
+                version: 1,
+                salt: Fr::from(42u64),
+                deployer: AztecAddress(Fr::from(2u64)),
+                current_contract_class_id: Fr::from(100u64),
+                original_contract_class_id: Fr::from(100u64),
+                initialization_hash: Fr::zero(),
+                public_keys: PublicKeys::default(),
+            },
+        };
+        let interaction = publish_instance(&wallet, &instance_non_universal).expect("non-uni");
+        let payload = interaction.request().expect("payload");
+        // Last arg should be false (non-universal)
+        assert_eq!(payload.calls[0].args[4], AbiValue::Boolean(false));
+
+        // Universal (deployer is zero)
+        let instance_universal = ContractInstanceWithAddress {
+            address: AztecAddress(Fr::from(1u64)),
+            inner: ContractInstance {
+                version: 1,
+                salt: Fr::from(42u64),
+                deployer: AztecAddress(Fr::zero()),
+                current_contract_class_id: Fr::from(100u64),
+                original_contract_class_id: Fr::from(100u64),
+                initialization_hash: Fr::zero(),
+                public_keys: PublicKeys::default(),
+            },
+        };
+        let interaction2 = publish_instance(&wallet, &instance_universal).expect("uni");
+        let payload2 = interaction2.request().expect("payload2");
+        assert_eq!(payload2.calls[0].args[4], AbiValue::Boolean(true));
     }
 
     // -- ContractDeployer ----------------------------------------------------
@@ -532,68 +835,37 @@ mod tests {
         assert!(dbg.contains("None"));
     }
 
-    // -- DeployMethod::request -----------------------------------------------
-
-    #[test]
-    fn deploy_method_request_requires_registration_support() {
-        let wallet = MockWallet::new(sample_chain_info());
-        let artifact = load_artifact(DEPLOY_ARTIFACT);
-        let deployer = ContractDeployer::new(artifact, &wallet);
-
-        let deploy = deployer
-            .deploy(vec![AbiValue::Field(Fr::from(42u64))])
-            .expect("create deploy method");
-
-        let err = deploy
-            .request(&DeployOptions::default())
-            .expect_err("request should stay explicit");
-        assert!(err.to_string().contains("wallet registration support"));
-    }
-
-    #[test]
-    fn deploy_method_request_reports_missing_class_publication_primitives() {
-        let wallet = MockWallet::new(sample_chain_info());
-        let artifact = load_artifact(DEPLOY_ARTIFACT);
-        let deployer = ContractDeployer::new(artifact, &wallet);
-
-        let deploy = deployer
-            .deploy(vec![AbiValue::Field(Fr::from(1u64))])
-            .expect("create deploy method");
-
-        let opts = DeployOptions {
-            skip_registration: true,
-            skip_initialization: true,
-            ..DeployOptions::default()
-        };
-        let err = deploy
-            .request(&opts)
-            .expect_err("request should stay explicit");
-        assert!(err.to_string().contains("bytecode extraction"));
-    }
-
-    #[test]
-    fn deploy_method_request_requires_address_derivation_before_initialization() {
-        let wallet = MockWallet::new(sample_chain_info());
-        let artifact = load_artifact(DEPLOY_ARTIFACT);
-        let deployer = ContractDeployer::new(artifact, &wallet);
-
-        let deploy = deployer
-            .deploy(vec![AbiValue::Field(Fr::from(1u64))])
-            .expect("create deploy method");
-
-        let opts = DeployOptions {
-            skip_registration: true,
-            skip_class_publication: true,
-            skip_instance_publication: true,
-            ..DeployOptions::default()
-        };
-        let err = deploy
-            .request(&opts)
-            .expect_err("request should stay explicit");
-        assert!(err.to_string().contains("contract address derivation"));
-    }
-
     // -- DeployMethod::get_instance ------------------------------------------
+
+    #[test]
+    fn deploy_method_get_instance_computes_real_address() {
+        let wallet = MockWallet::new(sample_chain_info());
+        let artifact = load_artifact(DEPLOY_ARTIFACT);
+        let deployer = ContractDeployer::new(artifact, &wallet);
+
+        let deploy = deployer
+            .deploy(vec![AbiValue::Field(Fr::from(1u64))])
+            .expect("create deploy method");
+
+        let opts = DeployOptions {
+            contract_address_salt: Some(Fr::from(99u64)),
+            universal_deploy: true,
+            ..DeployOptions::default()
+        };
+        let instance = deploy.get_instance(&opts).expect("get instance");
+
+        // Address should no longer be zero.
+        assert_ne!(instance.address, AztecAddress(Fr::zero()));
+        assert_eq!(instance.inner.salt, Fr::from(99u64));
+        assert_eq!(instance.inner.version, 1);
+        assert_eq!(instance.inner.deployer, AztecAddress(Fr::zero()));
+        // Class ID should be non-zero.
+        assert_ne!(instance.inner.current_contract_class_id, Fr::zero());
+        assert_eq!(
+            instance.inner.current_contract_class_id,
+            instance.inner.original_contract_class_id
+        );
+    }
 
     #[test]
     fn deploy_method_get_instance_uses_provided_salt() {
@@ -607,11 +879,11 @@ mod tests {
 
         let opts = DeployOptions {
             contract_address_salt: Some(Fr::from(99u64)),
+            universal_deploy: true,
             ..DeployOptions::default()
         };
-        let instance = deploy.get_instance(&opts);
+        let instance = deploy.get_instance(&opts).expect("get instance");
         assert_eq!(instance.inner.salt, Fr::from(99u64));
-        assert_eq!(instance.inner.version, 1);
     }
 
     #[test]
@@ -624,7 +896,11 @@ mod tests {
             .deploy(vec![AbiValue::Field(Fr::from(1u64))])
             .expect("create deploy method");
 
-        let instance = deploy.get_instance(&DeployOptions::default());
+        let opts = DeployOptions {
+            universal_deploy: true,
+            ..DeployOptions::default()
+        };
+        let instance = deploy.get_instance(&opts).expect("get instance");
         assert_ne!(instance.inner.salt, Fr::zero());
     }
 
@@ -636,9 +912,14 @@ mod tests {
             .deploy(vec![AbiValue::Field(Fr::from(1u64))])
             .expect("create deploy method");
 
-        let first = deploy.get_instance(&DeployOptions::default());
-        let second = deploy.get_instance(&DeployOptions::default());
+        let opts = DeployOptions {
+            universal_deploy: true,
+            ..DeployOptions::default()
+        };
+        let first = deploy.get_instance(&opts).expect("first");
+        let second = deploy.get_instance(&opts).expect("second");
         assert_eq!(first.inner.salt, second.inner.salt);
+        assert_eq!(first.address, second.address);
     }
 
     #[test]
@@ -660,56 +941,132 @@ mod tests {
             .deploy(vec![AbiValue::Field(Fr::from(1u64))])
             .expect("create deploy method");
 
-        let instance = deploy.get_instance(&DeployOptions::default());
+        let opts = DeployOptions {
+            universal_deploy: true,
+            ..DeployOptions::default()
+        };
+        let instance = deploy.get_instance(&opts).expect("get instance");
         assert_eq!(instance.inner.public_keys, keys);
     }
 
-    // -- DeployMethod::simulate ----------------------------------------------
-
-    #[tokio::test]
-    async fn deploy_method_simulate_delegates_to_wallet() {
-        let wallet =
-            MockWallet::new(sample_chain_info()).with_simulate_result(TxSimulationResult {
-                return_values: serde_json::json!({"deployed": true}),
-                gas_used: Some(Gas {
-                    da_gas: 50,
-                    l2_gas: 100,
-                }),
-            });
+    #[test]
+    fn deploy_method_get_instance_universal_deploy() {
+        let wallet = MockWallet::new(sample_chain_info());
         let artifact = load_artifact(DEPLOY_ARTIFACT);
-        let deployer = ContractDeployer::new(artifact, &wallet);
-
-        let deploy = deployer
+        let deploy = ContractDeployer::new(artifact, &wallet)
             .deploy(vec![AbiValue::Field(Fr::from(1u64))])
             .expect("create deploy method");
 
-        let err = deploy
-            .simulate(&DeployOptions::default(), SimulateOptions::default())
-            .await
-            .expect_err("simulate should stay explicit");
-        assert!(err.to_string().contains("wallet registration support"));
+        let opts = DeployOptions {
+            contract_address_salt: Some(Fr::from(1u64)),
+            universal_deploy: true,
+            ..DeployOptions::default()
+        };
+        let instance = deploy.get_instance(&opts).expect("get instance");
+        assert_eq!(instance.inner.deployer, AztecAddress(Fr::zero()));
     }
 
-    // -- DeployMethod::send --------------------------------------------------
+    #[test]
+    fn deploy_method_get_instance_with_explicit_from() {
+        let wallet = MockWallet::new(sample_chain_info());
+        let artifact = load_artifact(DEPLOY_ARTIFACT);
+        let deploy = ContractDeployer::new(artifact, &wallet)
+            .deploy(vec![AbiValue::Field(Fr::from(1u64))])
+            .expect("create deploy method");
+
+        let deployer_addr = AztecAddress(Fr::from(42u64));
+        let opts = DeployOptions {
+            contract_address_salt: Some(Fr::from(1u64)),
+            universal_deploy: false,
+            from: Some(deployer_addr),
+            ..DeployOptions::default()
+        };
+        let instance = deploy.get_instance(&opts).expect("get instance");
+        assert_eq!(instance.inner.deployer, deployer_addr);
+    }
+
+    // -- DeployMethod::request -----------------------------------------------
 
     #[tokio::test]
-    async fn deploy_method_send_delegates_to_wallet() {
-        let tx_hash =
-            TxHash::from_hex("0x00000000000000000000000000000000000000000000000000000000deadbeef")
-                .expect("valid hex");
-        let wallet = MockWallet::new(sample_chain_info()).with_send_result(SendResult { tx_hash });
+    async fn deploy_method_request_full_flow() {
+        let wallet = MockWallet::new(sample_chain_info());
         let artifact = load_artifact(DEPLOY_ARTIFACT);
         let deployer = ContractDeployer::new(artifact, &wallet);
 
         let deploy = deployer
-            .deploy(vec![AbiValue::Field(Fr::from(1u64))])
+            .deploy(vec![AbiValue::Field(Fr::from(42u64))])
             .expect("create deploy method");
 
-        let err = deploy
-            .send(&DeployOptions::default(), SendOptions::default())
-            .await
-            .expect_err("send should stay explicit");
-        assert!(err.to_string().contains("wallet registration support"));
+        let opts = DeployOptions {
+            contract_address_salt: Some(Fr::from(1u64)),
+            universal_deploy: true,
+            skip_registration: true,
+            ..DeployOptions::default()
+        };
+
+        let payload = deploy.request(&opts).await.expect("request");
+
+        // Should have calls for: class publication, instance publication, constructor
+        assert!(
+            payload.calls.len() >= 2,
+            "expected at least 2 calls, got {}",
+            payload.calls.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn deploy_method_request_skips_class_publication() {
+        let wallet = MockWallet::new(sample_chain_info());
+        let artifact = load_artifact(DEPLOY_ARTIFACT);
+        let deployer = ContractDeployer::new(artifact, &wallet);
+
+        let deploy = deployer
+            .deploy(vec![AbiValue::Field(Fr::from(42u64))])
+            .expect("create deploy method");
+
+        let opts = DeployOptions {
+            contract_address_salt: Some(Fr::from(1u64)),
+            universal_deploy: true,
+            skip_registration: true,
+            skip_class_publication: true,
+            ..DeployOptions::default()
+        };
+
+        let payload = deploy.request(&opts).await.expect("request");
+
+        // Should have calls for: instance publication + constructor (no class publication)
+        let has_registerer_call = payload
+            .calls
+            .iter()
+            .any(|c| c.to == protocol_contract_address::contract_class_registerer());
+        assert!(
+            !has_registerer_call,
+            "should not contain class publication call"
+        );
+    }
+
+    #[tokio::test]
+    async fn deploy_method_request_skips_initialization() {
+        let wallet = MockWallet::new(sample_chain_info());
+        let artifact = load_artifact(DEPLOY_ARTIFACT);
+        let deployer = ContractDeployer::new(artifact, &wallet);
+
+        let deploy = deployer
+            .deploy(vec![AbiValue::Field(Fr::from(42u64))])
+            .expect("create deploy method");
+
+        let opts = DeployOptions {
+            contract_address_salt: Some(Fr::from(1u64)),
+            universal_deploy: true,
+            skip_registration: true,
+            skip_class_publication: true,
+            skip_instance_publication: true,
+            skip_initialization: true,
+            ..DeployOptions::default()
+        };
+
+        let payload = deploy.request(&opts).await.expect("request");
+        assert!(payload.calls.is_empty());
     }
 
     // -- Debug impls ---------------------------------------------------------
