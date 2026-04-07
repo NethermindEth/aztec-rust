@@ -534,9 +534,7 @@ mod tests {
     #[test]
     fn from_signature_different_inputs_differ() {
         let a = FunctionSelector::from_signature("sponsor_unconditionally()");
-        let b = FunctionSelector::from_signature(
-            "claim_and_end_setup((Field),u128,Field,Field)",
-        );
+        let b = FunctionSelector::from_signature("claim_and_end_setup((Field),u128,Field,Field)");
         assert_ne!(a, b);
     }
 

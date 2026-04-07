@@ -118,10 +118,7 @@ mod tests {
         // arg 2: claim_secret
         assert_eq!(args[2], AbiValue::Field(claim.claim_secret));
         // arg 3: message_leaf_index as Field
-        assert_eq!(
-            args[3],
-            AbiValue::Field(Fr::from(claim.message_leaf_index))
-        );
+        assert_eq!(args[3], AbiValue::Field(Fr::from(claim.message_leaf_index)));
     }
 
     #[tokio::test]
