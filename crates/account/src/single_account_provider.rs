@@ -80,8 +80,28 @@ impl AccountProvider for SingleAccountProvider {
             return Err(Error::InvalidData(format!("account not found: {from}")));
         }
 
+        // Resolve intent → hash so the AuthorizationProvider always receives
+        // a resolved hash to sign, keeping auth providers simple.
+        let resolved = match &intent {
+            MessageHashOrIntent::Hash { .. } => intent,
+            MessageHashOrIntent::Intent { .. } | MessageHashOrIntent::InnerHash { .. } => {
+                let hash = aztec_core::hash::compute_auth_wit_message_hash(&intent, chain_info);
+                MessageHashOrIntent::Hash { hash }
+            }
+        };
+
         let account = self.account_contract.account(self.complete_address.clone());
-        account.create_auth_wit(intent, chain_info).await
+        let mut witness = account
+            .create_auth_wit(resolved.clone(), chain_info)
+            .await?;
+
+        // Set the request_hash on the witness so consumers can identify which
+        // message this witness authorizes.
+        if let MessageHashOrIntent::Hash { hash } = &resolved {
+            witness.request_hash = *hash;
+        }
+
+        Ok(witness)
     }
 
     async fn get_complete_address(

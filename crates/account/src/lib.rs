@@ -29,5 +29,6 @@ pub mod authorization;
 pub mod single_account_provider;
 
 pub use account::*;
+pub use authorization::CallAuthorizationRequest;
 pub use error::Error;
 pub use single_account_provider::SingleAccountProvider;

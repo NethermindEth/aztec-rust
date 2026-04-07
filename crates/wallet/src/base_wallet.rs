@@ -818,6 +818,7 @@ mod tests {
             }
             Ok(AuthWitness {
                 fields: vec![Fr::from(1u64), Fr::from(2u64)],
+                ..Default::default()
             })
         }
 
@@ -1309,6 +1310,7 @@ mod tests {
                     from: addr,
                     auth_witnesses: vec![AuthWitness {
                         fields: vec![Fr::from(9u64)],
+                        ..Default::default()
                     }],
                     capsules: vec![crate::tx::Capsule {
                         data: vec![1, 2, 3],

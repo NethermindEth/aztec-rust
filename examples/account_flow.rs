@@ -54,6 +54,7 @@ impl AuthorizationProvider for DemoAccount {
         // In a real implementation, this would sign the intent hash
         Ok(AuthWitness {
             fields: vec![self.addr.address.0],
+            ..Default::default()
         })
     }
 }

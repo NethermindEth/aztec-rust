@@ -457,6 +457,7 @@ mod tests {
         ) -> Result<AuthWitness, Error> {
             Ok(AuthWitness {
                 fields: vec![self.addr.address.0],
+                ..Default::default()
             })
         }
     }
@@ -474,6 +475,7 @@ mod tests {
         ) -> Result<AuthWitness, Error> {
             Ok(AuthWitness {
                 fields: vec![self.addr.address.0],
+                ..Default::default()
             })
         }
     }
@@ -733,6 +735,7 @@ mod tests {
             calls: vec![],
             auth_witnesses: vec![AuthWitness {
                 fields: vec![Fr::from(42u64)],
+                ..Default::default()
             }],
             capsules: vec![],
             extra_hashed_args: vec![],
@@ -801,6 +804,7 @@ mod tests {
             calls: vec![],
             auth_witnesses: vec![AuthWitness {
                 fields: vec![Fr::from(1u64)],
+                ..Default::default()
             }],
             capsules: vec![],
             extra_hashed_args: vec![],
