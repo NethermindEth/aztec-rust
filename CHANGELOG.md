@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-04-08
+
+### Added
+
+- `Fr::to_be_bytes()`, `Fr::to_usize()`, `Fr::is_zero()` public helper methods on the scalar field type (`aztec-core`)
+- `From<i64>`, `From<u128>`, `From<bool>`, `From<AztecAddress>`, `From<EthAddress>`, `From<FunctionSelector>` conversions for `Fr` (`aztec-core`)
+- `From<u64>` conversion for `AztecAddress` (`aztec-core`)
+- `FieldLike`, `AztecAddressLike`, `EthAddressLike` type aliases mirroring TypeScript SDK union types (`aztec-core`)
+- ABI type checker functions: `is_address_struct`, `is_aztec_address_struct`, `is_eth_address_struct`, `is_function_selector_struct`, `is_wrapped_field_struct`, `is_public_keys_struct`, `is_bounded_vec_struct`, `is_option_struct` (`aztec-core`)
+- `abi_type_size()` and `count_arguments_size()` for computing flattened field-element counts from ABI types (`aztec-core`)
+- Enhanced `encode_arguments()` with special-case handling for Address, FunctionSelector, wrapped-field, BoundedVec, and Option structs (`aztec-core`)
+- Signed integer encoding using proper two's complement (safe for widths > 64 bits), replacing the previous `as u64` truncation (`aztec-core`)
+- `AbiDecoded` enum and `decode_from_abi()` for reconstructing typed values from flat field-element arrays (`aztec-core`)
+- `NoteSelector` type — 7-bit note selector with validation, field/hex/serde roundtrips (`aztec-core`)
+- `ContractArtifact::to_buffer()`, `from_buffer()`, `to_json()` serialization methods (`aztec-core`)
+- `buffer_as_fields()` / `buffer_from_fields()` for round-tripping byte buffers through field elements (`aztec-core`)
+- 60+ new unit tests covering all new functionality including encode-decode roundtrips
+
+### Changed
+
+- Split `abi.rs` into sub-modules (`abi/types.rs`, `abi/selectors.rs`, `abi/checkers.rs`, `abi/encoder.rs`, `abi/decoder.rs`, `abi/buffer.rs`) with `abi/mod.rs` re-exporting the full public API (`aztec-core`)
+- `hash.rs` private helpers `fr_to_be_bytes` / `fr_to_usize` now delegate to the new public `Fr` methods (`aztec-core`)
+
 ## [0.2.4] - 2026-04-08
 
 ### Added
@@ -170,7 +193,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Implementation plan and spec documents
 
-[Unreleased]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.1...v0.2.2
