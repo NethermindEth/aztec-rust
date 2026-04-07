@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-04-08
+
+### Added
+
+- Grumpkin curve module with affine point addition, doubling, and scalar multiplication for contract address derivation (`aztec-core`)
+- Contract class ID computation: `compute_private_functions_root`, `compute_artifact_hash`, `compute_public_bytecode_commitment`, `compute_contract_class_id`, `compute_contract_class_id_from_artifact` (`aztec-core`)
+- Contract address derivation: `compute_salted_initialization_hash`, `compute_partial_address`, `compute_contract_address_from_instance` using Grumpkin EC operations (`aztec-core`)
+- Initialization hash computation: `compute_initialization_hash`, `compute_initialization_hash_from_encoded` (`aztec-core`)
+- `PublicKeys::hash()` with `PUBLIC_KEYS_HASH` domain separator and empty-key shortcut (`aztec-core`)
+- `PublicKeys::is_empty()` and `Point::is_zero()` helpers (`aztec-core`)
+- Domain separators: `PUBLIC_KEYS_HASH`, `PARTIAL_ADDRESS`, `CONTRACT_CLASS_ID`, `PRIVATE_FUNCTION_LEAF`, `PUBLIC_BYTECODE`, `INITIALIZER`, `CONTRACT_ADDRESS_V1` (`aztec-core`)
+- Protocol contract addresses: `contract_instance_deployer` (2), `contract_class_registerer` (3), `multi_call_entrypoint` (4) (`aztec-core`)
+- Size constants: `FUNCTION_TREE_HEIGHT`, `MAX_PACKED_PUBLIC_BYTECODE_SIZE_IN_FIELDS`, `ARTIFACT_FUNCTION_TREE_MAX_HEIGHT` (`aztec-core`)
+- `FunctionArtifact` fields: `bytecode`, `verification_key_hash`, `verification_key`, `custom_attributes`, `is_unconstrained`, `debug_symbols` — all `Option` with `#[serde(default)]` (`aztec-core`)
+- `ContractArtifact` fields: `outputs`, `file_map` — both `Option` with `#[serde(default)]` (`aztec-core`)
+- `FunctionSelector::from_name_and_parameters()` for deriving selectors from ABI metadata (`aztec-core`)
+- `abi_type_signature()` helper converting `AbiType` to canonical Noir signature strings (`aztec-core`)
+- `buffer_as_fields()` utility for encoding byte buffers as field elements (31 bytes per field) (`aztec-core`)
+- `publish_contract_class()` — builds interaction payload targeting the Contract Class Registerer with bytecode capsule (`aztec-contract`)
+- `publish_instance()` — builds interaction payload targeting the Contract Instance Deployer with universal deploy flag (`aztec-contract`)
+- `DeployMethod::get_instance()` now computes real contract class ID, initialization hash, and deterministic address (`aztec-contract`)
+- `DeployMethod::request()` fully wires registration, class publication, instance publication, and constructor call (`aztec-contract`)
+- `DeployResult` struct returning `SendResult` + `ContractInstanceWithAddress` from `DeployMethod::send()` (`aztec-contract`)
+- `SuggestedGasLimits` struct and `get_gas_limits()` with configurable padding factor (`aztec-contract`)
+- `DeployOptions::from` field for explicit deployer address selection (`aztec-contract`)
+- `ContractFunctionInteraction::new()` and `new_with_capsules()` constructors (`aztec-contract`)
+- `sha2` crate dependency for artifact hash computation (`aztec-core`)
+- 30+ new unit tests across `aztec-core` (grumpkin, deployment hashes, address derivation) and `aztec-contract` (gas limits, class/instance publication, full deployment flow)
+
+### Changed
+
+- `Capsule` struct now has `contract_address: AztecAddress`, `storage_slot: Fr`, and `data: Vec<Fr>` fields instead of `data: Vec<u8>` (`aztec-core`)
+- `DeployMethod::request()` is now `async` and returns real deployment payloads instead of stub errors (`aztec-contract`)
+- `DeployMethod::get_instance()` now returns `Result<ContractInstanceWithAddress, Error>` (was infallible) (`aztec-contract`)
+- `DeployMethod::send()` now returns `DeployResult` containing both the tx hash and deployed instance (`aztec-contract`)
+- `ContractFunctionInteraction` now carries an optional `capsules` field included in generated payloads (`aztec-contract`)
+
 ## [0.2.3] - 2026-04-08
 
 ### Added
@@ -133,7 +170,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Implementation plan and spec documents
 
-[Unreleased]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.0...v0.2.1
