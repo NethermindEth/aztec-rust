@@ -1,24 +1,75 @@
 //! Example: Contract deployment workflow.
 //!
-//! Demonstrates how to use `ContractDeployer` to prepare a contract
-//! deployment using a representative fixture artifact. Uses a mock wallet
-//! since the real PXE node is not available.
+//! Demonstrates how to use `ContractDeployer` to prepare and deploy a
+//! contract using a real wallet connected to a live Aztec sandbox.
 //!
 //! Run with:
 //! ```bash
-//! cargo run --example deploy_contract
+//! AZTEC_PXE_URL=http://localhost:8080 AZTEC_NODE_URL=http://localhost:8080 \
+//!     cargo run --example deploy_contract
 //! ```
 
 #![allow(clippy::print_stdout)]
 
 use aztec_rs::abi::{AbiValue, ContractArtifact};
+use aztec_rs::account::{AccountManager, SchnorrAccountContract, SingleAccountProvider};
 use aztec_rs::deployment::{ContractDeployer, DeployOptions};
-use aztec_rs::types::Fr;
-use aztec_rs::wallet::{ChainInfo, MockWallet};
+use aztec_rs::node::{create_aztec_node_client, wait_for_node, AztecNode};
+use aztec_rs::types::{CompleteAddress, Fr};
+use aztec_rs::wallet::create_wallet_from_urls;
 
 #[tokio::main]
 async fn main() -> Result<(), aztec_rs::Error> {
-    // Load a contract artifact from a fixture file.
+    let pxe_url =
+        std::env::var("AZTEC_PXE_URL").unwrap_or_else(|_| "http://localhost:8080".into());
+    let node_url =
+        std::env::var("AZTEC_NODE_URL").unwrap_or_else(|_| "http://localhost:8080".into());
+
+    // -- Connect to the network ------------------------------------------------
+
+    println!("Connecting to node at {node_url}...");
+    let node = create_aztec_node_client(&node_url);
+    let info = wait_for_node(&node).await?;
+    println!(
+        "Node ready: version={}, chain={}, block={}",
+        info.node_version,
+        info.l1_chain_id,
+        node.get_block_number().await?
+    );
+
+    // -- Create a wallet -------------------------------------------------------
+
+    let secret_key = Fr::from(0xcafe_u64);
+    let bootstrap_wallet = create_wallet_from_urls(
+        &pxe_url,
+        &node_url,
+        SingleAccountProvider::new(
+            CompleteAddress::default(),
+            Box::new(SchnorrAccountContract::new(secret_key)),
+            "bootstrap",
+        ),
+    );
+    let manager = AccountManager::create(
+        bootstrap_wallet,
+        secret_key,
+        Box::new(SchnorrAccountContract::new(secret_key)),
+        Some(Fr::from(1u64)),
+    )
+    .await?;
+
+    let complete_address = manager.complete_address().await?;
+    let wallet = create_wallet_from_urls(
+        &pxe_url,
+        &node_url,
+        SingleAccountProvider::new(
+            complete_address,
+            Box::new(SchnorrAccountContract::new(secret_key)),
+            "main",
+        ),
+    );
+
+    // -- Load a contract artifact ----------------------------------------------
+
     let artifact_json = include_str!("../fixtures/token_contract.json");
     let artifact = ContractArtifact::from_json(artifact_json)?;
     println!("Loaded artifact: {}", artifact.name);
@@ -46,22 +97,17 @@ async fn main() -> Result<(), aztec_rs::Error> {
             .join(", ")
     );
 
-    // Create a mock wallet.
-    let wallet = MockWallet::new(ChainInfo {
-        chain_id: Fr::from(31337u64),
-        version: Fr::from(1u64),
-    });
+    // -- Build a deployer ------------------------------------------------------
 
-    // Build a deployer with a specific salt for deterministic address computation.
     let deployer = ContractDeployer::new(artifact, &wallet).with_constructor_name("constructor");
     println!("\nDeployer: {deployer:?}");
 
     // Create a deploy method with constructor arguments.
     let deploy_method = deployer.deploy(vec![
-        AbiValue::Field(Fr::from(1u64)),      // admin
-        AbiValue::String("TestToken".into()), // name
-        AbiValue::String("TT".into()),        // symbol
-        AbiValue::Integer(18),                // decimals
+        AbiValue::Field(Fr::from(1u64)),       // admin
+        AbiValue::String("TestToken".into()),  // name
+        AbiValue::String("TT".into()),         // symbol
+        AbiValue::Integer(18),                 // decimals
     ])?;
     println!("Deploy method: {deploy_method:?}");
 
@@ -85,13 +131,9 @@ async fn main() -> Result<(), aztec_rs::Error> {
         skip_registration: true,
         ..DeployOptions::default()
     };
-    match deploy_method.request(&opts_with_skip).await {
-        Ok(payload) => {
-            println!("\nDeployment payload built successfully.");
-            println!("  calls: {}", payload.calls.len());
-        }
-        Err(e) => println!("\nDeployment request failed: {e}"),
-    }
+    let payload = deploy_method.request(&opts_with_skip).await?;
+    println!("\nDeployment payload built successfully.");
+    println!("  calls: {}", payload.calls.len());
 
     println!("\nDone.");
 
