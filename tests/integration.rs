@@ -235,7 +235,7 @@ async fn wait_for_tx_timeout_on_unknown_hash() {
     let opts = WaitOpts {
         timeout: Duration::from_secs(3),
         interval: Duration::from_secs(1),
-        proven: false,
+        ..WaitOpts::default()
     };
 
     let result = wait_for_tx(&node, &hash, opts).await;

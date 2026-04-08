@@ -104,16 +104,23 @@ pub struct WaitOpts {
     pub timeout: Duration,
     /// Interval between retries.
     pub interval: Duration,
-    /// If `true`, wait for `Proven` status; otherwise `Checkpointed` is sufficient.
-    pub proven: bool,
+    /// Minimum status to wait for.
+    pub wait_for_status: TxStatus,
+    /// If true, accept a reverted tx receipt without returning an error.
+    pub dont_throw_on_revert: bool,
+    /// Duration to ignore `TxStatus::Dropped` before treating it as failure.
+    /// Avoids race conditions where a tx briefly appears dropped before inclusion.
+    pub ignore_dropped_receipts_for: Duration,
 }
 
 impl Default for WaitOpts {
     fn default() -> Self {
         Self {
-            timeout: Duration::from_secs(60),
+            timeout: Duration::from_secs(300),
             interval: Duration::from_secs(1),
-            proven: false,
+            wait_for_status: TxStatus::Checkpointed,
+            dont_throw_on_revert: false,
+            ignore_dropped_receipts_for: Duration::from_secs(5),
         }
     }
 }
@@ -129,6 +136,8 @@ pub trait AztecNode: Send + Sync {
     async fn get_node_info(&self) -> Result<NodeInfo, Error>;
     /// Get the latest block number.
     async fn get_block_number(&self) -> Result<u64, Error>;
+    /// Get the latest proven block number.
+    async fn get_proven_block_number(&self) -> Result<u64, Error>;
     /// Get the receipt for a transaction.
     async fn get_tx_receipt(&self, tx_hash: &TxHash) -> Result<TxReceipt, Error>;
     /// Query public logs matching the given filter.
@@ -172,6 +181,12 @@ impl AztecNode for HttpNodeClient {
     async fn get_block_number(&self) -> Result<u64, Error> {
         self.transport
             .call("node_getBlockNumber", serde_json::json!([]))
+            .await
+    }
+
+    async fn get_proven_block_number(&self) -> Result<u64, Error> {
+        self.transport
+            .call("node_getProvenBlockNumber", serde_json::json!([]))
             .await
     }
 
@@ -265,38 +280,41 @@ const fn status_ordinal(s: TxStatus) -> u8 {
 
 /// Wait for a transaction to reach a terminal status by polling `get_tx_receipt`.
 ///
-/// By default, waits until `Checkpointed` or higher. Set `opts.proven = true` to
-/// wait for `Proven` instead. Returns early with an error on `Dropped` or reverted
-/// execution results.
+/// By default, waits until `Checkpointed` or higher. Set `opts.wait_for_status`
+/// to target a different status. Returns early with an error on `Dropped`
+/// (after the grace period) or reverted execution results (unless
+/// `opts.dont_throw_on_revert` is set).
 pub async fn wait_for_tx(
     node: &(impl AztecNode + ?Sized),
     tx_hash: &TxHash,
     opts: WaitOpts,
 ) -> Result<TxReceipt, Error> {
-    let deadline = tokio::time::Instant::now() + opts.timeout;
-    let target = if opts.proven {
-        TxStatus::Proven
-    } else {
-        TxStatus::Checkpointed
-    };
+    let start = tokio::time::Instant::now();
+    let deadline = start + opts.timeout;
+    let target = opts.wait_for_status;
 
     loop {
         match node.get_tx_receipt(tx_hash).await {
             Ok(receipt) => {
                 if receipt.is_dropped() {
-                    return Err(Error::Reverted(format!(
-                        "tx {tx_hash} was dropped: {}",
-                        receipt.error.as_deref().unwrap_or("unknown reason")
-                    )));
-                }
-                if receipt.has_execution_reverted() {
-                    return Err(Error::Reverted(format!(
-                        "tx {tx_hash} execution reverted: {}",
-                        receipt.error.as_deref().unwrap_or("unknown reason")
-                    )));
-                }
-                if status_reached(receipt.status, target) {
-                    return Ok(receipt);
+                    let elapsed = start.elapsed();
+                    if elapsed >= opts.ignore_dropped_receipts_for {
+                        return Err(Error::Reverted(format!(
+                            "tx {tx_hash} was dropped: {}",
+                            receipt.error.as_deref().unwrap_or("unknown reason")
+                        )));
+                    }
+                    // Within grace period — keep polling.
+                } else {
+                    if receipt.has_execution_reverted() && !opts.dont_throw_on_revert {
+                        return Err(Error::Reverted(format!(
+                            "tx {tx_hash} execution reverted: {}",
+                            receipt.error.as_deref().unwrap_or("unknown reason")
+                        )));
+                    }
+                    if status_reached(receipt.status, target) {
+                        return Ok(receipt);
+                    }
                 }
             }
             Err(e) => {
@@ -312,6 +330,65 @@ pub async fn wait_for_tx(
             return Err(Error::Timeout(format!(
                 "tx {tx_hash} did not reach {target:?} within {:?}",
                 opts.timeout
+            )));
+        }
+        tokio::time::sleep(opts.interval).await;
+    }
+}
+
+/// Options for [`wait_for_proven`].
+#[derive(Debug, Clone)]
+pub struct WaitForProvenOpts {
+    /// Timeout for proven status polling (default: 600s / 10 minutes).
+    pub proven_timeout: Duration,
+    /// Polling interval (default: 1s).
+    pub interval: Duration,
+}
+
+impl Default for WaitForProvenOpts {
+    fn default() -> Self {
+        Self {
+            proven_timeout: Duration::from_secs(600),
+            interval: Duration::from_secs(1),
+        }
+    }
+}
+
+/// Wait until the block containing the given receipt is proven on L1.
+///
+/// Takes a receipt (which must have a `block_number`) and polls the node
+/// until the proven block number >= receipt's block number.
+/// Returns the proven block number on success.
+pub async fn wait_for_proven(
+    node: &(impl AztecNode + ?Sized),
+    receipt: &TxReceipt,
+    opts: WaitForProvenOpts,
+) -> Result<u64, Error> {
+    let receipt_block = receipt.block_number.ok_or_else(|| {
+        Error::InvalidData("receipt has no block_number — cannot wait for proven".into())
+    })?;
+
+    let deadline = tokio::time::Instant::now() + opts.proven_timeout;
+
+    loop {
+        match node.get_proven_block_number().await {
+            Ok(proven_block) if proven_block >= receipt_block => {
+                return Ok(proven_block);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                if tokio::time::Instant::now() + opts.interval >= deadline {
+                    return Err(Error::Timeout(format!(
+                        "timed out waiting for block {receipt_block} to be proven: {e}"
+                    )));
+                }
+            }
+        }
+
+        if tokio::time::Instant::now() + opts.interval >= deadline {
+            return Err(Error::Timeout(format!(
+                "block {receipt_block} was not proven within {:?}",
+                opts.proven_timeout
             )));
         }
         tokio::time::sleep(opts.interval).await;
@@ -430,9 +507,11 @@ mod tests {
     #[test]
     fn wait_opts_defaults() {
         let opts = WaitOpts::default();
-        assert_eq!(opts.timeout, Duration::from_secs(60));
+        assert_eq!(opts.timeout, Duration::from_secs(300));
         assert_eq!(opts.interval, Duration::from_secs(1));
-        assert!(!opts.proven);
+        assert_eq!(opts.wait_for_status, TxStatus::Checkpointed);
+        assert!(!opts.dont_throw_on_revert);
+        assert_eq!(opts.ignore_dropped_receipts_for, Duration::from_secs(5));
     }
 
     // -- Status ordering --
@@ -459,6 +538,7 @@ mod tests {
     struct MockNode {
         info_result: Mutex<Vec<Result<NodeInfo, Error>>>,
         block_number: u64,
+        proven_block_results: Mutex<Vec<Result<u64, Error>>>,
         receipt_results: Mutex<Vec<Result<TxReceipt, Error>>>,
         call_count: AtomicUsize,
     }
@@ -468,6 +548,7 @@ mod tests {
             Self {
                 info_result: Mutex::new(vec![Ok(info)]),
                 block_number: 0,
+                proven_block_results: Mutex::new(vec![]),
                 receipt_results: Mutex::new(vec![]),
                 call_count: AtomicUsize::new(0),
             }
@@ -477,6 +558,7 @@ mod tests {
             Self {
                 info_result: Mutex::new(results),
                 block_number: 0,
+                proven_block_results: Mutex::new(vec![]),
                 receipt_results: Mutex::new(vec![]),
                 call_count: AtomicUsize::new(0),
             }
@@ -486,7 +568,18 @@ mod tests {
             Self {
                 info_result: Mutex::new(vec![]),
                 block_number: 0,
+                proven_block_results: Mutex::new(vec![]),
                 receipt_results: Mutex::new(results),
+                call_count: AtomicUsize::new(0),
+            }
+        }
+
+        fn new_with_proven_block_sequence(results: Vec<Result<u64, Error>>) -> Self {
+            Self {
+                info_result: Mutex::new(vec![]),
+                block_number: 0,
+                proven_block_results: Mutex::new(results),
+                receipt_results: Mutex::new(vec![]),
                 call_count: AtomicUsize::new(0),
             }
         }
@@ -539,6 +632,24 @@ mod tests {
 
         async fn get_block_number(&self) -> Result<u64, Error> {
             Ok(self.block_number)
+        }
+
+        async fn get_proven_block_number(&self) -> Result<u64, Error> {
+            let idx = self.call_count.fetch_add(1, Ordering::Relaxed);
+            let results = self.proven_block_results.lock().unwrap();
+            if idx < results.len() {
+                match &results[idx] {
+                    Ok(n) => Ok(*n),
+                    Err(e) => Err(Error::Transport(e.to_string())),
+                }
+            } else if let Some(last) = results.last() {
+                match last {
+                    Ok(n) => Ok(*n),
+                    Err(e) => Err(Error::Transport(e.to_string())),
+                }
+            } else {
+                Ok(0)
+            }
         }
 
         async fn get_tx_receipt(&self, _tx_hash: &TxHash) -> Result<TxReceipt, Error> {
@@ -671,7 +782,7 @@ mod tests {
         let opts = WaitOpts {
             timeout: Duration::from_secs(5),
             interval: Duration::from_millis(10),
-            proven: false,
+            ..WaitOpts::default()
         };
         let result = wait_for_tx(&node, &TxHash::zero(), opts).await.unwrap();
         assert_eq!(result.status, TxStatus::Checkpointed);
@@ -689,7 +800,7 @@ mod tests {
         let opts = WaitOpts {
             timeout: Duration::from_secs(5),
             interval: Duration::from_millis(10),
-            proven: false,
+            ..WaitOpts::default()
         };
         let result = wait_for_tx(&node, &TxHash::zero(), opts).await.unwrap();
         assert_eq!(result.status, TxStatus::Checkpointed);
@@ -705,7 +816,8 @@ mod tests {
         let opts = WaitOpts {
             timeout: Duration::from_secs(5),
             interval: Duration::from_millis(10),
-            proven: true,
+            wait_for_status: TxStatus::Proven,
+            ..WaitOpts::default()
         };
         let result = wait_for_tx(&node, &TxHash::zero(), opts).await.unwrap();
         assert_eq!(result.status, TxStatus::Proven);
@@ -718,7 +830,8 @@ mod tests {
         let opts = WaitOpts {
             timeout: Duration::from_secs(5),
             interval: Duration::from_millis(10),
-            proven: false,
+            ignore_dropped_receipts_for: Duration::ZERO,
+            ..WaitOpts::default()
         };
         let result = wait_for_tx(&node, &TxHash::zero(), opts).await;
         assert!(result.is_err());
@@ -735,7 +848,7 @@ mod tests {
         let opts = WaitOpts {
             timeout: Duration::from_secs(5),
             interval: Duration::from_millis(10),
-            proven: false,
+            ..WaitOpts::default()
         };
         let result = wait_for_tx(&node, &TxHash::zero(), opts).await;
         assert!(result.is_err());
@@ -749,7 +862,7 @@ mod tests {
         let opts = WaitOpts {
             timeout: Duration::from_millis(50),
             interval: Duration::from_millis(100),
-            proven: false,
+            ..WaitOpts::default()
         };
         let result = wait_for_tx(&node, &TxHash::zero(), opts).await;
         assert!(result.is_err());
@@ -765,10 +878,122 @@ mod tests {
         let opts = WaitOpts {
             timeout: Duration::from_secs(5),
             interval: Duration::from_millis(10),
-            proven: false,
+            ..WaitOpts::default()
         };
         let result = wait_for_tx(&node, &TxHash::zero(), opts).await.unwrap();
         assert_eq!(result.status, TxStatus::Finalized);
+    }
+
+    #[tokio::test]
+    async fn wait_for_tx_respects_wait_for_status() {
+        let proposed =
+            MockNode::make_receipt(TxStatus::Proposed, Some(TxExecutionResult::Success));
+        let proven = MockNode::make_receipt(TxStatus::Proven, Some(TxExecutionResult::Success));
+        let node = MockNode::new_with_receipt_sequence(vec![Ok(proposed), Ok(proven)]);
+        let opts = WaitOpts {
+            timeout: Duration::from_secs(5),
+            interval: Duration::from_millis(10),
+            wait_for_status: TxStatus::Proven,
+            ..WaitOpts::default()
+        };
+        let result = wait_for_tx(&node, &TxHash::zero(), opts).await.unwrap();
+        assert_eq!(result.status, TxStatus::Proven);
+    }
+
+    #[tokio::test]
+    async fn wait_for_tx_dont_throw_on_revert() {
+        let receipt = MockNode::make_receipt(
+            TxStatus::Checkpointed,
+            Some(TxExecutionResult::AppLogicReverted),
+        );
+        let node = MockNode::new_with_receipt_sequence(vec![Ok(receipt)]);
+        let opts = WaitOpts {
+            timeout: Duration::from_secs(5),
+            interval: Duration::from_millis(10),
+            dont_throw_on_revert: true,
+            ..WaitOpts::default()
+        };
+        let result = wait_for_tx(&node, &TxHash::zero(), opts).await.unwrap();
+        assert_eq!(result.status, TxStatus::Checkpointed);
+        assert!(result.has_execution_reverted());
+    }
+
+    #[tokio::test]
+    async fn wait_for_tx_ignores_dropped_within_grace_period() {
+        let dropped = MockNode::make_receipt(TxStatus::Dropped, None);
+        let checkpointed =
+            MockNode::make_receipt(TxStatus::Checkpointed, Some(TxExecutionResult::Success));
+        let node =
+            MockNode::new_with_receipt_sequence(vec![Ok(dropped), Ok(checkpointed)]);
+        let opts = WaitOpts {
+            timeout: Duration::from_secs(5),
+            interval: Duration::from_millis(10),
+            ignore_dropped_receipts_for: Duration::from_secs(60),
+            ..WaitOpts::default()
+        };
+        let result = wait_for_tx(&node, &TxHash::zero(), opts).await.unwrap();
+        assert_eq!(result.status, TxStatus::Checkpointed);
+    }
+
+    #[tokio::test]
+    async fn wait_for_tx_fails_dropped_after_grace_period() {
+        let dropped = MockNode::make_receipt(TxStatus::Dropped, None);
+        let node = MockNode::new_with_receipt_sequence(vec![Ok(dropped)]);
+        let opts = WaitOpts {
+            timeout: Duration::from_secs(5),
+            interval: Duration::from_millis(10),
+            ignore_dropped_receipts_for: Duration::ZERO,
+            ..WaitOpts::default()
+        };
+        let result = wait_for_tx(&node, &TxHash::zero(), opts).await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::Reverted(_)));
+    }
+
+    // -- wait_for_proven tests --
+
+    #[tokio::test]
+    async fn wait_for_proven_returns_when_proven() {
+        let node = MockNode::new_with_proven_block_sequence(vec![Ok(5), Ok(10)]);
+        let receipt = TxReceipt {
+            block_number: Some(8),
+            ..MockNode::make_receipt(TxStatus::Checkpointed, Some(TxExecutionResult::Success))
+        };
+        let opts = WaitForProvenOpts {
+            proven_timeout: Duration::from_secs(5),
+            interval: Duration::from_millis(10),
+        };
+        let result = wait_for_proven(&node, &receipt, opts).await.unwrap();
+        assert!(result >= 8);
+    }
+
+    #[tokio::test]
+    async fn wait_for_proven_times_out() {
+        let node = MockNode::new_with_proven_block_sequence(vec![Ok(1)]);
+        let receipt = TxReceipt {
+            block_number: Some(100),
+            ..MockNode::make_receipt(TxStatus::Checkpointed, Some(TxExecutionResult::Success))
+        };
+        let opts = WaitForProvenOpts {
+            proven_timeout: Duration::from_millis(50),
+            interval: Duration::from_millis(100),
+        };
+        let result = wait_for_proven(&node, &receipt, opts).await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::Timeout(_)));
+    }
+
+    #[tokio::test]
+    async fn wait_for_proven_rejects_receipt_without_block() {
+        let node = MockNode::new_with_proven_block_sequence(vec![Ok(10)]);
+        let receipt = MockNode::make_receipt(TxStatus::Pending, None);
+        let opts = WaitForProvenOpts::default();
+        let result = wait_for_proven(&node, &receipt, opts).await;
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("no block_number"),
+            "should mention missing block_number"
+        );
     }
 
     // -- create_aztec_node_client --
