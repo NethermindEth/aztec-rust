@@ -20,8 +20,7 @@ use aztec_rs::wallet::create_wallet_from_urls;
 
 #[tokio::main]
 async fn main() -> Result<(), aztec_rs::Error> {
-    let pxe_url =
-        std::env::var("AZTEC_PXE_URL").unwrap_or_else(|_| "http://localhost:8080".into());
+    let pxe_url = std::env::var("AZTEC_PXE_URL").unwrap_or_else(|_| "http://localhost:8080".into());
     let node_url =
         std::env::var("AZTEC_NODE_URL").unwrap_or_else(|_| "http://localhost:8080".into());
 

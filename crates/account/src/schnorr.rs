@@ -251,9 +251,7 @@ impl AccountContract for SchnorrAccountContract {
         })
     }
 
-    async fn initialization_function_and_args(
-        &self,
-    ) -> Result<Option<InitializationSpec>, Error> {
+    async fn initialization_function_and_args(&self) -> Result<Option<InitializationSpec>, Error> {
         let mut pk_fields = std::collections::BTreeMap::new();
         pk_fields.insert("x".to_owned(), AbiValue::Field(self.signing_public_key.x));
         pk_fields.insert("y".to_owned(), AbiValue::Field(self.signing_public_key.y));
@@ -274,10 +272,7 @@ impl AccountContract for SchnorrAccountContract {
         })
     }
 
-    fn auth_witness_provider(
-        &self,
-        _address: CompleteAddress,
-    ) -> Box<dyn AuthorizationProvider> {
+    fn auth_witness_provider(&self, _address: CompleteAddress) -> Box<dyn AuthorizationProvider> {
         Box::new(SchnorrAuthorizationProvider {
             signing_key: self.signing_key,
         })
@@ -362,10 +357,7 @@ mod tests {
 
         let message = Fr::from(999u64);
         let wit = provider
-            .create_auth_wit(
-                MessageHashOrIntent::Hash { hash: message },
-                &chain_info,
-            )
+            .create_auth_wit(MessageHashOrIntent::Hash { hash: message }, &chain_info)
             .await
             .expect("create auth wit");
 

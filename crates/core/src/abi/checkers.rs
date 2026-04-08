@@ -112,7 +112,9 @@ fn validate_abi_type(typ: &AbiType, path: &str) -> Vec<String> {
                 errors.push(format!("{path}: struct name must not be empty"));
             }
             if fields.is_empty() {
-                errors.push(format!("{path}: struct '{name}' must have at least one field"));
+                errors.push(format!(
+                    "{path}: struct '{name}' must have at least one field"
+                ));
             }
             for field in fields {
                 errors.extend(validate_abi_type(

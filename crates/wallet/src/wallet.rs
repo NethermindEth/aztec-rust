@@ -1091,7 +1091,11 @@ mod tests {
 
     #[test]
     fn profile_mode_serialization() {
-        for mode in [ProfileMode::Gates, ProfileMode::ExecutionSteps, ProfileMode::Full] {
+        for mode in [
+            ProfileMode::Gates,
+            ProfileMode::ExecutionSteps,
+            ProfileMode::Full,
+        ] {
             let json = serde_json::to_string(&mode).expect("serialize");
             let decoded: ProfileMode = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(decoded, mode);

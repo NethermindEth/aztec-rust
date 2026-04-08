@@ -20,8 +20,7 @@ use aztec_rs::wallet::create_wallet_from_urls;
 
 #[tokio::main]
 async fn main() -> Result<(), aztec_rs::Error> {
-    let pxe_url =
-        std::env::var("AZTEC_PXE_URL").unwrap_or_else(|_| "http://localhost:8080".into());
+    let pxe_url = std::env::var("AZTEC_PXE_URL").unwrap_or_else(|_| "http://localhost:8080".into());
     let node_url =
         std::env::var("AZTEC_NODE_URL").unwrap_or_else(|_| "http://localhost:8080".into());
 
@@ -104,10 +103,10 @@ async fn main() -> Result<(), aztec_rs::Error> {
 
     // Create a deploy method with constructor arguments.
     let deploy_method = deployer.deploy(vec![
-        AbiValue::Field(Fr::from(1u64)),       // admin
-        AbiValue::String("TestToken".into()),  // name
-        AbiValue::String("TT".into()),         // symbol
-        AbiValue::Integer(18),                 // decimals
+        AbiValue::Field(Fr::from(1u64)),      // admin
+        AbiValue::String("TestToken".into()), // name
+        AbiValue::String("TT".into()),        // symbol
+        AbiValue::Integer(18),                // decimals
     ])?;
     println!("Deploy method: {deploy_method:?}");
 

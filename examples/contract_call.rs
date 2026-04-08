@@ -51,8 +51,7 @@ fn make_wallet(
 
 #[tokio::main]
 async fn main() -> Result<(), aztec_rs::Error> {
-    let pxe_url =
-        std::env::var("AZTEC_PXE_URL").unwrap_or_else(|_| "http://localhost:8080".into());
+    let pxe_url = std::env::var("AZTEC_PXE_URL").unwrap_or_else(|_| "http://localhost:8080".into());
     let node_url =
         std::env::var("AZTEC_NODE_URL").unwrap_or_else(|_| "http://localhost:8080".into());
 
@@ -71,12 +70,25 @@ async fn main() -> Result<(), aztec_rs::Error> {
 
     let secret_key = Fr::from(0xdead_beef_u64);
     let account_contract = SchnorrAccountContract::new(secret_key);
-    println!("Signing pubkey: {:?}", account_contract.signing_public_key());
+    println!(
+        "Signing pubkey: {:?}",
+        account_contract.signing_public_key()
+    );
 
-    let bootstrap = make_wallet(&pxe_url, &node_url, secret_key, CompleteAddress::default(), "bootstrap");
-    let manager =
-        AccountManager::create(bootstrap, secret_key, Box::new(account_contract), Some(Fr::from(1u64)))
-            .await?;
+    let bootstrap = make_wallet(
+        &pxe_url,
+        &node_url,
+        secret_key,
+        CompleteAddress::default(),
+        "bootstrap",
+    );
+    let manager = AccountManager::create(
+        bootstrap,
+        secret_key,
+        Box::new(account_contract),
+        Some(Fr::from(1u64)),
+    )
+    .await?;
 
     let complete_address = manager.complete_address().await?;
     let from = complete_address.address;
@@ -85,7 +97,11 @@ async fn main() -> Result<(), aztec_rs::Error> {
     // -- Load and validate artifact --------------------------------------------
 
     let artifact = ContractArtifact::from_json(include_str!("../fixtures/token_contract.json"))?;
-    println!("Artifact: {} ({} functions)", artifact.name, artifact.functions.len());
+    println!(
+        "Artifact: {} ({} functions)",
+        artifact.name,
+        artifact.functions.len()
+    );
 
     let errors = abi_checker(&artifact);
     if !errors.is_empty() {
@@ -97,15 +113,31 @@ async fn main() -> Result<(), aztec_rs::Error> {
     // -- Storage layout --------------------------------------------------------
 
     let mut storage = ContractStorageLayout::new();
-    storage.insert("balances".into(), FieldLayout { slot: Fr::from(1u64) });
-    storage.insert("total_supply".into(), FieldLayout { slot: Fr::from(2u64) });
+    storage.insert(
+        "balances".into(),
+        FieldLayout {
+            slot: Fr::from(1u64),
+        },
+    );
+    storage.insert(
+        "total_supply".into(),
+        FieldLayout {
+            slot: Fr::from(2u64),
+        },
+    );
     if let Ok(json) = serde_json::to_string(&storage) {
         println!("Storage: {json}");
     }
 
     // -- Compute deploy address (local, no PXE) --------------------------------
 
-    let deploy_wallet = make_wallet(&pxe_url, &node_url, secret_key, complete_address.clone(), "deploy");
+    let deploy_wallet = make_wallet(
+        &pxe_url,
+        &node_url,
+        secret_key,
+        complete_address.clone(),
+        "deploy",
+    );
     let deploy_method = Contract::deploy(
         &deploy_wallet,
         artifact.clone(),
@@ -130,7 +162,13 @@ async fn main() -> Result<(), aztec_rs::Error> {
 
     // -- Build payloads locally (no PXE) ---------------------------------------
 
-    let wallet = make_wallet(&pxe_url, &node_url, secret_key, complete_address.clone(), "main");
+    let wallet = make_wallet(
+        &pxe_url,
+        &node_url,
+        secret_key,
+        complete_address.clone(),
+        "main",
+    );
     let contract = Contract::at(instance.address, artifact.clone(), wallet);
 
     let transfer_payload = contract
@@ -147,21 +185,22 @@ async fn main() -> Result<(), aztec_rs::Error> {
     println!("Transfer payload: {} call(s)", transfer_payload.calls.len());
 
     // Augment with auth witnesses and capsules.
-    let augmented = contract
-        .method("total_supply", vec![])?
-        .with(
-            vec![AuthWitness {
-                request_hash: Fr::from(123u64),
-                fields: vec![Fr::from(10u64)],
-            }],
-            vec![Capsule {
-                contract_address: instance.address,
-                storage_slot: Fr::from(1u64),
-                data: vec![Fr::from(42u64)],
-            }],
-        );
+    let augmented = contract.method("total_supply", vec![])?.with(
+        vec![AuthWitness {
+            request_hash: Fr::from(123u64),
+            fields: vec![Fr::from(10u64)],
+        }],
+        vec![Capsule {
+            contract_address: instance.address,
+            storage_slot: Fr::from(1u64),
+            data: vec![Fr::from(42u64)],
+        }],
+    );
     let call = augmented.get_function_call();
-    println!("total_supply: selector={}, is_static={}", call.selector, call.is_static);
+    println!(
+        "total_supply: selector={}, is_static={}",
+        call.selector, call.is_static
+    );
     let payload = augmented.request()?;
     println!(
         "  augmented: {} calls, {} auth_witnesses, {} capsules",
@@ -172,22 +211,34 @@ async fn main() -> Result<(), aztec_rs::Error> {
 
     // Batch multiple payloads.
     let p1 = contract
-        .method("transfer", vec![
-            AbiValue::Field(from.0),
-            AbiValue::Field(Fr::from(3u64)),
-            AbiValue::Integer(200),
-            AbiValue::Field(Fr::from(0u64)),
-        ])?
+        .method(
+            "transfer",
+            vec![
+                AbiValue::Field(from.0),
+                AbiValue::Field(Fr::from(3u64)),
+                AbiValue::Integer(200),
+                AbiValue::Field(Fr::from(0u64)),
+            ],
+        )?
         .request()?;
     let p2 = contract
-        .method("transfer", vec![
-            AbiValue::Field(from.0),
-            AbiValue::Field(Fr::from(4u64)),
-            AbiValue::Integer(300),
-            AbiValue::Field(Fr::from(0u64)),
-        ])?
+        .method(
+            "transfer",
+            vec![
+                AbiValue::Field(from.0),
+                AbiValue::Field(Fr::from(4u64)),
+                AbiValue::Integer(300),
+                AbiValue::Field(Fr::from(0u64)),
+            ],
+        )?
         .request()?;
-    let batch_wallet = make_wallet(&pxe_url, &node_url, secret_key, complete_address.clone(), "batch");
+    let batch_wallet = make_wallet(
+        &pxe_url,
+        &node_url,
+        secret_key,
+        complete_address.clone(),
+        "batch",
+    );
     let batch = BatchCall::new(&batch_wallet, vec![p1, p2]);
     let merged = batch.request()?;
     println!("Batch: {} calls merged", merged.calls.len());
@@ -202,7 +253,10 @@ async fn main() -> Result<(), aztec_rs::Error> {
     // Gas estimation from a simulation result.
     let mock_sim = TxSimulationResult {
         return_values: serde_json::Value::Null,
-        gas_used: Some(aztec_rs::fee::Gas { da_gas: 1000, l2_gas: 5000 }),
+        gas_used: Some(aztec_rs::fee::Gas {
+            da_gas: 1000,
+            l2_gas: 5000,
+        }),
     };
     let suggested = get_gas_limits(&mock_sim, Some(0.1));
     println!("Suggested gas: {:?}", suggested.gas_limits);
@@ -215,7 +269,10 @@ async fn main() -> Result<(), aztec_rs::Error> {
         dont_throw_on_revert: true,
         ..Default::default()
     };
-    println!("WaitOpts: {:?}, timeout={:?}", wait.wait_for_status, wait.timeout);
+    println!(
+        "WaitOpts: {:?}, timeout={:?}",
+        wait.wait_for_status, wait.timeout
+    );
 
     // -- PXE operations (require a running PXE) --------------------------------
 
@@ -223,7 +280,13 @@ async fn main() -> Result<(), aztec_rs::Error> {
 
     // Deploy: simulate, profile, send.
     let sim = deploy_method
-        .simulate(&deploy_opts, SimulateOptions { from, ..Default::default() })
+        .simulate(
+            &deploy_opts,
+            SimulateOptions {
+                from,
+                ..Default::default()
+            },
+        )
         .await;
     match sim {
         Ok(s) => println!("Deploy sim: gas={:?}", s.gas_used),
@@ -238,18 +301,41 @@ async fn main() -> Result<(), aztec_rs::Error> {
     let profile = deploy_method
         .profile(
             &deploy_opts,
-            ProfileOptions { from, profile_mode: Some(ProfileMode::Full), ..Default::default() },
+            ProfileOptions {
+                from,
+                profile_mode: Some(ProfileMode::Full),
+                ..Default::default()
+            },
         )
         .await?;
     println!("Deploy profile: gas={:?}", profile.gas_used);
 
     let deployed = deploy_method
-        .send(&deploy_opts, SendOptions { from, ..Default::default() })
+        .send(
+            &deploy_opts,
+            SendOptions {
+                from,
+                ..Default::default()
+            },
+        )
         .await?;
-    println!("Deployed: tx={}, addr={}", deployed.send_result.tx_hash, deployed.instance.address);
+    println!(
+        "Deployed: tx={}, addr={}",
+        deployed.send_result.tx_hash, deployed.instance.address
+    );
 
     // Interact with the deployed contract.
-    let contract = Contract::at(instance.address, artifact, make_wallet(&pxe_url, &node_url, secret_key, complete_address.clone(), "interact"));
+    let contract = Contract::at(
+        instance.address,
+        artifact,
+        make_wallet(
+            &pxe_url,
+            &node_url,
+            secret_key,
+            complete_address.clone(),
+            "interact",
+        ),
+    );
 
     // Simulate with gas estimation.
     let sim = contract
@@ -261,19 +347,25 @@ async fn main() -> Result<(), aztec_rs::Error> {
             ..Default::default()
         })
         .await?;
-    println!("balance_of_public: val={}, gas={:?}", sim.return_values, sim.gas_used);
+    println!(
+        "balance_of_public: val={}, gas={:?}",
+        sim.return_values, sim.gas_used
+    );
 
     let suggested = get_gas_limits(&sim, Some(0.1));
     println!("Suggested gas: {:?}", suggested.gas_limits);
 
     // Profile (gates).
     let profile = contract
-        .method("transfer", vec![
-            AbiValue::Field(from.0),
-            AbiValue::Field(Fr::from(2u64)),
-            AbiValue::Integer(100),
-            AbiValue::Field(Fr::from(0u64)),
-        ])?
+        .method(
+            "transfer",
+            vec![
+                AbiValue::Field(from.0),
+                AbiValue::Field(Fr::from(2u64)),
+                AbiValue::Integer(100),
+                AbiValue::Field(Fr::from(0u64)),
+            ],
+        )?
         .profile(ProfileOptions {
             from,
             profile_mode: Some(ProfileMode::Gates),
@@ -284,18 +376,29 @@ async fn main() -> Result<(), aztec_rs::Error> {
 
     // Send transfer.
     let tx = contract
-        .method("transfer", vec![
-            AbiValue::Field(from.0),
-            AbiValue::Field(Fr::from(2u64)),
-            AbiValue::Integer(50),
-            AbiValue::Field(Fr::from(0u64)),
-        ])?
-        .send(SendOptions { from, ..Default::default() })
+        .method(
+            "transfer",
+            vec![
+                AbiValue::Field(from.0),
+                AbiValue::Field(Fr::from(2u64)),
+                AbiValue::Integer(50),
+                AbiValue::Field(Fr::from(0u64)),
+            ],
+        )?
+        .send(SendOptions {
+            from,
+            ..Default::default()
+        })
         .await?;
     println!("transfer sent: {}", tx.tx_hash);
 
     // Batch send.
-    let batch_tx = batch.send(SendOptions { from, ..Default::default() }).await?;
+    let batch_tx = batch
+        .send(SendOptions {
+            from,
+            ..Default::default()
+        })
+        .await?;
     println!("Batch sent: {}", batch_tx.tx_hash);
 
     // Send with fee payload.
@@ -313,7 +416,10 @@ async fn main() -> Result<(), aztec_rs::Error> {
     let contract2 = contract.with_wallet(batch_wallet);
     let sim = contract2
         .method("total_supply", vec![])?
-        .simulate(SimulateOptions { from, ..Default::default() })
+        .simulate(SimulateOptions {
+            from,
+            ..Default::default()
+        })
         .await?;
     println!("with_wallet sim: {}", sim.return_values);
 

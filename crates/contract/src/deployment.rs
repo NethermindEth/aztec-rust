@@ -535,8 +535,10 @@ impl<W: Wallet> DeployMethod<'_, W> {
         deploy_opts: &DeployOptions,
         sim_opts: SimulateOptions,
     ) -> Result<TxSimulationResult, Error> {
-        let payload =
-            merge_fee_payload(self.request(deploy_opts).await?, &sim_opts.fee_execution_payload)?;
+        let payload = merge_fee_payload(
+            self.request(deploy_opts).await?,
+            &sim_opts.fee_execution_payload,
+        )?;
         self.wallet.simulate_tx(payload, sim_opts).await
     }
 
@@ -560,8 +562,10 @@ impl<W: Wallet> DeployMethod<'_, W> {
         send_opts: SendOptions,
     ) -> Result<DeployResult, Error> {
         let instance = self.get_instance(deploy_opts)?;
-        let payload =
-            merge_fee_payload(self.request(deploy_opts).await?, &send_opts.fee_execution_payload)?;
+        let payload = merge_fee_payload(
+            self.request(deploy_opts).await?,
+            &send_opts.fee_execution_payload,
+        )?;
         let send_result = self.wallet.send_tx(payload, send_opts).await?;
         Ok(DeployResult {
             send_result,

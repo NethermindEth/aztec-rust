@@ -4,8 +4,8 @@ use crate::error::Error;
 use crate::tx::{AuthWitness, Capsule, ExecutionPayload, FunctionCall, HashedValues};
 use crate::types::{AztecAddress, PublicKeys};
 use crate::wallet::{
-    ProfileOptions, SendOptions, SendResult, SimulateOptions, TxProfileResult,
-    TxSimulationResult, Wallet,
+    ProfileOptions, SendOptions, SendResult, SimulateOptions, TxProfileResult, TxSimulationResult,
+    Wallet,
 };
 
 // ---------------------------------------------------------------------------
@@ -180,11 +180,7 @@ impl<'a, W: Wallet> ContractFunctionInteraction<'a, W> {
     }
 
     /// Create a new interaction with capsules attached.
-    pub fn new_with_capsules(
-        wallet: &'a W,
-        call: FunctionCall,
-        capsules: Vec<Capsule>,
-    ) -> Self {
+    pub fn new_with_capsules(wallet: &'a W, call: FunctionCall, capsules: Vec<Capsule>) -> Self {
         Self {
             wallet,
             call,
@@ -195,11 +191,7 @@ impl<'a, W: Wallet> ContractFunctionInteraction<'a, W> {
     }
 
     /// Return a new interaction with additional auth witnesses and capsules.
-    pub fn with(
-        mut self,
-        auth_witnesses: Vec<AuthWitness>,
-        capsules: Vec<Capsule>,
-    ) -> Self {
+    pub fn with(mut self, auth_witnesses: Vec<AuthWitness>, capsules: Vec<Capsule>) -> Self {
         self.auth_witnesses.extend(auth_witnesses);
         self.capsules.extend(capsules);
         self

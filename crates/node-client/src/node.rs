@@ -886,8 +886,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_for_tx_respects_wait_for_status() {
-        let proposed =
-            MockNode::make_receipt(TxStatus::Proposed, Some(TxExecutionResult::Success));
+        let proposed = MockNode::make_receipt(TxStatus::Proposed, Some(TxExecutionResult::Success));
         let proven = MockNode::make_receipt(TxStatus::Proven, Some(TxExecutionResult::Success));
         let node = MockNode::new_with_receipt_sequence(vec![Ok(proposed), Ok(proven)]);
         let opts = WaitOpts {
@@ -923,8 +922,7 @@ mod tests {
         let dropped = MockNode::make_receipt(TxStatus::Dropped, None);
         let checkpointed =
             MockNode::make_receipt(TxStatus::Checkpointed, Some(TxExecutionResult::Success));
-        let node =
-            MockNode::new_with_receipt_sequence(vec![Ok(dropped), Ok(checkpointed)]);
+        let node = MockNode::new_with_receipt_sequence(vec![Ok(dropped), Ok(checkpointed)]);
         let opts = WaitOpts {
             timeout: Duration::from_secs(5),
             interval: Duration::from_millis(10),

@@ -41,7 +41,10 @@ impl SchnorrSignature {
     /// This matches the TS SDK convention where auth witness fields
     /// are the individual signature bytes as field elements.
     pub fn to_fields(&self) -> Vec<Fr> {
-        self.to_bytes().iter().map(|&b| Fr::from(b as u64)).collect()
+        self.to_bytes()
+            .iter()
+            .map(|&b| Fr::from(b as u64))
+            .collect()
     }
 }
 
@@ -109,11 +112,7 @@ pub fn schnorr_sign(private_key: &GrumpkinScalar, message: &Fr) -> SchnorrSignat
 /// 1. `R' = s * G + e * public_key`
 /// 2. `e' = Blake2s(R'.x || R'.y || message)`
 /// 3. Accept if `e == e'`
-pub fn schnorr_verify(
-    public_key: &Point,
-    message: &Fr,
-    signature: &SchnorrSignature,
-) -> bool {
+pub fn schnorr_verify(public_key: &Point, message: &Fr, signature: &SchnorrSignature) -> bool {
     let g = grumpkin::generator();
 
     let s_scalar = GrumpkinScalar::from_be_bytes_mod_order(&signature.s);
