@@ -1,8 +1,7 @@
 //! Example: Account lifecycle workflow.
 //!
 //! Demonstrates how to use `AccountManager` with a mock account contract
-//! to prepare account creation and deployment. Full account deployment
-//! (address derivation, key computation) is not yet implemented.
+//! to prepare account creation and deployment.
 //!
 //! Run with:
 //! ```bash
@@ -18,11 +17,11 @@ use aztec_rs::abi::{
     FunctionType,
 };
 use aztec_rs::account::{
-    Account, AccountContract, AccountManager, AuthorizationProvider, EntrypointOptions,
-    InitializationSpec, TxExecutionRequest,
+    Account, AccountContract, AccountManager, AuthorizationProvider, DeployAccountOptions,
+    EntrypointOptions, InitializationSpec, TxExecutionRequest,
 };
 use aztec_rs::fee::GasSettings;
-use aztec_rs::tx::{AuthWitness, ExecutionPayload};
+use aztec_rs::tx::{AuthWitness, ExecutionPayload, HashedValues, TxContext};
 use aztec_rs::types::{AztecAddress, CompleteAddress, Fr};
 use aztec_rs::wallet::{ChainInfo, MessageHashOrIntent, MockWallet};
 
@@ -51,7 +50,6 @@ impl AuthorizationProvider for DemoAccount {
         _intent: MessageHashOrIntent,
         _chain_info: &ChainInfo,
     ) -> Result<AuthWitness, aztec_rs::Error> {
-        // In a real implementation, this would sign the intent hash
         Ok(AuthWitness {
             fields: vec![self.addr.address.0],
             ..Default::default()
@@ -73,17 +71,22 @@ impl Account for DemoAccount {
         &self,
         exec: ExecutionPayload,
         gas_settings: GasSettings,
-        _chain_info: &ChainInfo,
-        options: EntrypointOptions,
+        chain_info: &ChainInfo,
+        _options: EntrypointOptions,
     ) -> Result<TxExecutionRequest, aztec_rs::Error> {
         Ok(TxExecutionRequest {
             origin: self.addr.address,
-            calls: exec.calls,
+            function_selector: FunctionSelector::from_hex("0xaabbccdd")?,
+            first_call_args_hash: Fr::from(1u64),
+            tx_context: TxContext {
+                chain_id: chain_info.chain_id,
+                version: chain_info.version,
+                gas_settings,
+            },
+            args_of_calls: vec![HashedValues::from_args(vec![Fr::from(1u64)])],
             auth_witnesses: exec.auth_witnesses,
             capsules: exec.capsules,
-            extra_hashed_args: exec.extra_hashed_args,
-            gas_settings: Some(gas_settings),
-            fee_payer: options.fee_payer.or(exec.fee_payer),
+            salt: Fr::from(7u64),
         })
     }
 
@@ -173,32 +176,51 @@ async fn main() -> Result<(), aztec_rs::Error> {
     println!("  secret_key:     {}", manager.secret_key());
     println!("  has_initializer: {}", manager.has_initializer());
 
-    // 4. Access the contract instance (placeholder address).
+    // 4. Access the contract instance with real derived address.
     let instance = manager.instance();
     println!("\nContract instance:");
-    println!("  address (placeholder): {}", instance.address);
-    println!("  version:               {}", instance.inner.version);
-    println!("  salt:                  {}", instance.inner.salt);
+    println!("  address: {}", instance.address);
+    println!("  version: {}", instance.inner.version);
+    println!("  salt:    {}", instance.inner.salt);
 
-    // 5. Attempt to get the complete address (expected to fail).
+    // 5. Get the complete address (key derivation + address computation).
     match manager.complete_address().await {
         Ok(addr) => println!("\nComplete address: {}", addr.address),
-        Err(e) => println!("\nComplete address (expected deferred): {e}"),
+        Err(e) => println!("\nComplete address error: {e}"),
     }
 
-    // 6. Attempt to get a deploy method.
+    // 6. Get a deploy method and build the deployment payload.
     match manager.deploy_method().await {
         Ok(deploy) => {
-            println!("\nDeploy method: {deploy:?}");
-            match deploy.request() {
-                Ok(_) => println!("Deployment payload built."),
-                Err(e) => println!("Deploy request (expected deferred): {e}"),
+            println!(
+                "\nDeploy method created for instance: {}",
+                deploy.instance().address
+            );
+            let opts = DeployAccountOptions {
+                skip_registration: true,
+                ..Default::default()
+            };
+            match deploy.request(&opts).await {
+                Ok(payload) => println!(
+                    "Deployment payload built with {} call(s).",
+                    payload.calls.len()
+                ),
+                Err(e) => println!("Deploy request error: {e}"),
             }
         }
         Err(e) => println!("\nDeploy method error: {e}"),
     }
 
-    println!("\nDone. Full account deployment requires crypto primitives not yet implemented.");
+    // 7. Demonstrate get_account_contract_address.
+    let contract = DemoAccountContract::new(secret_key);
+    let pre_addr =
+        aztec_rs::account::get_account_contract_address(&contract, secret_key, salt).await?;
+    println!("\nPre-deployment address: {pre_addr}");
+    println!("Manager address:        {}", manager.address());
+    assert_eq!(pre_addr, manager.address());
+    println!("Addresses match!");
+
+    println!("\nDone.");
 
     Ok(())
 }
