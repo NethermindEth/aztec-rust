@@ -307,10 +307,10 @@ impl<P: Pxe, N: AztecNode, A: AccountProvider> Wallet for BaseWallet<P, N, A> {
 
         let scopes = Self::build_scopes(&opts.from, &opts.additional_scopes);
 
-        let profile_mode = match opts.profile_mode.as_deref() {
-            Some("execution-steps") => pxe::ProfileMode::ExecutionSteps,
-            Some("gates") => pxe::ProfileMode::Gates,
-            _ => pxe::ProfileMode::Full,
+        let profile_mode = match opts.profile_mode {
+            Some(super::wallet::ProfileMode::ExecutionSteps) => pxe::ProfileMode::ExecutionSteps,
+            Some(super::wallet::ProfileMode::Gates) => pxe::ProfileMode::Gates,
+            Some(super::wallet::ProfileMode::Full) | None => pxe::ProfileMode::Full,
         };
 
         let pxe_opts = pxe::ProfileTxOpts {
@@ -494,6 +494,10 @@ mod tests {
         }
 
         async fn get_block_number(&self) -> Result<u64, Error> {
+            Ok(0)
+        }
+
+        async fn get_proven_block_number(&self) -> Result<u64, Error> {
             Ok(0)
         }
 

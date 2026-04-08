@@ -56,7 +56,7 @@ pub struct ContractClassMetadata {
 }
 
 /// Options for transaction simulation.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SimulateOptions {
     /// Address of the simulating account.
@@ -78,6 +78,15 @@ pub struct SimulateOptions {
     pub additional_scopes: Vec<AztecAddress>,
     /// Gas settings for the simulation.
     pub gas_settings: Option<GasSettings>,
+    /// Pre-resolved fee execution payload to merge into the transaction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_execution_payload: Option<ExecutionPayload>,
+    /// If true, estimate gas and include suggested gas settings in the result.
+    #[serde(default)]
+    pub estimate_gas: bool,
+    /// Padding factor for gas estimation (default: 0.1 = 10%).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_gas_padding: Option<f64>,
 }
 
 /// Options for transaction sending.
@@ -97,6 +106,21 @@ pub struct SendOptions {
     pub additional_scopes: Vec<AztecAddress>,
     /// Gas settings for the transaction.
     pub gas_settings: Option<GasSettings>,
+    /// Pre-resolved fee execution payload to merge into the transaction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_execution_payload: Option<ExecutionPayload>,
+}
+
+/// Profiling mode for transaction analysis.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProfileMode {
+    /// Count constraint gates.
+    Gates,
+    /// Count execution steps.
+    ExecutionSteps,
+    /// Full profiling (gates + execution steps).
+    Full,
 }
 
 /// Options for transaction profiling.
@@ -114,13 +138,16 @@ pub struct ProfileOptions {
     /// Additional note-discovery scopes.
     #[serde(default)]
     pub additional_scopes: Vec<AztecAddress>,
-    /// Profiling mode (e.g. `"full"`, `"execution"`).
-    pub profile_mode: Option<String>,
+    /// Profiling mode.
+    pub profile_mode: Option<ProfileMode>,
     /// Whether proof generation should be skipped while profiling.
     #[serde(default = "default_skip_proof_generation")]
     pub skip_proof_generation: bool,
     /// Gas settings for profiling.
     pub gas_settings: Option<GasSettings>,
+    /// Pre-resolved fee execution payload to merge into the transaction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_execution_payload: Option<ExecutionPayload>,
 }
 
 /// Options for utility function execution.
@@ -237,6 +264,9 @@ impl Default for SimulateOptions {
             capsules: vec![],
             additional_scopes: vec![],
             gas_settings: None,
+            fee_execution_payload: None,
+            estimate_gas: false,
+            estimated_gas_padding: None,
         }
     }
 }
@@ -249,6 +279,7 @@ impl Default for SendOptions {
             capsules: vec![],
             additional_scopes: vec![],
             gas_settings: None,
+            fee_execution_payload: None,
         }
     }
 }
@@ -263,6 +294,7 @@ impl Default for ProfileOptions {
             profile_mode: None,
             skip_proof_generation: default_skip_proof_generation(),
             gas_settings: None,
+            fee_execution_payload: None,
         }
     }
 }
@@ -1053,5 +1085,28 @@ mod tests {
             .await
             .expect("create auth wit");
         assert!(wit.fields.is_empty());
+    }
+
+    // -- ProfileMode serialization --
+
+    #[test]
+    fn profile_mode_serialization() {
+        for mode in [ProfileMode::Gates, ProfileMode::ExecutionSteps, ProfileMode::Full] {
+            let json = serde_json::to_string(&mode).expect("serialize");
+            let decoded: ProfileMode = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(decoded, mode);
+        }
+        assert_eq!(
+            serde_json::to_string(&ProfileMode::Gates).unwrap(),
+            "\"gates\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ProfileMode::ExecutionSteps).unwrap(),
+            "\"execution-steps\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ProfileMode::Full).unwrap(),
+            "\"full\""
+        );
     }
 }
