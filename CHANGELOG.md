@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-08
+
 ### Added
 
 - Full key derivation pipeline in `aztec-crypto`: `derive_keys`, `derive_master_nullifier_hiding_key`, `derive_master_incoming_viewing_secret_key`, `derive_master_outgoing_viewing_secret_key`, `derive_master_tagging_secret_key`, `derive_signing_key`, `derive_public_key_from_secret_key` (`aztec-crypto`)
@@ -216,7 +218,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Implementation plan and spec documents
 
-[Unreleased]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/NethermindEth/aztec-rust/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.5...v0.3.0
 [0.2.5]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.2...v0.2.3

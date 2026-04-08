@@ -1,15 +1,15 @@
 [package]
 name = "aztec-account"
-version = "0.2.5"
+version = "0.3.0"
 edition = "2021"
 description = "Account abstraction, AccountManager, and authorization for the Aztec Rust SDK"
 license = "Apache-2.0"
 
 [dependencies]
-aztec-core = { path = "../core", version = "0.2.5" }
-aztec-crypto = { path = "../crypto", version = "0.2.5" }
-aztec-wallet = { path = "../wallet", version = "0.2.5" }
-aztec-pxe-client = { path = "../pxe-client", version = "0.2.5" }
+aztec-core = { path = "../core", version = "0.3.0" }
+aztec-crypto = { path = "../crypto", version = "0.3.0" }
+aztec-wallet = { path = "../wallet", version = "0.3.0" }
+aztec-pxe-client = { path = "../pxe-client", version = "0.3.0" }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
