@@ -3,18 +3,20 @@ mod checkers;
 mod decoder;
 mod encoder;
 mod selectors;
+mod storage_layout;
 mod types;
 
 // Re-export everything for the public API
 pub use buffer::{buffer_as_fields, buffer_from_fields};
 pub use checkers::{
-    abi_type_size, count_arguments_size, is_address_struct, is_aztec_address_struct,
+    abi_checker, abi_type_size, count_arguments_size, is_address_struct, is_aztec_address_struct,
     is_bounded_vec_struct, is_eth_address_struct, is_function_selector_struct, is_option_struct,
     is_public_keys_struct, is_wrapped_field_struct,
 };
 pub use decoder::{decode_from_abi, AbiDecoded};
 pub use encoder::{encode_arguments, encode_value};
 pub use selectors::{AuthorizationSelector, EventSelector, FunctionSelector, NoteSelector};
+pub use storage_layout::{ContractStorageLayout, FieldLayout};
 pub use types::{
     abi_type_signature, AbiParameter, AbiType, AbiValue, ContractArtifact, FunctionArtifact,
     FunctionType,
