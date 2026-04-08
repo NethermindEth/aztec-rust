@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `SchnorrSignature` struct with `to_bytes()`, `from_bytes()`, `to_fields()` for Grumpkin Schnorr signatures (`aztec-crypto`)
+- `schnorr_sign()` — Schnorr signing on the Grumpkin curve with Blake2s-256 challenge hash and deterministic nonce (`aztec-crypto`)
+- `schnorr_verify()` — Schnorr signature verification against a Grumpkin public key (`aztec-crypto`)
+- `SchnorrAccountContract` — real Schnorr-based account contract implementing `AccountContract`, `Account`, and `AuthorizationProvider` with actual cryptographic signing (`aztec-account`)
+- `SchnorrAuthorizationProvider` — creates auth witnesses with real Schnorr signatures matching the TS SDK convention (64 Fr fields, one per signature byte) (`aztec-account`)
+- `SchnorrAccount` — account implementation routing through `DefaultAccountEntrypoint` with Schnorr signing (`aztec-account`)
+- `DefaultAccountEntrypoint::entrypoint_abi()` made public for account contract implementations to include in their artifacts (`aztec-account`)
+- `SchnorrAccountContract` re-exported from `aztec-account` and `aztec-rs` umbrella crate
+- `blake2` dependency added to `aztec-crypto`
+- 15 new unit tests across `aztec-crypto` (sign/verify roundtrip, determinism, serialization) and `aztec-account` (artifact structure, signature verification, AccountManager integration, deploy payload)
+- `WaitOpts.wait_for_status` field replacing `proven: bool` — wait for any `TxStatus` target (`aztec-node-client`)
+- `WaitOpts.dont_throw_on_revert` — accept reverted receipts without error (`aztec-node-client`)
+- `WaitOpts.ignore_dropped_receipts_for` — grace period before treating `Dropped` as failure (`aztec-node-client`)
+- `WaitForProvenOpts` struct and `wait_for_proven()` — poll until a receipt's block is proven on L1 (`aztec-node-client`)
+- `AztecNode::get_proven_block_number()` trait method and `HttpNodeClient` implementation (`aztec-node-client`)
+- `ContractFunctionInteraction::profile()` and `BatchCall::profile()` — delegate to `Wallet::profile_tx` (`aztec-contract`)
+- `DeployMethod::profile()` for profiling deployment transactions (`aztec-contract`)
+- `Contract::deploy()` and `Contract::deploy_with_public_keys()` — static deployment shorthands (`aztec-contract`)
+- `Contract::with_wallet()` — swap wallet on an existing contract handle (`aztec-contract`)
+- `ContractFunctionInteraction::with()` — augment interactions with auth witnesses and capsules (`aztec-contract`)
+- `ContractFunctionInteraction::get_function_call()` — access the underlying `FunctionCall` (`aztec-contract`)
+- `ProfileMode` enum (`Gates`, `ExecutionSteps`, `Full`) replacing `Option<String>` in `ProfileOptions` (`aztec-wallet`)
+- `FieldLayout` and `ContractStorageLayout` types for storage slot descriptors (`aztec-core`)
+- `abi_checker()` artifact validator with recursive `AbiType` validation (`aztec-core`)
+- `SendOptions.fee_execution_payload`, `SimulateOptions.fee_execution_payload`, `ProfileOptions.fee_execution_payload` — pre-resolved fee payload merged into transactions (`aztec-wallet`)
+- `SimulateOptions.estimate_gas` and `SimulateOptions.estimated_gas_padding` for gas estimation (`aztec-wallet`)
+- Fee payload merging in `ContractFunctionInteraction` and `BatchCall` `send()`/`simulate()`/`profile()` methods (`aztec-contract`)
+- All new types re-exported from `aztec-contract` and `aztec-rs` umbrella crate
+- 25+ new unit tests across `aztec-node-client`, `aztec-contract`, `aztec-wallet`, and `aztec-core`
+
+### Changed
+
+- `WaitOpts` default timeout increased from 60s to 300s to match TypeScript SDK (`aztec-node-client`)
+- `WaitOpts.proven: bool` removed — use `wait_for_status: TxStatus::Proven` instead (`aztec-node-client`)
+- `ProfileOptions.profile_mode` changed from `Option<String>` to `Option<ProfileMode>` (`aztec-wallet`)
+- `SimulateOptions` no longer derives `Eq` (now contains `f64` padding field) (`aztec-wallet`)
+- `ContractFunctionInteraction` now carries `auth_witnesses` and `extra_hashed_args` fields included in generated payloads (`aztec-contract`)
+- `BaseWallet::profile_tx` uses typed `ProfileMode` enum instead of string matching (`aztec-wallet`)
+- All examples (`account_flow`, `contract_call`, `deploy_contract`) now use `SchnorrAccountContract` and real `BaseWallet` connections instead of inline mock account contracts and `MockWallet`
+
 ## [0.3.1] - 2026-04-08
 
 ### Added
