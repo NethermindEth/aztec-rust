@@ -4,14 +4,17 @@ use serde::{Deserialize, Serialize};
 use crate::abi::{AbiValue, ContractArtifact};
 use crate::error::Error;
 use crate::fee::GasSettings;
-use crate::tx::{AuthWitness, Capsule, ExecutionPayload, FunctionCall, HashedValues};
-use crate::types::{
-    AztecAddress, CompleteAddress, ContractInstance, ContractInstanceWithAddress, Fr, PublicKeys,
-};
+use crate::tx::{AuthWitness, Capsule, ExecutionPayload, HashedValues, TxContext};
+use crate::types::{AztecAddress, CompleteAddress, ContractInstanceWithAddress, Fr, Salt};
 use crate::wallet::{
     ChainInfo, MessageHashOrIntent, SendOptions, SendResult, SimulateOptions, TxSimulationResult,
     Wallet,
 };
+
+use aztec_contract::deployment::{
+    get_contract_instance_from_instantiation_params, ContractInstantiationParams,
+};
+use aztec_fee::FeePaymentMethod;
 
 // ---------------------------------------------------------------------------
 // Supporting types
@@ -29,25 +32,26 @@ pub struct EntrypointOptions {
 
 /// A transaction execution request produced by an account's entrypoint.
 ///
-/// This is the processed form of an [`ExecutionPayload`] after the account
-/// entrypoint has wrapped it with authentication and gas handling.
+/// This mirrors the upstream Aztec `TxExecutionRequest` shape used by PXE.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TxExecutionRequest {
     /// The origin account address.
     pub origin: AztecAddress,
-    /// Function calls in this request.
-    pub calls: Vec<FunctionCall>,
+    /// Selector of the entrypoint function to execute.
+    pub function_selector: crate::abi::FunctionSelector,
+    /// Hash of the first call's encoded arguments.
+    pub first_call_args_hash: Fr,
+    /// Transaction context (chain info + gas settings).
+    pub tx_context: TxContext,
+    /// Hashed arguments for all calls in the transaction.
+    pub args_of_calls: Vec<HashedValues>,
     /// Authorization witnesses.
     pub auth_witnesses: Vec<AuthWitness>,
     /// Capsules (private data) for the transaction.
     pub capsules: Vec<Capsule>,
-    /// Extra hashed arguments.
-    pub extra_hashed_args: Vec<HashedValues>,
-    /// Gas settings for the transaction.
-    pub gas_settings: Option<GasSettings>,
-    /// Fee payer override.
-    pub fee_payer: Option<AztecAddress>,
+    /// Salt used to randomize the tx request hash.
+    pub salt: Fr,
 }
 
 /// Specification for the initialization function of an account contract.
@@ -137,6 +141,51 @@ pub trait AccountContract: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
+// get_account_contract_address
+// ---------------------------------------------------------------------------
+
+/// Computes the address of an account contract before deployment.
+///
+/// This derives keys from `secret`, gets the contract artifact and initialization spec,
+/// then computes the deterministic address using salt and derived public keys.
+///
+/// Uses the same shared instance-construction path as deployment to avoid
+/// duplicating class-id / init-hash / address derivation logic.
+pub async fn get_account_contract_address(
+    account_contract: &dyn AccountContract,
+    secret: Fr,
+    salt: impl Into<Salt>,
+) -> Result<AztecAddress, Error> {
+    let salt: Fr = salt.into();
+    let derived = aztec_crypto::derive_keys(&secret);
+    let public_keys = derived.public_keys;
+
+    let init_spec = account_contract.initialization_function_and_args().await?;
+    let artifact = account_contract.contract_artifact().await?;
+
+    let constructor_name = init_spec
+        .as_ref()
+        .map(|spec| spec.constructor_name.as_str());
+    let constructor_args = init_spec
+        .as_ref()
+        .map(|spec| spec.constructor_args.clone())
+        .unwrap_or_default();
+
+    let instance = get_contract_instance_from_instantiation_params(
+        &artifact,
+        ContractInstantiationParams {
+            constructor_name,
+            constructor_args,
+            salt,
+            public_keys,
+            deployer: AztecAddress::zero(),
+        },
+    )?;
+
+    Ok(instance.address)
+}
+
+// ---------------------------------------------------------------------------
 // AccountWithSecretKey
 // ---------------------------------------------------------------------------
 
@@ -150,7 +199,7 @@ pub struct AccountWithSecretKey {
     /// The secret key associated with this account.
     pub secret_key: Fr,
     /// Deployment salt for this account contract.
-    pub salt: Fr,
+    pub salt: Salt,
 }
 
 impl std::fmt::Debug for AccountWithSecretKey {
@@ -208,61 +257,167 @@ impl Account for AccountWithSecretKey {
 // DeployAccountMethod
 // ---------------------------------------------------------------------------
 
+/// Options specific to account deployment.
+pub struct DeployAccountOptions {
+    /// Skip publishing the contract class (if already published).
+    pub skip_class_publication: bool,
+    /// Skip publishing the contract instance.
+    pub skip_instance_publication: bool,
+    /// Skip calling the constructor.
+    pub skip_initialization: bool,
+    /// Skip registering the contract with the wallet.
+    pub skip_registration: bool,
+    /// Explicit deployer override for third-party deployment.
+    pub from: Option<AztecAddress>,
+    /// Fee payment method.
+    pub fee: Option<std::sync::Arc<dyn aztec_fee::FeePaymentMethod>>,
+    /// Fee entrypoint options override.
+    pub fee_entrypoint_options: Option<crate::entrypoint::DefaultAccountEntrypointOptions>,
+}
+
+impl Default for DeployAccountOptions {
+    fn default() -> Self {
+        Self {
+            skip_class_publication: true,
+            skip_instance_publication: true,
+            skip_initialization: false,
+            skip_registration: false,
+            from: None,
+            fee: None,
+            fee_entrypoint_options: None,
+        }
+    }
+}
+
+impl std::fmt::Debug for DeployAccountOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeployAccountOptions")
+            .field("skip_class_publication", &self.skip_class_publication)
+            .field("skip_instance_publication", &self.skip_instance_publication)
+            .field("skip_initialization", &self.skip_initialization)
+            .field("from", &self.from)
+            .field("has_fee", &self.fee.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 /// A deployment method for account contracts.
 ///
-/// Packages the account contract deployment as a wallet-compatible
-/// interaction (simulate/send). Full account deployment still depends on the
-/// validated generic deployment path plus address derivation, so this remains
-/// explicit rather than speculative.
+/// Wraps the generic [`DeployMethod`] from `aztec-contract` with account-specific
+/// fee-payment wrapping via [`AccountEntrypointMetaPaymentMethod`].
 pub struct DeployAccountMethod<'a, W> {
     wallet: &'a W,
-    artifact: ContractArtifact,
-    instance: ContractInstanceWithAddress,
-    init_spec: Option<InitializationSpec>,
+    account: std::sync::Arc<dyn Account>,
+    inner: aztec_contract::deployment::DeployMethod<'a, W>,
+    inner_instance: ContractInstanceWithAddress,
 }
 
 impl<W> std::fmt::Debug for DeployAccountMethod<'_, W> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DeployAccountMethod")
-            .field("artifact", &self.artifact.name)
-            .field("has_init_spec", &self.init_spec.is_some())
+            .field("inner", &self.inner)
             .finish_non_exhaustive()
     }
 }
 
 impl<W: Wallet> DeployAccountMethod<'_, W> {
-    /// Build the execution payload for this account deployment.
+    /// Build the full deployment execution payload.
     ///
-    /// Account deployment requires a fully validated deployment path. Until the
-    /// generic deployer can derive addresses and encode publication calls,
-    /// return an explicit error instead of emitting a misleading constructor
-    /// call to a placeholder address.
-    pub fn request(&self) -> Result<ExecutionPayload, Error> {
-        let _ = &self.artifact;
-        let _ = &self.instance;
-        let _ = &self.init_spec;
-        Err(Error::InvalidData(
-            "account deployment payload construction requires deployment address derivation and publication helpers"
-                .to_owned(),
-        ))
+    /// For self-deployed accounts (deployer == zero), fee payment goes after
+    /// the deployment payload because the account contract must exist before
+    /// it can execute its own entrypoint. For third-party deploys, fee goes first.
+    pub async fn request(&self, opts: &DeployAccountOptions) -> Result<ExecutionPayload, Error> {
+        let deploy_opts = self.to_deploy_options(opts);
+        let deploy_payload = self.inner.request(&deploy_opts).await?;
+        let is_self_deploy = opts.from == Some(AztecAddress::zero());
+
+        let fee_payload = match (&opts.fee, is_self_deploy) {
+            (Some(method), true) => {
+                let wrapped = crate::meta_payment::AccountEntrypointMetaPaymentMethod::new(
+                    self.account.clone(),
+                    Some(method.clone()),
+                    opts.fee_entrypoint_options.clone(),
+                );
+                Some(wrapped.get_fee_execution_payload().await?)
+            }
+            (Some(method), false) => Some(method.get_fee_execution_payload().await?),
+            (None, true) => {
+                let wrapped = crate::meta_payment::AccountEntrypointMetaPaymentMethod::new(
+                    self.account.clone(),
+                    None,
+                    Some(crate::entrypoint::DefaultAccountEntrypointOptions {
+                        cancellable: false,
+                        tx_nonce: None,
+                        fee_payment_method_options:
+                            crate::entrypoint::AccountFeePaymentMethodOptions::PreexistingFeeJuice,
+                    }),
+                );
+                Some(wrapped.get_fee_execution_payload().await?)
+            }
+            (None, false) => None,
+        };
+
+        match fee_payload {
+            Some(fee) if is_self_deploy => ExecutionPayload::merge(vec![deploy_payload, fee]),
+            Some(fee) => ExecutionPayload::merge(vec![fee, deploy_payload]),
+            None => Ok(deploy_payload),
+        }
     }
 
     /// Simulate the account deployment without sending.
-    pub async fn simulate(&self, opts: SimulateOptions) -> Result<TxSimulationResult, Error> {
-        let payload = self.request()?;
-        self.wallet.simulate_tx(payload, opts).await
+    pub async fn simulate(
+        &self,
+        opts: &DeployAccountOptions,
+        sim_opts: SimulateOptions,
+    ) -> Result<TxSimulationResult, Error> {
+        let payload = self.request(opts).await?;
+        self.wallet.simulate_tx(payload, sim_opts).await
     }
 
     /// Send the account deployment transaction.
-    pub async fn send(&self, opts: SendOptions) -> Result<SendResult, Error> {
-        let payload = self.request()?;
-        self.wallet.send_tx(payload, opts).await
+    pub async fn send(
+        &self,
+        opts: &DeployAccountOptions,
+        send_opts: SendOptions,
+    ) -> Result<DeployResult, Error> {
+        let deploy_opts = self.to_deploy_options(opts);
+        let instance = self.inner.get_instance(&deploy_opts)?;
+        let payload = self.request(opts).await?;
+        let send_result = self.wallet.send_tx(payload, send_opts).await?;
+        Ok(DeployResult {
+            send_result,
+            instance,
+        })
     }
 
     /// Get the contract instance that will be deployed.
-    pub const fn instance(&self) -> &ContractInstanceWithAddress {
-        &self.instance
+    pub fn instance(&self) -> &ContractInstanceWithAddress {
+        &self.inner_instance
     }
+
+    fn to_deploy_options(
+        &self,
+        opts: &DeployAccountOptions,
+    ) -> aztec_contract::deployment::DeployOptions {
+        aztec_contract::deployment::DeployOptions {
+            contract_address_salt: Some(self.inner_instance.inner.salt),
+            skip_class_publication: opts.skip_class_publication,
+            skip_instance_publication: opts.skip_instance_publication,
+            skip_initialization: opts.skip_initialization,
+            skip_registration: opts.skip_registration,
+            universal_deploy: true,
+            from: None,
+        }
+    }
+}
+
+/// The result of an account deployment transaction.
+#[derive(Clone, Debug)]
+pub struct DeployResult {
+    /// The underlying send result (tx hash).
+    pub send_result: SendResult,
+    /// The deployed contract instance with its derived address.
+    pub instance: ContractInstanceWithAddress,
 }
 
 // ---------------------------------------------------------------------------
@@ -279,10 +434,9 @@ pub struct AccountManager<W> {
     wallet: W,
     secret_key: Fr,
     account_contract: Box<dyn AccountContract>,
-    artifact_name: String,
     has_initializer: bool,
     instance: ContractInstanceWithAddress,
-    salt: Fr,
+    salt: Salt,
 }
 
 impl<W: Wallet> AccountManager<W> {
@@ -296,9 +450,9 @@ impl<W: Wallet> AccountManager<W> {
         wallet: W,
         secret_key: Fr,
         account_contract: Box<dyn AccountContract>,
-        salt: Option<Fr>,
+        salt: Option<impl Into<Salt>>,
     ) -> Result<Self, Error> {
-        let salt = salt.unwrap_or_else(Fr::random);
+        let salt: Salt = salt.map(Into::into).unwrap_or_else(Salt::random);
 
         let artifact = account_contract.contract_artifact().await?;
         let init_spec = account_contract.initialization_function_and_args().await?;
@@ -322,27 +476,33 @@ impl<W: Wallet> AccountManager<W> {
             }
         }
 
-        // Placeholder instance. In the full implementation, the address and
-        // class IDs are derived from the artifact bytecode hash, salt,
-        // initialization hash, deployer, and public keys.
-        let instance = ContractInstanceWithAddress {
-            address: AztecAddress(Fr::zero()),
-            inner: ContractInstance {
-                version: 1,
+        // Derive keys and compute full contract instance with real address.
+        let derived = aztec_crypto::derive_keys(&secret_key);
+        let public_keys = derived.public_keys;
+
+        let constructor_name = init_spec
+            .as_ref()
+            .map(|spec| spec.constructor_name.as_str());
+        let constructor_args = init_spec
+            .as_ref()
+            .map(|spec| spec.constructor_args.clone())
+            .unwrap_or_default();
+
+        let instance = get_contract_instance_from_instantiation_params(
+            &artifact,
+            ContractInstantiationParams {
+                constructor_name,
+                constructor_args,
                 salt,
-                deployer: AztecAddress(Fr::zero()),
-                current_contract_class_id: Fr::zero(),
-                original_contract_class_id: Fr::zero(),
-                initialization_hash: Fr::zero(),
-                public_keys: PublicKeys::default(),
+                public_keys,
+                deployer: AztecAddress::zero(),
             },
-        };
+        )?;
 
         Ok(Self {
             wallet,
             secret_key,
             account_contract,
-            artifact_name: artifact.name,
             has_initializer: init_spec.is_some(),
             instance,
             salt,
@@ -353,10 +513,6 @@ impl<W: Wallet> AccountManager<W> {
     ///
     /// Derives the full key set from the secret key, computes the partial
     /// address from the contract instance, and returns the complete address.
-    ///
-    /// Note: correct results require `create()` to have populated the instance
-    /// fields (contract class ID, initialization hash, deployer) properly.
-    /// Until that is done, the computed address will be based on zero placeholders.
     #[allow(clippy::unused_async)]
     pub async fn complete_address(&self) -> Result<CompleteAddress, Error> {
         use aztec_core::hash::{
@@ -385,10 +541,7 @@ impl<W: Wallet> AccountManager<W> {
         })
     }
 
-    /// Get the address currently associated with this account instance.
-    ///
-    /// Until contract instance hashing is implemented, this remains the
-    /// placeholder address stored in the manager.
+    /// Get the address of this account instance.
     pub const fn address(&self) -> AztecAddress {
         self.instance.address
     }
@@ -399,7 +552,7 @@ impl<W: Wallet> AccountManager<W> {
     }
 
     /// Get the salt used for this account.
-    pub const fn salt(&self) -> Fr {
+    pub const fn salt(&self) -> Salt {
         self.salt
     }
 
@@ -426,28 +579,46 @@ impl<W: Wallet> AccountManager<W> {
 
     /// Get a deployment method for this account's contract.
     ///
-    /// Fetches the artifact and initialization spec from the account contract
-    /// and builds a [`DeployAccountMethod`] that can simulate or send the
-    /// deployment transaction.
+    /// Fetches the artifact and initialization spec from the account contract,
+    /// creates a generic `ContractDeployer` + `DeployMethod`, and wraps it
+    /// with account-specific fee-payment logic in a [`DeployAccountMethod`].
     pub async fn deploy_method(&self) -> Result<DeployAccountMethod<'_, W>, Error> {
-        if !self.has_initializer {
-            return Err(Error::InvalidData(format!(
-                "account contract '{}' does not have an initializer function to call",
-                self.artifact_name
-            )));
-        }
-
         let artifact = self.account_contract.contract_artifact().await?;
         let init_spec = self
             .account_contract
             .initialization_function_and_args()
             .await?;
 
+        let complete_addr = self.complete_address().await?;
+        let account: std::sync::Arc<dyn Account> =
+            std::sync::Arc::from(self.account_contract.account(complete_addr));
+
+        let constructor_args = init_spec
+            .as_ref()
+            .map(|s| s.constructor_args.clone())
+            .unwrap_or_default();
+
+        let mut deployer =
+            aztec_contract::deployment::ContractDeployer::new(artifact, &self.wallet)
+                .with_public_keys(self.instance.inner.public_keys.clone());
+        if let Some(spec) = &init_spec {
+            deployer = deployer.with_constructor_name(spec.constructor_name.clone());
+        }
+
+        let inner = deployer.deploy(constructor_args)?;
+
+        // Get the instance using the account's salt.
+        let deploy_opts = aztec_contract::deployment::DeployOptions {
+            contract_address_salt: Some(self.salt),
+            ..Default::default()
+        };
+        let inner_instance = inner.get_instance(&deploy_opts)?;
+
         Ok(DeployAccountMethod {
             wallet: &self.wallet,
-            artifact,
-            instance: self.instance.clone(),
-            init_spec,
+            account,
+            inner,
+            inner_instance,
         })
     }
 }
@@ -462,7 +633,7 @@ mod tests {
     use super::*;
     use crate::abi::{AbiParameter, AbiType, FunctionArtifact, FunctionSelector, FunctionType};
     use crate::fee::Gas;
-    use crate::tx::TxHash;
+    use crate::types::PublicKeys;
     use crate::wallet::MockWallet;
 
     // -- Test helpers: mock account types -----------------------------------
@@ -517,17 +688,23 @@ mod tests {
             &self,
             exec: ExecutionPayload,
             gas_settings: GasSettings,
-            _chain_info: &ChainInfo,
-            options: EntrypointOptions,
+            chain_info: &ChainInfo,
+            _options: EntrypointOptions,
         ) -> Result<TxExecutionRequest, Error> {
             Ok(TxExecutionRequest {
                 origin: self.addr.address,
-                calls: exec.calls,
+                function_selector: FunctionSelector::from_hex("0x12345678")
+                    .expect("valid selector"),
+                first_call_args_hash: Fr::from(11u64),
+                tx_context: TxContext {
+                    chain_id: chain_info.chain_id,
+                    version: chain_info.version,
+                    gas_settings,
+                },
+                args_of_calls: exec.extra_hashed_args,
                 auth_witnesses: exec.auth_witnesses,
                 capsules: exec.capsules,
-                extra_hashed_args: exec.extra_hashed_args,
-                gas_settings: Some(gas_settings),
-                fee_payer: options.fee_payer.or(exec.fee_payer),
+                salt: Fr::from(7u64),
             })
         }
 
@@ -767,15 +944,20 @@ mod tests {
     fn tx_execution_request_roundtrip() {
         let req = TxExecutionRequest {
             origin: AztecAddress(Fr::from(1u64)),
-            calls: vec![],
+            function_selector: FunctionSelector::from_hex("0xaabbccdd").expect("selector"),
+            first_call_args_hash: Fr::from(3u64),
+            tx_context: TxContext {
+                chain_id: Fr::from(31337u64),
+                version: Fr::from(1u64),
+                gas_settings: GasSettings::default(),
+            },
+            args_of_calls: vec![HashedValues::from_args(vec![Fr::from(7u64)])],
             auth_witnesses: vec![AuthWitness {
                 fields: vec![Fr::from(42u64)],
                 ..Default::default()
             }],
             capsules: vec![],
-            extra_hashed_args: vec![],
-            gas_settings: Some(GasSettings::default()),
-            fee_payer: Some(AztecAddress(Fr::from(2u64))),
+            salt: Fr::from(9u64),
         };
         let json = serde_json::to_string(&req).expect("serialize TxExecutionRequest");
         let decoded: TxExecutionRequest =
@@ -866,8 +1048,8 @@ mod tests {
 
         assert_eq!(req.origin, AztecAddress(Fr::from(99u64)));
         assert_eq!(req.auth_witnesses.len(), 1);
-        assert_eq!(req.gas_settings, Some(gas_settings));
-        assert_eq!(req.fee_payer, Some(AztecAddress(Fr::from(5u64))));
+        assert_eq!(req.tx_context.gas_settings, gas_settings);
+        assert_eq!(req.tx_context.chain_id, chain_info.chain_id);
     }
 
     #[tokio::test]
@@ -1023,10 +1205,14 @@ mod tests {
     #[tokio::test]
     async fn account_manager_default_salt() {
         let wallet = MockWallet::new(sample_chain_info());
-        let manager =
-            AccountManager::create(wallet, Fr::from(1u64), Box::new(MockAccountContract), None)
-                .await
-                .expect("create account manager");
+        let manager = AccountManager::create(
+            wallet,
+            Fr::from(1u64),
+            Box::new(MockAccountContract),
+            None::<Fr>,
+        )
+        .await
+        .expect("create account manager");
 
         assert_ne!(manager.salt(), Fr::zero());
     }
@@ -1038,7 +1224,7 @@ mod tests {
             wallet,
             Fr::from(1u64),
             Box::new(BadInitializerNameAccountContract),
-            None,
+            None::<Fr>,
         )
         .await;
         assert!(result.is_err());
@@ -1054,7 +1240,7 @@ mod tests {
             wallet,
             Fr::from(1u64),
             Box::new(BadInitializerArgsAccountContract),
-            None,
+            None::<Fr>,
         )
         .await;
         assert!(result.is_err());
@@ -1068,13 +1254,17 @@ mod tests {
     #[tokio::test]
     async fn account_manager_address_accessors() {
         let wallet = MockWallet::new(sample_chain_info());
-        let manager =
-            AccountManager::create(wallet, Fr::from(1u64), Box::new(MockAccountContract), None)
-                .await
-                .expect("create account manager");
+        let manager = AccountManager::create(
+            wallet,
+            Fr::from(1u64),
+            Box::new(MockAccountContract),
+            None::<Fr>,
+        )
+        .await
+        .expect("create account manager");
 
-        // Placeholder address is zero until instance fields are populated
-        assert_eq!(manager.address(), AztecAddress(Fr::zero()));
+        // Address is now computed from real key derivation and artifact hashing
+        assert_ne!(manager.address(), AztecAddress(Fr::zero()));
 
         // complete_address() now works (derives keys from secret key)
         let complete = manager
@@ -1091,10 +1281,14 @@ mod tests {
     #[tokio::test]
     async fn account_manager_account() {
         let wallet = MockWallet::new(sample_chain_info());
-        let manager =
-            AccountManager::create(wallet, Fr::from(42u64), Box::new(MockAccountContract), None)
-                .await
-                .expect("create account manager");
+        let manager = AccountManager::create(
+            wallet,
+            Fr::from(42u64),
+            Box::new(MockAccountContract),
+            None::<Fr>,
+        )
+        .await
+        .expect("create account manager");
 
         // account() now works since complete_address() is implemented
         let account = manager.account().await.expect("account construction");
@@ -1104,10 +1298,14 @@ mod tests {
     #[tokio::test]
     async fn account_manager_account_creates_auth_wit() {
         let wallet = MockWallet::new(sample_chain_info());
-        let manager =
-            AccountManager::create(wallet, Fr::from(42u64), Box::new(MockAccountContract), None)
-                .await
-                .expect("create account manager");
+        let manager = AccountManager::create(
+            wallet,
+            Fr::from(42u64),
+            Box::new(MockAccountContract),
+            None::<Fr>,
+        )
+        .await
+        .expect("create account manager");
 
         let account = manager.account().await.expect("account construction");
         // Verify the account can create auth witnesses
@@ -1127,18 +1325,25 @@ mod tests {
     // -- DeployAccountMethod tests -----------------------------------------
 
     #[tokio::test]
-    async fn deploy_method_request() {
+    async fn deploy_method_request_builds_payload() {
         let wallet = MockWallet::new(sample_chain_info());
-        let manager =
-            AccountManager::create(wallet, Fr::from(1u64), Box::new(MockAccountContract), None)
-                .await
-                .expect("create account manager");
+        let manager = AccountManager::create(
+            wallet,
+            Fr::from(1u64),
+            Box::new(MockAccountContract),
+            None::<Fr>,
+        )
+        .await
+        .expect("create account manager");
 
         let deploy = manager.deploy_method().await.expect("build deploy method");
-        let err = deploy.request().expect_err("request should be deferred");
-        assert!(err
-            .to_string()
-            .contains("account deployment payload construction"));
+        let opts = DeployAccountOptions {
+            skip_registration: true,
+            ..Default::default()
+        };
+        let payload = deploy.request(&opts).await.expect("request should succeed");
+        // Should have at least some calls (class publication, instance publication, constructor)
+        assert!(!payload.calls.is_empty());
     }
 
     #[tokio::test]
@@ -1148,20 +1353,24 @@ mod tests {
             wallet,
             Fr::from(1u64),
             Box::new(NoInitializerAccountContract),
-            None,
+            None::<Fr>,
         )
         .await
         .expect("create account manager");
 
         assert!(!manager.has_initializer());
-
-        let err = manager
+        let deploy = manager
             .deploy_method()
             .await
-            .expect_err("deploy method should require initializer");
-        assert!(err
-            .to_string()
-            .contains("does not have an initializer function to call"));
+            .expect("deploy method should still build");
+        let payload = deploy
+            .request(&DeployAccountOptions {
+                skip_registration: true,
+                ..Default::default()
+            })
+            .await
+            .expect("request should succeed without initializer");
+        assert!(payload.calls.is_empty());
     }
 
     #[tokio::test]
@@ -1178,51 +1387,51 @@ mod tests {
 
         let deploy = manager.deploy_method().await.expect("build deploy method");
         assert_eq!(deploy.instance().inner.salt, Fr::from(99u64));
+        // Address should be non-zero (real derivation)
+        assert_ne!(deploy.instance().address, AztecAddress(Fr::zero()));
     }
 
     #[tokio::test]
-    async fn deploy_method_simulate_delegates_to_wallet() {
-        let wallet =
-            MockWallet::new(sample_chain_info()).with_simulate_result(TxSimulationResult {
-                return_values: serde_json::json!({"deployed": true}),
-                gas_used: Some(Gas {
-                    da_gas: 50,
-                    l2_gas: 100,
-                }),
-            });
-        let manager =
-            AccountManager::create(wallet, Fr::from(1u64), Box::new(MockAccountContract), None)
-                .await
-                .expect("create account manager");
+    async fn deploy_method_instance_matches_manager_address() {
+        let wallet = MockWallet::new(sample_chain_info());
+        let manager = AccountManager::create(
+            wallet,
+            Fr::from(1u64),
+            Box::new(MockAccountContract),
+            Some(Fr::from(99u64)),
+        )
+        .await
+        .expect("create account manager");
 
         let deploy = manager.deploy_method().await.expect("build deploy method");
-        let err = deploy
-            .simulate(SimulateOptions::default())
-            .await
-            .expect_err("simulate should be deferred");
-        assert!(err
-            .to_string()
-            .contains("account deployment payload construction"));
+        // The deployed instance address should match manager's stored instance address
+        assert_eq!(deploy.instance().address, manager.instance().address);
     }
 
     #[tokio::test]
-    async fn deploy_method_send_delegates_to_wallet() {
-        let tx_hash =
-            TxHash::from_hex("0x00000000000000000000000000000000000000000000000000000000deadbeef")
-                .expect("valid hex");
-        let wallet = MockWallet::new(sample_chain_info()).with_send_result(SendResult { tx_hash });
-        let manager =
-            AccountManager::create(wallet, Fr::from(1u64), Box::new(MockAccountContract), None)
-                .await
-                .expect("create account manager");
+    async fn deploy_method_skip_flags_pass_through() {
+        let wallet = MockWallet::new(sample_chain_info());
+        let manager = AccountManager::create(
+            wallet,
+            Fr::from(1u64),
+            Box::new(MockAccountContract),
+            None::<Fr>,
+        )
+        .await
+        .expect("create account manager");
 
         let deploy = manager.deploy_method().await.expect("build deploy method");
-        let err = deploy
-            .send(SendOptions::default())
-            .await
-            .expect_err("send should be deferred");
-        assert!(err
-            .to_string()
-            .contains("account deployment payload construction"));
+        let opts = DeployAccountOptions {
+            skip_registration: true,
+            skip_class_publication: true,
+            skip_instance_publication: true,
+            skip_initialization: true,
+            ..Default::default()
+        };
+        let payload = deploy.request(&opts).await.expect("request");
+        // With everything skipped, should produce empty or fee-only payload
+        // The fee wrapper still produces calls via meta payment
+        // This mainly tests that skip flags don't crash
+        let _ = payload;
     }
 }

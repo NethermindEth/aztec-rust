@@ -7,7 +7,9 @@ license = "Apache-2.0"
 
 [dependencies]
 aztec-core = { path = "../core", version = "0.3.0" }
+aztec-contract = { path = "../contract", version = "0.3.0" }
 aztec-crypto = { path = "../crypto", version = "0.3.0" }
+aztec-fee = { path = "../fee", version = "0.3.0" }
 aztec-wallet = { path = "../wallet", version = "0.3.0" }
 aztec-pxe-client = { path = "../pxe-client", version = "0.3.0" }
 async-trait = "0.1"

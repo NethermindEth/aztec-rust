@@ -26,9 +26,18 @@ pub mod wallet {
 
 pub mod account;
 pub mod authorization;
+pub mod entrypoint;
+pub mod meta_payment;
+pub mod signerless;
 pub mod single_account_provider;
 
 pub use account::*;
 pub use authorization::CallAuthorizationRequest;
+pub use entrypoint::{
+    AccountFeePaymentMethodOptions, DefaultAccountEntrypoint, DefaultAccountEntrypointOptions,
+    DefaultMultiCallEntrypoint, EncodedAppEntrypointCalls,
+};
 pub use error::Error;
+pub use meta_payment::AccountEntrypointMetaPaymentMethod;
+pub use signerless::SignerlessAccount;
 pub use single_account_provider::SingleAccountProvider;
