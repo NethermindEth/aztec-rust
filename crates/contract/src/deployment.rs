@@ -1,11 +1,14 @@
 use serde::{Deserialize, Serialize};
 
 use crate::abi::{AbiValue, ContractArtifact, FunctionType};
-use crate::contract::ContractFunctionInteraction;
+use crate::contract::{merge_fee_payload, ContractFunctionInteraction};
 use crate::error::Error;
 use crate::tx::{Capsule, ExecutionPayload, FunctionCall};
 use crate::types::{AztecAddress, ContractInstance, ContractInstanceWithAddress, Fr, PublicKeys};
-use crate::wallet::{SendOptions, SendResult, SimulateOptions, TxSimulationResult, Wallet};
+use crate::wallet::{
+    ProfileOptions, SendOptions, SendResult, SimulateOptions, TxProfileResult, TxSimulationResult,
+    Wallet,
+};
 
 use aztec_core::abi::{buffer_as_fields, FunctionSelector};
 use aztec_core::constants::{
@@ -532,8 +535,22 @@ impl<W: Wallet> DeployMethod<'_, W> {
         deploy_opts: &DeployOptions,
         sim_opts: SimulateOptions,
     ) -> Result<TxSimulationResult, Error> {
-        let payload = self.request(deploy_opts).await?;
+        let payload =
+            merge_fee_payload(self.request(deploy_opts).await?, &sim_opts.fee_execution_payload)?;
         self.wallet.simulate_tx(payload, sim_opts).await
+    }
+
+    /// Profile the deployment transaction.
+    pub async fn profile(
+        &self,
+        deploy_opts: &DeployOptions,
+        profile_opts: ProfileOptions,
+    ) -> Result<TxProfileResult, Error> {
+        let payload = merge_fee_payload(
+            self.request(deploy_opts).await?,
+            &profile_opts.fee_execution_payload,
+        )?;
+        self.wallet.profile_tx(payload, profile_opts).await
     }
 
     /// Send the deployment transaction.
@@ -543,7 +560,8 @@ impl<W: Wallet> DeployMethod<'_, W> {
         send_opts: SendOptions,
     ) -> Result<DeployResult, Error> {
         let instance = self.get_instance(deploy_opts)?;
-        let payload = self.request(deploy_opts).await?;
+        let payload =
+            merge_fee_payload(self.request(deploy_opts).await?, &send_opts.fee_execution_payload)?;
         let send_result = self.wallet.send_tx(payload, send_opts).await?;
         Ok(DeployResult {
             send_result,

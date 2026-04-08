@@ -232,6 +232,10 @@ mod tests {
             unimplemented!("not needed for event tests")
         }
 
+        async fn get_proven_block_number(&self) -> Result<u64, Error> {
+            unimplemented!("not needed for event tests")
+        }
+
         async fn get_tx_receipt(&self, _tx_hash: &TxHash) -> Result<TxReceipt, Error> {
             unimplemented!("not needed for event tests")
         }
