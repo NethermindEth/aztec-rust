@@ -28,10 +28,12 @@ pub mod account {
     pub use aztec_account::account::*;
     pub use aztec_account::entrypoint;
     pub use aztec_account::meta_payment;
+    pub use aztec_account::schnorr;
     pub use aztec_account::signerless;
     pub use aztec_account::AccountEntrypointMetaPaymentMethod;
     pub use aztec_account::DefaultAccountEntrypoint;
     pub use aztec_account::DefaultMultiCallEntrypoint;
+    pub use aztec_account::SchnorrAccountContract;
     pub use aztec_account::SignerlessAccount;
     pub use aztec_account::SingleAccountProvider;
 }

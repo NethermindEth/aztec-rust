@@ -154,7 +154,11 @@ impl DefaultAccountEntrypoint {
         })
     }
 
-    fn entrypoint_abi() -> FunctionArtifact {
+    /// Return the ABI for the standard account `entrypoint` function.
+    ///
+    /// This is useful for account contract implementations that need to
+    /// include the entrypoint in their contract artifact.
+    pub fn entrypoint_abi() -> FunctionArtifact {
         let function_selector_struct = AbiType::Struct {
             name: "authwit::aztec::protocol_types::abis::function_selector::FunctionSelector"
                 .to_owned(),

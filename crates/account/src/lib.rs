@@ -28,6 +28,7 @@ pub mod account;
 pub mod authorization;
 pub mod entrypoint;
 pub mod meta_payment;
+pub mod schnorr;
 pub mod signerless;
 pub mod single_account_provider;
 
@@ -39,5 +40,6 @@ pub use entrypoint::{
 };
 pub use error::Error;
 pub use meta_payment::AccountEntrypointMetaPaymentMethod;
+pub use schnorr::SchnorrAccountContract;
 pub use signerless::SignerlessAccount;
 pub use single_account_provider::SingleAccountProvider;
