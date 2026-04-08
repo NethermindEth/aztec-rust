@@ -312,6 +312,13 @@ pub struct Point {
 #[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct AztecAddress(pub Fr);
 
+impl AztecAddress {
+    /// The zero address.
+    pub fn zero() -> Self {
+        Self(Fr::zero())
+    }
+}
+
 impl From<Fr> for AztecAddress {
     fn from(value: Fr) -> Self {
         Self(value)
@@ -543,6 +550,12 @@ impl std::ops::Deref for ContractInstanceWithAddress {
         &self.inner
     }
 }
+
+/// Deployment salt for address derivation.
+///
+/// This is the Rust equivalent of the TS `Salt = Fr | number | bigint` type alias.
+/// Use `impl Into<Salt>` in account-facing APIs for ergonomic constructors.
+pub type Salt = Fr;
 
 /// Any value that can be converted into a field element.
 /// This is the Rust equivalent of the TS `FieldLike` type.

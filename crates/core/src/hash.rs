@@ -115,6 +115,13 @@ pub fn compute_var_args_hash(args: &[Fr]) -> Fr {
     poseidon2_hash_with_separator(args, domain_separator::FUNCTION_ARGS)
 }
 
+/// Hash public calldata using Poseidon2 with the `PUBLIC_CALLDATA` separator.
+///
+/// Mirrors TS `computeCalldataHash(calldata)`.
+pub fn compute_calldata_hash(calldata: &[Fr]) -> Fr {
+    poseidon2_hash_with_separator(calldata, domain_separator::PUBLIC_CALLDATA)
+}
+
 /// Compute the inner authwit hash — the "intent" before siloing with consumer.
 ///
 /// `args` is typically `[caller, selector, args_hash]`.
@@ -808,6 +815,7 @@ mod tests {
             args: vec![AbiValue::Field(Fr::from(100u64))],
             function_type: FunctionType::Private,
             is_static: false,
+            hide_msg_sender: false,
         };
 
         let result = compute_inner_auth_wit_hash_from_action(&caller, &call);
@@ -841,6 +849,7 @@ mod tests {
             args: vec![],
             function_type: FunctionType::Private,
             is_static: false,
+            hide_msg_sender: false,
         };
         let chain_info = ChainInfo {
             chain_id: Fr::from(31337u64),
@@ -934,6 +943,7 @@ mod tests {
                     args: vec![],
                     function_type: FunctionType::Private,
                     is_static: false,
+                    hide_msg_sender: false,
                 },
             },
             MessageHashOrIntent::InnerHash {

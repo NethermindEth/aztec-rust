@@ -44,6 +44,7 @@ impl FeePaymentMethod for SponsoredFeePaymentMethod {
             args: vec![],
             function_type: FunctionType::Private,
             is_static: false,
+            hide_msg_sender: false,
         };
 
         Ok(ExecutionPayload {

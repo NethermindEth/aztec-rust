@@ -1166,6 +1166,7 @@ mod tests {
             args: vec![],
             function_type: FunctionType::Utility,
             is_static: true,
+            hide_msg_sender: false,
         };
         let result = pxe
             .execute_utility(&call, ExecuteUtilityOpts::default())

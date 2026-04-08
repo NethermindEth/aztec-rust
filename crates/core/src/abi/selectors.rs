@@ -82,6 +82,11 @@ impl FunctionSelector {
         Self::from_signature(&sig)
     }
 
+    /// The zero/empty function selector.
+    pub const fn empty() -> Self {
+        Self([0u8; 4])
+    }
+
     /// Convert this selector to its field representation.
     pub fn to_field(self) -> Fr {
         selector_bytes_to_field(self.0)

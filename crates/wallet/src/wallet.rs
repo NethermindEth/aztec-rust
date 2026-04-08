@@ -736,6 +736,7 @@ mod tests {
                 args: vec![],
                 function_type: FunctionType::Private,
                 is_static: false,
+                hide_msg_sender: false,
             },
         };
         let json = serde_json::to_string(&msg).expect("serialize");
@@ -984,6 +985,7 @@ mod tests {
             args: vec![],
             function_type: FunctionType::Utility,
             is_static: true,
+            hide_msg_sender: false,
         };
         let result = wallet
             .execute_utility(call, ExecuteUtilityOptions::default())

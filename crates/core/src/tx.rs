@@ -2,6 +2,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
 use crate::abi::{AbiValue, FunctionSelector, FunctionType};
+use crate::fee::GasSettings;
 use crate::types::{decode_fixed_hex, encode_hex, AztecAddress, Fr};
 use crate::Error;
 
@@ -180,6 +181,28 @@ pub struct FunctionCall {
     pub function_type: FunctionType,
     /// Whether this is a static (read-only) call.
     pub is_static: bool,
+    /// Whether the msg_sender should be hidden from the callee.
+    #[serde(default)]
+    pub hide_msg_sender: bool,
+}
+
+impl FunctionCall {
+    /// The canonical empty function call, used for padding entrypoint payloads.
+    pub fn empty() -> Self {
+        Self {
+            to: AztecAddress::zero(),
+            selector: FunctionSelector::empty(),
+            args: vec![],
+            function_type: FunctionType::Private,
+            is_static: false,
+            hide_msg_sender: false,
+        }
+    }
+
+    /// Returns `true` if this is the canonical empty call.
+    pub fn is_empty(&self) -> bool {
+        self.to == AztecAddress::zero() && self.selector == FunctionSelector::empty()
+    }
 }
 
 /// An authorization witness proving the caller's intent.
@@ -207,12 +230,53 @@ pub struct Capsule {
     pub data: Vec<Fr>,
 }
 
+/// Transaction context.
+///
+/// Carries the replay-protection metadata and gas settings used to build a
+/// transaction execution request.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TxContext {
+    /// L1 chain ID used for replay protection.
+    pub chain_id: Fr,
+    /// Rollup protocol version used for replay protection.
+    pub version: Fr,
+    /// Gas settings for the transaction.
+    pub gas_settings: GasSettings,
+}
+
 /// Pre-hashed values included in a transaction for oracle access.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct HashedValues {
     /// Field elements to be hashed.
     #[serde(default)]
     pub values: Vec<Fr>,
+    /// Pre-computed hash of `values`.
+    #[serde(default)]
+    pub hash: Fr,
+}
+
+impl HashedValues {
+    /// Create hashed values from raw argument fields.
+    pub fn from_args(args: Vec<Fr>) -> Self {
+        let hash = crate::hash::compute_var_args_hash(&args);
+        Self { values: args, hash }
+    }
+
+    /// Create hashed values from calldata (selector + args for public calls).
+    pub fn from_calldata(calldata: Vec<Fr>) -> Self {
+        let hash = crate::hash::compute_calldata_hash(&calldata);
+        Self {
+            values: calldata,
+            hash,
+        }
+    }
+
+    /// Return the stored hash of the contained values.
+    pub fn hash(&self) -> Fr {
+        self.hash
+    }
 }
 
 /// A complete transaction execution payload.
@@ -500,6 +564,7 @@ mod tests {
                 args: vec![],
                 function_type: FunctionType::Private,
                 is_static: false,
+                hide_msg_sender: false,
             }],
             auth_witnesses: vec![AuthWitness {
                 fields: vec![Fr::from(9u64)],
@@ -524,6 +589,7 @@ mod tests {
                 args: vec![],
                 function_type: FunctionType::Private,
                 is_static: false,
+                hide_msg_sender: false,
             }],
             auth_witnesses: vec![AuthWitness {
                 fields: vec![Fr::from(1u64)],
@@ -541,6 +607,7 @@ mod tests {
                 args: vec![],
                 function_type: FunctionType::Public,
                 is_static: false,
+                hide_msg_sender: false,
             }],
             auth_witnesses: vec![AuthWitness {
                 fields: vec![Fr::from(2u64)],
@@ -614,6 +681,7 @@ mod tests {
                 args: vec![AbiValue::Field(Fr::from(42u64))],
                 function_type: FunctionType::Private,
                 is_static: false,
+                hide_msg_sender: false,
             }],
             auth_witnesses: vec![AuthWitness {
                 fields: vec![Fr::from(1u64)],

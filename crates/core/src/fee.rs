@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// Gas consumption broken down by DA and L2 components.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Gas {
     /// Data availability gas consumed.
     pub da_gas: u64,
@@ -11,6 +12,7 @@ pub struct Gas {
 
 /// Per-unit gas fee prices.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GasFees {
     /// Fee per unit of DA gas.
     pub fee_per_da_gas: u128,
@@ -20,6 +22,7 @@ pub struct GasFees {
 
 /// Gas limits and fee caps for a transaction.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GasSettings {
     /// Maximum gas allowed for the main execution phase.
     pub gas_limits: Option<Gas>,

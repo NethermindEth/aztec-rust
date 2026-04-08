@@ -1254,6 +1254,7 @@ mod tests {
             args: vec![],
             function_type: crate::abi::FunctionType::Utility,
             is_static: true,
+            hide_msg_sender: false,
         };
         let result = wallet
             .execute_utility(call, ExecuteUtilityOptions::default())

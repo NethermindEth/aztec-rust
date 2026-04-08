@@ -63,6 +63,11 @@ pub mod domain_separator {
     /// TS: `DomainSeparator.FUNCTION_ARGS = 3576554347`
     pub const FUNCTION_ARGS: u32 = 3_576_554_347;
 
+    /// Domain separator for public function calldata hashing.
+    ///
+    /// TS: `DomainSeparator.PUBLIC_CALLDATA = 2760353947`
+    pub const PUBLIC_CALLDATA: u32 = 2_760_353_947;
+
     /// Domain separator for public keys hash computation.
     pub const PUBLIC_KEYS_HASH: u32 = 777_457_226;
 
@@ -108,6 +113,11 @@ pub mod domain_separator {
     ///
     /// TS: `DomainSeparator.SECRET_HASH = 4199652938`
     pub const SECRET_HASH: u32 = 4_199_652_938;
+
+    /// Domain separator for signature payload hashing (entrypoint encoding).
+    ///
+    /// TS: `DomainSeparator.SIGNATURE_PAYLOAD = 2279843839`
+    pub const SIGNATURE_PAYLOAD: u32 = 2_279_843_839;
 }
 
 // Size constants for deployment computations.
@@ -152,6 +162,7 @@ mod tests {
         assert_eq!(domain_separator::AUTHWIT_INNER, 221_354_163);
         assert_eq!(domain_separator::AUTHWIT_OUTER, 3_283_595_782);
         assert_eq!(domain_separator::FUNCTION_ARGS, 3_576_554_347);
+        assert_eq!(domain_separator::PUBLIC_CALLDATA, 2_760_353_947);
         assert_eq!(domain_separator::PUBLIC_KEYS_HASH, 777_457_226);
         assert_eq!(domain_separator::PARTIAL_ADDRESS, 2_103_633_018);
         assert_eq!(domain_separator::CONTRACT_CLASS_ID, 3_923_495_515);
