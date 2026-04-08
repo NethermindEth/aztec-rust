@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Salt` type alias (`pub type Salt = Fr`) for deployment salt ergonomics (`aztec-core`)
+- `AztecAddress::zero()` convenience constructor (`aztec-core`)
+- `FunctionCall::empty()`, `FunctionCall::is_empty()` — canonical empty call for entrypoint payload padding (`aztec-core`)
+- `FunctionCall.hide_msg_sender` field for controlling msg_sender visibility to callees (`aztec-core`)
+- `FunctionSelector::empty()` — zero selector constant (`aztec-core`)
+- `HashedValues::from_args()`, `HashedValues::from_calldata()`, `HashedValues::hash()` — helpers for entrypoint call encoding (`aztec-core`)
+- `domain_separator::SIGNATURE_PAYLOAD` constant for entrypoint payload hashing (`aztec-core`)
+- `get_contract_instance_from_instantiation_params()` — shared helper for computing contract instances from artifact + params, used by both generic deployment and account address pre-computation (`aztec-contract`)
+- `ContractInstantiationParams` struct for the shared instance-construction helper (`aztec-contract`)
+- `EncodedAppEntrypointCalls` — encodes function calls for account/multi-call entrypoint payloads with Poseidon2 hashing (`aztec-account`)
+- `DefaultAccountEntrypoint` — standard account entrypoint wrapping calls through the account contract with auth witness creation (`aztec-account`)
+- `AccountFeePaymentMethodOptions` enum (External, PreexistingFeeJuice, FeeJuiceWithClaim) (`aztec-account`)
+- `DefaultAccountEntrypointOptions` for configuring cancellable, tx_nonce, and fee payment method (`aztec-account`)
+- `DefaultMultiCallEntrypoint` — multi-call entrypoint for unsigned transactions via protocol contract address 4 (`aztec-account`)
+- `SignerlessAccount` — account requiring no signing, routes through `DefaultMultiCallEntrypoint` for fee-sponsored and protocol-level operations (`aztec-account`)
+- `AccountEntrypointMetaPaymentMethod` — wraps fee payment through account entrypoint for self-paying account deployments with auto-detection of fee payment options (`aztec-account`)
+- `get_account_contract_address()` — computes deterministic account address before deployment using shared instance-construction helper (`aztec-account`)
+- `DeployAccountOptions` struct with skip flags, fee payment, and fee entrypoint options (`aztec-account`)
+- `DeployResult` struct (account-specific) returning `SendResult` + `ContractInstanceWithAddress` from account deployment (`aztec-account`)
+- New modules: `entrypoint/`, `signerless`, `meta_payment` in `aztec-account`
+- All new types re-exported from `aztec-account` and `aztec-rs` umbrella crate
+- 30+ new unit tests across entrypoint encoding, account entrypoint, multi-call entrypoint, signerless account, and meta payment method
+
+### Changed
+
+- `AccountManager::create()` salt parameter now accepts `Option<impl Into<Salt>>` for ergonomic salt input (`aztec-account`)
+- `AccountManager::create()` now computes real contract instance with derived keys, class ID, initialization hash, and deterministic address instead of using zero placeholders (`aztec-account`)
+- `AccountManager::address()` now returns a real derived address (`aztec-account`)
+- `DeployAccountMethod` replaced from a stub returning errors to a full implementation wrapping `aztec-contract::DeployMethod` with account-specific fee-payment logic (`aztec-account`)
+- `DeployAccountMethod::request()` is now `async` and accepts `&DeployAccountOptions`; builds real deployment payloads with correct fee ordering (deploy-first for self-deploy, fee-first for third-party) (`aztec-account`)
+- `DeployAccountMethod::simulate()` and `send()` signatures updated to accept `&DeployAccountOptions` (`aztec-account`)
+- `DeployMethod::get_instance()` refactored to delegate to shared `get_contract_instance_from_instantiation_params()` helper (`aztec-contract`)
+- `aztec-account` now depends on `aztec-contract` and `aztec-fee` for deployment reuse and fee payment integration
+- Updated `examples/account_flow.rs` to demonstrate full lifecycle: real address derivation, deployment payload construction, and `get_account_contract_address()` verification
+
 ## [0.3.0] - 2026-04-08
 
 ### Added
