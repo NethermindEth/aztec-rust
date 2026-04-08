@@ -60,6 +60,7 @@ impl<W: Wallet> Contract<W> {
             args,
             function_type: func.function_type.clone(),
             is_static: func.is_static,
+            hide_msg_sender: false,
         };
         Ok(ContractFunctionInteraction {
             wallet: &self.wallet,
@@ -514,6 +515,7 @@ mod tests {
             args: vec![AbiValue::Field(Fr::from(addr))],
             function_type: FunctionType::Private,
             is_static: false,
+            hide_msg_sender: false,
         }
     }
 
@@ -562,9 +564,7 @@ mod tests {
                 storage_slot: Fr::from(1u64),
                 data: vec![Fr::from(1u64)],
             }],
-            extra_hashed_args: vec![HashedValues {
-                values: vec![Fr::from(20u64)],
-            }],
+            extra_hashed_args: vec![HashedValues::from_args(vec![Fr::from(20u64)])],
             fee_payer: None,
         };
         let p2 = ExecutionPayload {

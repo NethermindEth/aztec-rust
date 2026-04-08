@@ -55,6 +55,7 @@ impl<'a, W: Wallet> SetPublicAuthWitInteraction<'a, W> {
             args: vec![AbiValue::Field(message_hash), AbiValue::Boolean(authorized)],
             function_type: FunctionType::Public,
             is_static: false,
+            hide_msg_sender: false,
         };
 
         Ok(Self { wallet, from, call })
@@ -170,6 +171,7 @@ async fn check_private_validity<W: Wallet>(
         args: vec![AbiValue::Field(consumer.0), AbiValue::Field(*inner_hash)],
         function_type: FunctionType::Utility,
         is_static: true,
+        hide_msg_sender: false,
     };
 
     let opts = ExecuteUtilityOptions {
@@ -199,6 +201,7 @@ async fn check_public_validity<W: Wallet>(
         ],
         function_type: FunctionType::Utility,
         is_static: true,
+        hide_msg_sender: false,
     };
 
     let opts = ExecuteUtilityOptions {
@@ -340,6 +343,7 @@ mod tests {
             args: vec![AbiValue::Field(Fr::from(100u64))],
             function_type: FunctionType::Private,
             is_static: false,
+            hide_msg_sender: false,
         };
         let intent = MessageHashOrIntent::Intent { caller, call };
         let witness = AuthWitness::default();

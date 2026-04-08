@@ -129,6 +129,7 @@ pub async fn publish_contract_class<'a, W: Wallet>(
         ],
         function_type: FunctionType::Private,
         is_static: false,
+        hide_msg_sender: false,
     };
 
     // 4. Create capsule with bytecode data.
@@ -190,6 +191,7 @@ pub fn publish_instance<'a, W: Wallet>(
         ],
         function_type: FunctionType::Private,
         is_static: false,
+        hide_msg_sender: false,
     };
 
     Ok(ContractFunctionInteraction::new(wallet, call))
@@ -221,6 +223,70 @@ fn decode_artifact_bytes(encoded: &str) -> Vec<u8> {
     base64::engine::general_purpose::STANDARD
         .decode(encoded)
         .unwrap_or_else(|_| encoded.as_bytes().to_vec())
+}
+
+// ---------------------------------------------------------------------------
+// Shared instance construction
+// ---------------------------------------------------------------------------
+
+/// Parameters for computing a contract instance from an artifact.
+pub struct ContractInstantiationParams<'a> {
+    /// Constructor function name (None if no initializer).
+    pub constructor_name: Option<&'a str>,
+    /// Constructor arguments.
+    pub constructor_args: Vec<AbiValue>,
+    /// Deployment salt.
+    pub salt: Fr,
+    /// Public keys for the instance.
+    pub public_keys: PublicKeys,
+    /// Deployer address (zero for universal deployment).
+    pub deployer: AztecAddress,
+}
+
+/// Compute a contract instance (with derived address) from an artifact and
+/// instantiation parameters.
+///
+/// This is the shared helper used by both generic contract deployment and
+/// account address pre-computation.
+pub fn get_contract_instance_from_instantiation_params(
+    artifact: &ContractArtifact,
+    params: ContractInstantiationParams<'_>,
+) -> Result<ContractInstanceWithAddress, Error> {
+    // Compute contract class ID from artifact.
+    let artifact_hash = compute_artifact_hash(artifact);
+    let private_functions_root = compute_private_functions_root_from_artifact(artifact)?;
+    let packed_bytecode = extract_packed_bytecode(artifact);
+    let public_bytecode_commitment = compute_public_bytecode_commitment(&packed_bytecode);
+    let class_id = compute_contract_class_id(
+        artifact_hash,
+        private_functions_root,
+        public_bytecode_commitment,
+    );
+
+    // Compute initialization hash.
+    let init_fn = params
+        .constructor_name
+        .map(|name| artifact.find_function(name))
+        .transpose()?;
+
+    let init_hash = compute_initialization_hash(init_fn, &params.constructor_args)?;
+
+    let instance = ContractInstance {
+        version: 1,
+        salt: params.salt,
+        deployer: params.deployer,
+        current_contract_class_id: class_id,
+        original_contract_class_id: class_id,
+        initialization_hash: init_hash,
+        public_keys: params.public_keys,
+    };
+
+    let address = compute_contract_address_from_instance(&instance)?;
+
+    Ok(ContractInstanceWithAddress {
+        address,
+        inner: instance,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -422,6 +488,7 @@ impl<W: Wallet> DeployMethod<'_, W> {
                     args: self.args.clone(),
                     function_type: func.function_type.clone(),
                     is_static: false,
+                    hide_msg_sender: false,
                 };
 
                 payloads.push(ExecutionPayload {
@@ -441,51 +508,22 @@ impl<W: Wallet> DeployMethod<'_, W> {
     /// Compute the contract instance that would be deployed.
     pub fn get_instance(&self, opts: &DeployOptions) -> Result<ContractInstanceWithAddress, Error> {
         let salt = opts.contract_address_salt.unwrap_or(self.default_salt);
-
-        // Compute contract class ID from artifact.
-        let artifact_hash = compute_artifact_hash(&self.artifact);
-        let private_functions_root = compute_private_functions_root_from_artifact(&self.artifact)?;
-        let packed_bytecode = extract_packed_bytecode(&self.artifact);
-        let public_bytecode_commitment = compute_public_bytecode_commitment(&packed_bytecode);
-        let class_id = compute_contract_class_id(
-            artifact_hash,
-            private_functions_root,
-            public_bytecode_commitment,
-        );
-
-        // Compute initialization hash.
-        let init_fn = self
-            .constructor_name
-            .as_ref()
-            .map(|name| self.artifact.find_function(name))
-            .transpose()?;
-
-        let init_hash = compute_initialization_hash(init_fn, &self.args)?;
-
-        // Determine deployer.
         let deployer = if opts.universal_deploy {
-            AztecAddress(Fr::zero())
+            AztecAddress::zero()
         } else {
-            opts.from.unwrap_or(AztecAddress(Fr::zero()))
+            opts.from.unwrap_or(AztecAddress::zero())
         };
 
-        let instance = ContractInstance {
-            version: 1,
-            salt,
-            deployer,
-            current_contract_class_id: class_id,
-            original_contract_class_id: class_id,
-            initialization_hash: init_hash,
-            public_keys: self.public_keys.clone(),
-        };
-
-        // Compute the deterministic address.
-        let address = compute_contract_address_from_instance(&instance)?;
-
-        Ok(ContractInstanceWithAddress {
-            address,
-            inner: instance,
-        })
+        get_contract_instance_from_instantiation_params(
+            &self.artifact,
+            ContractInstantiationParams {
+                constructor_name: self.constructor_name.as_deref(),
+                constructor_args: self.args.clone(),
+                salt,
+                public_keys: self.public_keys.clone(),
+                deployer,
+            },
+        )
     }
 
     /// Simulate the deployment without sending.
