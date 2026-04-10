@@ -8,9 +8,14 @@
 
 #![allow(
     clippy::await_holding_lock,
+    clippy::doc_markdown,
     clippy::expect_used,
+    clippy::map_unwrap_or,
+    clippy::panic,
     clippy::print_stderr,
     clippy::similar_names,
+    clippy::single_match_else,
+    clippy::too_many_lines,
     dead_code,
     unused_imports
 )]

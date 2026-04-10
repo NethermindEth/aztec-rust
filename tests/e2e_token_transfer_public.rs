@@ -7,6 +7,7 @@
 //! ```
 
 #![allow(
+    clippy::todo,
     clippy::expect_used,
     clippy::print_stderr,
     clippy::similar_names,
