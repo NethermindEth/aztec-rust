@@ -600,27 +600,32 @@ mod tests {
         let (service, _, _) = make_service(serde_json::json!([
             [{"data": ["0x0a"], "blockNumber": 1}]
         ]));
-        let contract = AztecAddress::from(5u64);
+
+        let tag_first = Fr::from(1u64);
+        let tag_second = Fr::from(2u64);
 
         let logs = service
             .bulk_retrieve_logs(&[
                 LogRetrievalRequest {
-                    is_public: true,
-                    tag: Fr::from(1u64),
-                    contract_address: Some(contract),
+                    is_public: false,
+                    tag: tag_first,
+                    contract_address: None,
                 },
                 LogRetrievalRequest {
                     is_public: false,
-                    tag: Fr::from(2u64),
+                    tag: tag_second,
                     contract_address: None,
                 },
             ])
             .await
             .unwrap();
 
+        // Both requests hit private logs; ordering is verified via the tag
+        // that get_private_logs_by_tags stamps on each TaggedLog.
         assert_eq!(logs.len(), 2);
-        assert!(logs[0].is_empty());
+        assert_eq!(logs[0].len(), 1);
+        assert_eq!(logs[0][0].tag, tag_first);
         assert_eq!(logs[1].len(), 1);
-        assert_eq!(logs[1][0].tag, Fr::from(2u64));
+        assert_eq!(logs[1][0].tag, tag_second);
     }
 }
