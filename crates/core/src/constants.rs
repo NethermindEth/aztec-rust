@@ -176,6 +176,11 @@ pub mod domain_separator {
 
     /// Domain separator for private log first field siloing.
     pub const PRIVATE_LOG_FIRST_FIELD: u32 = 2_769_976_252;
+
+    /// Domain separator for note nullifier derivation.
+    ///
+    /// TS: `DomainSeparator.NOTE_NULLIFIER = 50789342`
+    pub const NOTE_NULLIFIER: u32 = 50_789_342;
 }
 
 // ---------------------------------------------------------------------------

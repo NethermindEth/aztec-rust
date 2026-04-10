@@ -897,6 +897,11 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
         Ok(vec![])
     }
 
+    /// Look up a value in the execution cache by its hash.
+    pub fn get_execution_cache_entry(&self, hash: &Fr) -> Option<Vec<Fr>> {
+        self.execution_cache.get(hash).cloned()
+    }
+
     fn load_from_execution_cache(&self, args: &[Vec<Fr>]) -> Result<Vec<Vec<Fr>>, Error> {
         let hash = args
             .first()
@@ -1335,10 +1340,19 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
         // hashes, etc.) are merged into the parent oracle below and must NOT be
         // duplicated in nested_execution_results or the kernel will reject the
         // tx with "Duplicate nullifier".
+        //
+        // For private functions with databus returns, the main circuit's return
+        // values are the full PCPI structure.  The user's actual return values
+        // live in the first ACIR sub-circuit call (the inner function body),
+        // captured by `first_acir_call_return_values`.
         {
             let mut minimal = PrivateCallExecutionResult::default();
             minimal.contract_address = target_address;
-            minimal.return_values = acvm_output.return_values.clone();
+            minimal.return_values = if !acvm_output.first_acir_call_return_values.is_empty() {
+                acvm_output.first_acir_call_return_values.clone()
+            } else {
+                acvm_output.return_values.clone()
+            };
             self.nested_results.push(minimal);
         }
 

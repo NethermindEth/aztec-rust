@@ -1242,7 +1242,26 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
         )
         .await?;
 
-        let acir_call_returns = acvm_output.first_acir_call_return_values.clone();
+        // Extract return values from the execution cache (for databus returns).
+        // The PCPI layout: call_context(4), args_hash(1), returns_hash(1), ...
+        // returns_hash is at offset 5 from the PCPI start.
+        let acir_call_returns = {
+            let ctx_size = artifact.private_context_inputs_size(&function_name);
+            let user_args_size = call.encoded_args.len();
+            let pcpi_start = ctx_size + user_args_size;
+            const PCPI_RETURNS_HASH_OFFSET: usize = 5;
+            let returns_hash_idx =
+                acir::native_types::Witness((pcpi_start + PCPI_RETURNS_HASH_OFFSET) as u32);
+            let returns_hash = acvm_output
+                .witness
+                .get(&returns_hash_idx)
+                .map(super::execution::field_conversion::fe_to_fr);
+            if let Some(rh) = returns_hash {
+                oracle.get_execution_cache_entry(&rh).unwrap_or_default()
+            } else {
+                acvm_output.first_acir_call_return_values.clone()
+            }
+        };
         let mut execution_result = oracle.build_execution_result(acvm_output, contract_address);
         execution_result.entrypoint.call_context = aztec_core::kernel_types::CallContext {
             msg_sender: origin,
@@ -1913,15 +1932,56 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
         let pi = &kernel_output.public_inputs;
 
         // Extract private return values — mirrors TS `getPrivateReturnValues()`.
-        // The aggregated entrypoint wraps the actual call bundles as nested
-        // execution results. The first one is the user's function call.
-        let private_return_values: Vec<String> = aggregated
-            .execution_result
-            .entrypoint
-            .nested_execution_results
-            .first()
-            .map(|r| r.return_values.iter().map(|f| f.to_string()).collect())
-            .unwrap_or_default();
+        //
+        // The aggregated execution tree has three levels:
+        //   1. Synthetic root (aggregated entrypoint)
+        //   2. Account contract entrypoint (first nested_execution_results)
+        //   3. User's function call (first nested of the account entrypoint)
+        //
+        // TS equivalent: `simulatedTx.getPrivateReturnValues().nested[0].values`
+        // which is `entrypoint.nestedExecutionResults[0].returnValues`.
+        //
+        // In the Rust aggregated tree the account entrypoint sits at level [0],
+        // so the user's call is at [0][0].
+        // Extract private return values — mirrors TS `getPrivateReturnValues()`.
+        //
+        // For private functions with databus returns, the main circuit's ACIR
+        // return witnesses are the full PCPI — the user's actual return values
+        // come from the first inner ACIR sub-circuit call, stored in
+        // `first_acir_call_return_values`.
+        //
+        // Walk the execution tree first; fall back to the bundle-level ACIR
+        // call return values if the tree has nothing.
+        let private_return_values: Vec<String> = {
+            let from_tree: Vec<String> = aggregated
+                .execution_result
+                .entrypoint
+                .nested_execution_results
+                .first()
+                .and_then(|ep| {
+                    // If the entrypoint has nested calls (account contract path),
+                    // the user's function is the first nested call.
+                    if !ep.nested_execution_results.is_empty() {
+                        ep.nested_execution_results.first()
+                    } else {
+                        // Direct execution: the entrypoint IS the user's function.
+                        Some(ep)
+                    }
+                })
+                .map(|r| r.return_values.iter().map(|f| f.to_string()).collect())
+                .unwrap_or_default();
+
+            if from_tree.is_empty() && !aggregated.first_acir_call_return_values.is_empty() {
+                // Databus return path: use first ACIR sub-circuit return values.
+                aggregated
+                    .first_acir_call_return_values
+                    .iter()
+                    .map(|f| f.to_string())
+                    .collect()
+            } else {
+                from_tree
+            }
+        };
 
         Ok(TxSimulationResult {
             data: serde_json::json!({
