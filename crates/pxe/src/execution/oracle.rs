@@ -614,6 +614,10 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             })
             .await?;
 
+        // Apply select-clause filtering (comparators).
+        let selects = super::pick_notes::parse_select_clauses(args);
+        notes = super::pick_notes::select_notes(notes, &selects);
+
         if offset >= notes.len() {
             notes.clear();
         } else if offset > 0 {

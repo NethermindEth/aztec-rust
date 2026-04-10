@@ -442,6 +442,10 @@ impl<'a, N: AztecNode> UtilityExecutionOracle<'a, N> {
             })
             .await?;
 
+        // Apply select-clause filtering (comparators).
+        let selects = super::pick_notes::parse_select_clauses(args);
+        notes = super::pick_notes::select_notes(notes, &selects);
+
         tracing::trace!(
             contract = %self.contract_address,
             ?owner,

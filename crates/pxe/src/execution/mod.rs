@@ -4,6 +4,7 @@ pub mod acvm_executor;
 pub mod execution_result;
 pub mod field_conversion;
 pub mod oracle;
+pub mod pick_notes;
 pub mod utility_oracle;
 
 pub use acvm_executor::{AcvmExecutor, OracleCallback};
