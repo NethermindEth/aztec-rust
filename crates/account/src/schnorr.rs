@@ -248,6 +248,7 @@ impl AccountContract for SchnorrAccountContract {
             functions: vec![Self::constructor_artifact(), entrypoint_abi],
             outputs: None,
             file_map: None,
+            context_inputs_sizes: None,
         })
     }
 

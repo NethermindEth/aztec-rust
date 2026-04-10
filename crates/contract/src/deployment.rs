@@ -153,16 +153,21 @@ pub async fn publish_contract_class<'a, W: Wallet>(
 }
 
 /// Extract packed public bytecode from an artifact.
+///
+/// The packed bytecode is the single `public_dispatch` function's bytecode.
+/// All other public functions are dispatched through it at runtime.
+/// Mirrors TS: `publicFunctions[0]?.bytecode` with `retainBytecode` filter
+/// that only keeps bytecode for `public_dispatch`.
 fn extract_packed_bytecode(artifact: &ContractArtifact) -> Vec<u8> {
-    let mut bytecode = Vec::new();
-    for func in &artifact.functions {
-        if func.function_type == FunctionType::Public {
-            if let Some(ref bc) = func.bytecode {
-                bytecode.extend_from_slice(&decode_artifact_bytes(bc));
-            }
-        }
-    }
-    bytecode
+    // Only public_dispatch carries the packed bytecode.
+    // Other abi_public functions are internal and dispatched at runtime.
+    artifact
+        .functions
+        .iter()
+        .find(|f| f.function_type == FunctionType::Public && f.name == "public_dispatch")
+        .and_then(|f| f.bytecode.as_ref())
+        .map(|bc| decode_artifact_bytes(bc))
+        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
@@ -443,6 +448,16 @@ impl<W> std::fmt::Debug for DeployMethod<'_, W> {
 }
 
 impl<W: Wallet> DeployMethod<'_, W> {
+    fn with_effective_from(opts: &DeployOptions, from: Option<AztecAddress>) -> DeployOptions {
+        if opts.universal_deploy || opts.from.is_some() {
+            opts.clone()
+        } else {
+            let mut effective = opts.clone();
+            effective.from = from;
+            effective
+        }
+    }
+
     /// Build the deployment [`ExecutionPayload`].
     pub async fn request(&self, opts: &DeployOptions) -> Result<ExecutionPayload, Error> {
         let instance = self.get_instance(opts)?;
@@ -535,8 +550,9 @@ impl<W: Wallet> DeployMethod<'_, W> {
         deploy_opts: &DeployOptions,
         sim_opts: SimulateOptions,
     ) -> Result<TxSimulationResult, Error> {
+        let effective_opts = Self::with_effective_from(deploy_opts, Some(sim_opts.from));
         let payload = merge_fee_payload(
-            self.request(deploy_opts).await?,
+            self.request(&effective_opts).await?,
             &sim_opts.fee_execution_payload,
         )?;
         self.wallet.simulate_tx(payload, sim_opts).await
@@ -548,8 +564,9 @@ impl<W: Wallet> DeployMethod<'_, W> {
         deploy_opts: &DeployOptions,
         profile_opts: ProfileOptions,
     ) -> Result<TxProfileResult, Error> {
+        let effective_opts = Self::with_effective_from(deploy_opts, Some(profile_opts.from));
         let payload = merge_fee_payload(
-            self.request(deploy_opts).await?,
+            self.request(&effective_opts).await?,
             &profile_opts.fee_execution_payload,
         )?;
         self.wallet.profile_tx(payload, profile_opts).await
@@ -561,12 +578,14 @@ impl<W: Wallet> DeployMethod<'_, W> {
         deploy_opts: &DeployOptions,
         send_opts: SendOptions,
     ) -> Result<DeployResult, Error> {
-        let instance = self.get_instance(deploy_opts)?;
+        let effective_opts = Self::with_effective_from(deploy_opts, Some(send_opts.from));
+        let instance = self.get_instance(&effective_opts)?;
         let payload = merge_fee_payload(
-            self.request(deploy_opts).await?,
+            self.request(&effective_opts).await?,
             &send_opts.fee_execution_payload,
         )?;
         let send_result = self.wallet.send_tx(payload, send_opts).await?;
+        self.wallet.wait_for_contract(instance.address).await?;
         Ok(DeployResult {
             send_result,
             instance,

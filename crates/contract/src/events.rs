@@ -240,6 +240,13 @@ mod tests {
             unimplemented!("not needed for event tests")
         }
 
+        async fn get_tx_effect(
+            &self,
+            _tx_hash: &TxHash,
+        ) -> Result<Option<serde_json::Value>, Error> {
+            unimplemented!("not needed for event tests")
+        }
+
         async fn get_public_logs(
             &self,
             filter: PublicLogFilter,
@@ -248,7 +255,7 @@ mod tests {
             Ok(self.logs_response.lock().unwrap().clone())
         }
 
-        async fn send_tx(&self, _tx: &serde_json::Value) -> Result<TxHash, Error> {
+        async fn send_tx(&self, _tx: &serde_json::Value) -> Result<(), Error> {
             unimplemented!("not needed for event tests")
         }
 
@@ -319,7 +326,10 @@ mod tests {
         ) -> Result<serde_json::Value, Error> {
             unimplemented!("not needed for event tests")
         }
-        async fn is_valid_tx(&self, _tx: &serde_json::Value) -> Result<bool, Error> {
+        async fn is_valid_tx(
+            &self,
+            _tx: &serde_json::Value,
+        ) -> Result<aztec_node_client::TxValidationResult, Error> {
             unimplemented!("not needed for event tests")
         }
         async fn get_private_logs_by_tags(&self, _tags: &[Fr]) -> Result<serde_json::Value, Error> {

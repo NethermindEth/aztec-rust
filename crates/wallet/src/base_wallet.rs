@@ -6,13 +6,16 @@
 //! to an [`AccountProvider`].
 
 use async_trait::async_trait;
+use tokio::time::{sleep, Duration, Instant};
 
 use crate::abi::{AbiType, ContractArtifact};
 use crate::account_provider::AccountProvider;
 use crate::error::Error;
-use crate::node::{create_aztec_node_client, AztecNode, HttpNodeClient};
+use crate::node::{
+    create_aztec_node_client, wait_for_tx, AztecNode, HttpNodeClient, TxValidationResult, WaitOpts,
+};
 use crate::pxe::{self, Pxe, RegisterContractRequest};
-use crate::tx::{AuthWitness, ExecutionPayload, FunctionCall, TxHash};
+use crate::tx::{AuthWitness, ExecutionPayload, FunctionCall, TxHash, TxStatus};
 use crate::types::{AztecAddress, ContractInstanceWithAddress, Fr};
 use crate::wallet::{
     Aliased, ChainInfo, ContractClassMetadata, ContractMetadata, EventMetadataDefinition,
@@ -76,6 +79,91 @@ impl<P: Pxe, N: AztecNode, A: AccountProvider> BaseWallet<P, N, A> {
             scopes.push(*from);
         }
         scopes
+    }
+
+    async fn wait_for_submission_checkpoint(&self, tx_hash: &TxHash) -> Result<(), Error> {
+        let start_block = self.node.get_block_number().await.unwrap_or(0);
+        let wait_opts = WaitOpts {
+            timeout: Duration::from_secs(15),
+            ..WaitOpts::default()
+        };
+
+        match wait_for_tx(&self.node, tx_hash, wait_opts).await {
+            Ok(_) => Ok(()),
+            Err(Error::Timeout(_)) | Err(Error::InvalidData(_)) => {
+                let deadline = Instant::now() + Duration::from_secs(30);
+                let mut next_log = Instant::now();
+                loop {
+                    match self.node.get_tx_receipt(tx_hash).await {
+                        Ok(receipt) if Instant::now() >= next_log => {
+                            tracing::debug!(
+                                tx_hash = %tx_hash,
+                                status = ?receipt.status,
+                                block = ?receipt.block_number,
+                                error = ?receipt.error,
+                                "wait_for_submission_checkpoint polling"
+                            );
+                            next_log = Instant::now() + Duration::from_secs(2);
+                        }
+                        Err(err) if Instant::now() >= next_log => {
+                            tracing::debug!(
+                                tx_hash = %tx_hash,
+                                error = %err,
+                                "wait_for_submission_checkpoint receipt error"
+                            );
+                            next_log = Instant::now() + Duration::from_secs(2);
+                        }
+                        _ => {}
+                    }
+                    let current_block = self.node.get_block_number().await?;
+                    if current_block > start_block {
+                        return Ok(());
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(Error::Timeout(
+                            "transaction was submitted but did not become checkpoint-visible"
+                                .into(),
+                        ));
+                    }
+                    sleep(Duration::from_millis(500)).await;
+                }
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    async fn simulate_public_calls(
+        &self,
+        tx_hash: &TxHash,
+        tx_json: &serde_json::Value,
+    ) -> Result<(), Error> {
+        let simulation = self.node.simulate_public_calls(tx_json, false).await?;
+        if let Some(revert_reason) = simulation.get("revertReason") {
+            if !revert_reason.is_null() {
+                let debug_logs = simulation
+                    .get("debugLogs")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                return Err(Error::InvalidData(format!(
+                    "node public-call preflight for tx {} reverted: reason={} debugLogs={}",
+                    tx_hash, revert_reason, debug_logs
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Errors from the simulation preflight that should be ignored.
+    ///
+    /// The node's `simulatePublicCalls` C++ AVM simulation can fail for reasons
+    /// that don't affect actual block execution, e.g. recently-deployed contracts
+    /// appearing "not deployed" because the simulation's world-state snapshot lags
+    /// behind the block-builder's.
+    fn should_ignore_public_preflight_error(err: &Error) -> bool {
+        match err {
+            Error::InvalidData(msg) => msg.contains("is not deployed"),
+            _ => false,
+        }
     }
 }
 
@@ -344,13 +432,101 @@ impl<P: Pxe, N: AztecNode, A: AccountProvider> Wallet for BaseWallet<P, N, A> {
 
         let scopes = Self::build_scopes(&opts.from, &opts.additional_scopes);
 
-        // Prove via PXE
-        let proven = self.pxe.prove_tx(&tx_request, scopes).await?;
+        let (tx_hash, tx_json) = {
+            let proven = self.pxe.prove_tx(&tx_request, scopes.clone()).await?;
+            let tx_hash = proven.tx_hash.ok_or_else(|| {
+                Error::InvalidData("PXE prove_tx result did not include a tx hash".into())
+            })?;
 
-        // Send proven tx to node
-        let tx_hash = self.node.send_tx(&proven.data).await?;
+            let tx = proven.to_tx();
+            let tx_json = tx.to_json_value()?;
+            if !tx.public_function_calldata.is_empty() {
+                match self.simulate_public_calls(&tx_hash, &tx_json).await {
+                    Ok(()) => {}
+                    Err(err) if Self::should_ignore_public_preflight_error(&err) => {
+                        tracing::debug!(
+                            tx_hash = %tx_hash,
+                            error = %err,
+                            "ignoring public-call preflight error"
+                        );
+                    }
+                    Err(err) => return Err(err),
+                }
+            }
+            (tx_hash, tx_json)
+        };
+
+        match self.node.is_valid_tx(&tx_json).await? {
+            TxValidationResult::Valid => {}
+            TxValidationResult::Invalid { reason } => {
+                return Err(Error::InvalidData(format!(
+                    "node rejected tx {} during preflight validation: {}",
+                    tx_hash,
+                    reason.join(", ")
+                )));
+            }
+            TxValidationResult::Skipped { reason } => {
+                tracing::debug!(
+                    tx_hash = %tx_hash,
+                    reasons = %reason.join(", "),
+                    "node skipped tx preflight validation"
+                );
+            }
+        }
+        self.node.send_tx(&tx_json).await?;
+        self.wait_for_submission_checkpoint(&tx_hash).await?;
 
         Ok(SendResult { tx_hash })
+    }
+
+    async fn wait_for_contract(&self, address: AztecAddress) -> Result<(), Error> {
+        let timeout = Duration::from_secs(30);
+        let interval = Duration::from_millis(250);
+        let stabilization = Duration::from_secs(2);
+        let start = Instant::now();
+
+        loop {
+            if let Some(contract) = self.node.get_contract(&address).await? {
+                let class_id = contract.current_contract_class_id;
+                if self.node.get_contract_class(&class_id).await?.is_some() {
+                    sleep(stabilization).await;
+                    if let Some(contract) = self.node.get_contract(&address).await? {
+                        if self
+                            .node
+                            .get_contract_class(&contract.current_contract_class_id)
+                            .await?
+                            .is_some()
+                        {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+
+            if start.elapsed() >= timeout {
+                return Err(Error::Timeout(format!(
+                    "contract {address} did not become node-visible within {:?}",
+                    timeout
+                )));
+            }
+
+            sleep(interval).await;
+        }
+    }
+
+    async fn wait_for_tx_proven(&self, tx_hash: TxHash) -> Result<(), Error> {
+        wait_for_tx(
+            &self.node,
+            &tx_hash,
+            WaitOpts {
+                wait_for_status: TxStatus::Proven,
+                timeout: Duration::from_secs(60),
+                interval: Duration::from_millis(500),
+                ..WaitOpts::default()
+            },
+        )
+        .await
+        .map(|_| ())
     }
 
     async fn create_auth_wit(
@@ -475,6 +651,8 @@ mod tests {
                     l1_contract_addresses: serde_json::json!({}),
                     protocol_contract_addresses: serde_json::json!({}),
                     real_proofs: false,
+                    l2_circuits_vk_tree_root: None,
+                    l2_protocol_contracts_hash: None,
                 },
                 contract: Mutex::new(None),
                 contract_class: Mutex::new(None),
@@ -520,6 +698,19 @@ mod tests {
             })
         }
 
+        async fn get_tx_effect(
+            &self,
+            _tx_hash: &TxHash,
+        ) -> Result<Option<serde_json::Value>, Error> {
+            Ok(None)
+        }
+        async fn get_tx_by_hash(
+            &self,
+            _tx_hash: &TxHash,
+        ) -> Result<Option<serde_json::Value>, Error> {
+            Ok(None)
+        }
+
         async fn get_public_logs(
             &self,
             _filter: PublicLogFilter,
@@ -530,12 +721,9 @@ mod tests {
             })
         }
 
-        async fn send_tx(&self, tx: &serde_json::Value) -> Result<TxHash, Error> {
+        async fn send_tx(&self, tx: &serde_json::Value) -> Result<(), Error> {
             self.sent_txs.lock().unwrap().push(tx.clone());
-            Ok(TxHash::from_hex(
-                "0x00000000000000000000000000000000000000000000000000000000deadbeef",
-            )
-            .unwrap())
+            Ok(())
         }
 
         async fn get_contract(
@@ -605,8 +793,11 @@ mod tests {
         ) -> Result<serde_json::Value, Error> {
             Ok(serde_json::Value::Null)
         }
-        async fn is_valid_tx(&self, _tx: &serde_json::Value) -> Result<bool, Error> {
-            Ok(true)
+        async fn is_valid_tx(
+            &self,
+            _tx: &serde_json::Value,
+        ) -> Result<crate::node::TxValidationResult, Error> {
+            Ok(crate::node::TxValidationResult::Valid)
         }
         async fn get_private_logs_by_tags(&self, _tags: &[Fr]) -> Result<serde_json::Value, Error> {
             Ok(serde_json::json!([]))
@@ -683,7 +874,15 @@ mod tests {
                     data: serde_json::json!({"profileData": "test"}),
                 },
                 proving_result: TxProvingResult {
-                    data: serde_json::json!({"provenTx": true}),
+                    tx_hash: Some(TxHash::zero()),
+                    private_execution_result: serde_json::json!({}),
+                    public_inputs: aztec_core::tx::PrivateKernelTailCircuitPublicInputs::from_bytes(
+                        vec![0],
+                    ),
+                    chonk_proof: aztec_core::tx::ChonkProof::from_bytes(vec![0]),
+                    contract_class_log_fields: vec![],
+                    public_function_calldata: vec![],
+                    stats: None,
                 },
                 utility_result: PxeUtilityResult {
                     result: vec![Fr::from(99u64)],
@@ -964,6 +1163,7 @@ mod tests {
             functions: vec![],
             outputs: None,
             file_map: None,
+            context_inputs_sizes: None,
         }
     }
 

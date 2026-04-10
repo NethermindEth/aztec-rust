@@ -752,6 +752,7 @@ mod tests {
                 }],
                 outputs: None,
                 file_map: None,
+                context_inputs_sizes: None,
             })
         }
 
@@ -786,6 +787,7 @@ mod tests {
                 functions: vec![],
                 outputs: None,
                 file_map: None,
+                context_inputs_sizes: None,
             })
         }
 

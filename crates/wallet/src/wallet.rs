@@ -393,6 +393,12 @@ pub trait Wallet: Send + Sync {
     async fn send_tx(&self, exec: ExecutionPayload, opts: SendOptions)
         -> Result<SendResult, Error>;
 
+    /// Wait until a deployed contract instance is queryable from the node.
+    async fn wait_for_contract(&self, address: AztecAddress) -> Result<(), Error>;
+
+    /// Wait until the block containing a transaction is proven on L1.
+    async fn wait_for_tx_proven(&self, tx_hash: TxHash) -> Result<(), Error>;
+
     /// Create an authorization witness.
     async fn create_auth_wit(
         &self,
@@ -598,6 +604,14 @@ impl Wallet for MockWallet {
         _opts: SendOptions,
     ) -> Result<SendResult, Error> {
         Ok(self.send_result.clone())
+    }
+
+    async fn wait_for_contract(&self, _address: AztecAddress) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn wait_for_tx_proven(&self, _tx_hash: TxHash) -> Result<(), Error> {
+        Ok(())
     }
 
     async fn create_auth_wit(

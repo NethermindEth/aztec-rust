@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::Error;
 
@@ -14,17 +14,7 @@ struct Request<'a> {
     id: u64,
 }
 
-#[derive(Deserialize)]
-struct Response {
-    #[serde(default)]
-    result: Option<serde_json::Value>,
-    #[serde(default)]
-    error: Option<RpcError>,
-    #[allow(dead_code)]
-    id: u64,
-}
-
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 struct RpcError {
     code: i64,
     message: String,
@@ -76,20 +66,72 @@ impl RpcTransport {
         };
 
         let resp = self.client.post(&self.url).json(&request).send().await?;
-        let body: Response = resp.json().await?;
+        let body: serde_json::Value = resp.json().await?;
+        let error: Option<RpcError> = body
+            .get("error")
+            .filter(|value| !value.is_null())
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()?;
 
-        if let Some(err) = body.error {
+        if let Some(err) = error {
             return Err(Error::Rpc {
                 code: err.code,
                 message: err.message,
             });
         }
 
-        let result = body.result.ok_or_else(|| {
-            Error::InvalidData("JSON-RPC response missing both result and error".into())
+        let result = body.get("result").cloned().ok_or_else(|| {
+            Error::InvalidData(format!(
+                "JSON-RPC response for method '{method}' missing both result and error"
+            ))
         })?;
 
         serde_json::from_value(result).map_err(Into::into)
+    }
+
+    /// Call a JSON-RPC method that may legitimately return no value.
+    ///
+    /// Treats both `"result": null` and a missing `result` field as `Ok(None)`,
+    /// while still propagating JSON-RPC errors.
+    pub async fn call_optional<T: serde::de::DeserializeOwned>(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<Option<T>, Error> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let request = Request {
+            jsonrpc: "2.0",
+            method,
+            params,
+            id,
+        };
+
+        let resp = self.client.post(&self.url).json(&request).send().await?;
+        let body: serde_json::Value = resp.json().await?;
+        let error: Option<RpcError> = body
+            .get("error")
+            .filter(|value| !value.is_null())
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()?;
+
+        if let Some(err) = error {
+            return Err(Error::Rpc {
+                code: err.code,
+                message: err.message,
+            });
+        }
+
+        let Some(result) = body.get("result").cloned() else {
+            return Ok(None);
+        };
+
+        if result.is_null() {
+            return Ok(None);
+        }
+
+        serde_json::from_value(result).map(Some).map_err(Into::into)
     }
 
     /// Call a JSON-RPC method that returns no meaningful value.
@@ -106,9 +148,15 @@ impl RpcTransport {
         };
 
         let resp = self.client.post(&self.url).json(&request).send().await?;
-        let body: Response = resp.json().await?;
+        let body: serde_json::Value = resp.json().await?;
+        let error: Option<RpcError> = body
+            .get("error")
+            .filter(|value| !value.is_null())
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()?;
 
-        if let Some(err) = body.error {
+        if let Some(err) = error {
             return Err(Error::Rpc {
                 code: err.code,
                 message: err.message,
@@ -142,29 +190,30 @@ mod tests {
 
     #[test]
     fn response_with_result_parses() {
-        let json = r#"{"jsonrpc":"2.0","result":42,"id":1}"#;
-        let resp: Response = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.result.unwrap(), serde_json::json!(42));
-        assert!(resp.error.is_none());
+        let body: serde_json::Value =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","result":42,"id":1}"#).unwrap();
+        assert_eq!(body["result"], serde_json::json!(42));
+        assert!(body.get("error").is_none());
     }
 
     #[test]
     fn response_with_error_parses() {
-        let json =
-            r#"{"jsonrpc":"2.0","error":{"code":-32600,"message":"Invalid Request"},"id":1}"#;
-        let resp: Response = serde_json::from_str(json).unwrap();
-        assert!(resp.result.is_none());
-        let err = resp.error.unwrap();
+        let body: serde_json::Value = serde_json::from_str(
+            r#"{"jsonrpc":"2.0","error":{"code":-32600,"message":"Invalid Request"},"id":1}"#,
+        )
+        .unwrap();
+        assert!(body.get("result").is_none());
+        let err: RpcError = serde_json::from_value(body["error"].clone()).unwrap();
         assert_eq!(err.code, -32600);
         assert_eq!(err.message, "Invalid Request");
     }
 
     #[test]
     fn response_with_null_result_parses() {
-        let json = r#"{"jsonrpc":"2.0","result":null,"id":1}"#;
-        let resp: Response = serde_json::from_str(json).unwrap();
-        // Option deserializes JSON null as None
-        assert!(resp.result.is_none());
-        assert!(resp.error.is_none());
+        let body: serde_json::Value =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","result":null,"id":1}"#).unwrap();
+        assert!(body.get("result").is_some());
+        assert!(body["result"].is_null());
+        assert!(body.get("error").is_none());
     }
 }
