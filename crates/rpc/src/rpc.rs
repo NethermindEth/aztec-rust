@@ -34,10 +34,21 @@ struct RpcError {
 pub struct RpcTransport {
     client: Client,
     url: String,
+    timeout: Duration,
     next_id: AtomicU64,
 }
 
 impl RpcTransport {
+    /// Get the URL this transport connects to.
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// Get the timeout duration for this transport.
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
     pub fn new(url: String, timeout: Duration) -> Self {
         let client = Client::builder()
             .timeout(timeout)
@@ -46,6 +57,7 @@ impl RpcTransport {
         Self {
             client,
             url,
+            timeout,
             next_id: AtomicU64::new(1),
         }
     }
