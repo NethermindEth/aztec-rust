@@ -77,8 +77,9 @@ pub struct GetPublicEventsResult<T> {
 
 /// Decode a single public log's field-element data into named fields.
 ///
-/// The first element in `data` is expected to be the event selector. The
-/// remaining elements are mapped to the field names from the event metadata.
+/// Noir's `emit_public_log` places the event selector at the **last** position:
+/// `[serialized_event_fields..., event_type_id]`.
+/// The field elements before the selector are mapped positionally to field names.
 fn decode_log_fields(
     data: &[Fr],
     event_metadata: &EventMetadataDefinition,
@@ -87,15 +88,17 @@ fn decode_log_fields(
         return Err(Error::Abi("log data is empty".into()));
     }
 
-    // First field element is the event selector.
-    if data[0] != event_metadata.event_selector.0 {
+    // Event selector is the last field element.
+    let selector = *data.last().expect("non-empty");
+    if selector != event_metadata.event_selector.0 {
         return Err(Error::Abi(format!(
             "event selector mismatch: expected {}, got {}",
-            event_metadata.event_selector.0, data[0]
+            event_metadata.event_selector.0, selector
         )));
     }
 
-    let field_data = &data[1..];
+    // Data fields are everything before the selector.
+    let field_data = &data[..data.len() - 1];
     let names: Vec<String> = match &event_metadata.abi_type {
         AbiType::Struct { fields, .. } => {
             if event_metadata.field_names.is_empty() {
@@ -135,10 +138,11 @@ fn decode_log_fields(
 
 /// Query and decode public events from the node.
 ///
-/// Translates the [`PublicEventFilter`] into a [`PublicLogFilter`] (injecting
-/// the event selector from `event_metadata`), calls
-/// [`AztecNode::get_public_logs`], and decodes each returned log into a
-/// `PublicEvent<BTreeMap<String, Fr>>` using the field names from the metadata.
+/// Fetches all public logs matching the filter, then performs **client-side**
+/// filtering by event selector (matching the last field of each log against
+/// the selector from `event_metadata`).  This mirrors the upstream TS SDK
+/// behaviour where the node returns all logs and the client skips non-matching
+/// selectors.
 pub async fn get_public_events(
     node: &(impl AztecNode + ?Sized),
     event_metadata: &EventMetadataDefinition,
@@ -149,7 +153,7 @@ pub async fn get_public_events(
         from_block: filter.from_block,
         to_block: filter.to_block,
         contract_address: filter.contract_address,
-        selector: Some(event_metadata.event_selector),
+        selector: None, // client-side filtering, not node-side
         after_log: filter.after_log,
     };
 
@@ -157,6 +161,15 @@ pub async fn get_public_events(
 
     let mut events = Vec::with_capacity(response.logs.len());
     for log in &response.logs {
+        // Client-side selector matching: skip logs whose last field doesn't
+        // match the expected event selector.
+        if let Some(last) = log.data.last() {
+            if *last != event_metadata.event_selector.0 {
+                continue;
+            }
+        } else {
+            continue;
+        }
         let decoded = decode_log_fields(&log.data, event_metadata)?;
         events.push(PublicEvent {
             event: decoded,
