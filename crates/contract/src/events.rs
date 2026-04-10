@@ -262,6 +262,82 @@ mod tests {
         async fn get_contract_class(&self, _id: &Fr) -> Result<Option<serde_json::Value>, Error> {
             unimplemented!("not needed for event tests")
         }
+
+        async fn get_block_header(&self, _block_number: u64) -> Result<serde_json::Value, Error> {
+            unimplemented!("not needed for event tests")
+        }
+        async fn get_block(&self, _block_number: u64) -> Result<Option<serde_json::Value>, Error> {
+            unimplemented!("not needed for event tests")
+        }
+        async fn get_note_hash_membership_witness(
+            &self,
+            _block_number: u64,
+            _note_hash: &Fr,
+        ) -> Result<Option<serde_json::Value>, Error> {
+            unimplemented!("not needed for event tests")
+        }
+        async fn get_nullifier_membership_witness(
+            &self,
+            _block_number: u64,
+            _nullifier: &Fr,
+        ) -> Result<Option<serde_json::Value>, Error> {
+            unimplemented!("not needed for event tests")
+        }
+        async fn get_low_nullifier_membership_witness(
+            &self,
+            _block_number: u64,
+            _nullifier: &Fr,
+        ) -> Result<Option<serde_json::Value>, Error> {
+            unimplemented!("not needed for event tests")
+        }
+        async fn get_public_storage_at(
+            &self,
+            _block_number: u64,
+            _contract: &AztecAddress,
+            _slot: &Fr,
+        ) -> Result<Fr, Error> {
+            unimplemented!("not needed for event tests")
+        }
+        async fn get_public_data_witness(
+            &self,
+            _block_number: u64,
+            _leaf_slot: &Fr,
+        ) -> Result<Option<serde_json::Value>, Error> {
+            unimplemented!("not needed for event tests")
+        }
+        async fn get_l1_to_l2_message_membership_witness(
+            &self,
+            _block_number: u64,
+            _entry_key: &Fr,
+        ) -> Result<serde_json::Value, Error> {
+            unimplemented!("not needed for event tests")
+        }
+        async fn simulate_public_calls(
+            &self,
+            _tx: &serde_json::Value,
+            _skip_fee_enforcement: bool,
+        ) -> Result<serde_json::Value, Error> {
+            unimplemented!("not needed for event tests")
+        }
+        async fn is_valid_tx(&self, _tx: &serde_json::Value) -> Result<bool, Error> {
+            unimplemented!("not needed for event tests")
+        }
+        async fn get_private_logs_by_tags(&self, _tags: &[Fr]) -> Result<serde_json::Value, Error> {
+            unimplemented!("not needed for event tests")
+        }
+        async fn get_public_logs_by_tags_from_contract(
+            &self,
+            _contract: &AztecAddress,
+            _tags: &[Fr],
+        ) -> Result<serde_json::Value, Error> {
+            unimplemented!("not needed for event tests")
+        }
+        async fn register_contract_function_signatures(
+            &self,
+            _signatures: &[String],
+        ) -> Result<(), Error> {
+            unimplemented!("not needed for event tests")
+        }
     }
 
     fn sample_event_metadata() -> EventMetadataDefinition {

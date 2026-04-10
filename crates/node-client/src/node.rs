@@ -9,6 +9,14 @@ use crate::rpc::RpcTransport;
 use crate::tx::{TxHash, TxReceipt, TxStatus};
 use crate::types::{AztecAddress, ContractInstanceWithAddress, Fr};
 
+fn block_param_json(block_number: u64) -> serde_json::Value {
+    if block_number == 0 {
+        serde_json::Value::String("latest".to_owned())
+    } else {
+        serde_json::json!(block_number)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Supporting types
 // ---------------------------------------------------------------------------
@@ -151,6 +159,83 @@ pub trait AztecNode: Send + Sync {
     ) -> Result<Option<ContractInstanceWithAddress>, Error>;
     /// Get a publicly registered contract class by ID.
     async fn get_contract_class(&self, id: &Fr) -> Result<Option<serde_json::Value>, Error>;
+
+    // --- Phase 1: methods required for EmbeddedPxe simulation ---
+
+    /// Get a block header by block number (0 = latest).
+    async fn get_block_header(&self, block_number: u64) -> Result<serde_json::Value, Error>;
+
+    /// Get a full block by block number.
+    async fn get_block(&self, block_number: u64) -> Result<Option<serde_json::Value>, Error>;
+
+    /// Get a note-hash membership witness for a leaf at a given block.
+    async fn get_note_hash_membership_witness(
+        &self,
+        block_number: u64,
+        note_hash: &Fr,
+    ) -> Result<Option<serde_json::Value>, Error>;
+
+    /// Get a nullifier membership witness at a given block.
+    async fn get_nullifier_membership_witness(
+        &self,
+        block_number: u64,
+        nullifier: &Fr,
+    ) -> Result<Option<serde_json::Value>, Error>;
+
+    /// Get the low nullifier membership witness (for non-membership proofs).
+    async fn get_low_nullifier_membership_witness(
+        &self,
+        block_number: u64,
+        nullifier: &Fr,
+    ) -> Result<Option<serde_json::Value>, Error>;
+
+    /// Read a public storage slot value at a given block.
+    async fn get_public_storage_at(
+        &self,
+        block_number: u64,
+        contract: &AztecAddress,
+        slot: &Fr,
+    ) -> Result<Fr, Error>;
+
+    /// Get a merkle witness for a public data leaf.
+    async fn get_public_data_witness(
+        &self,
+        block_number: u64,
+        leaf_slot: &Fr,
+    ) -> Result<Option<serde_json::Value>, Error>;
+
+    /// Get a membership witness for an L1-to-L2 message.
+    async fn get_l1_to_l2_message_membership_witness(
+        &self,
+        block_number: u64,
+        entry_key: &Fr,
+    ) -> Result<serde_json::Value, Error>;
+
+    /// Delegate public call simulation to the node.
+    async fn simulate_public_calls(
+        &self,
+        tx: &serde_json::Value,
+        skip_fee_enforcement: bool,
+    ) -> Result<serde_json::Value, Error>;
+
+    /// Validate a simulated transaction.
+    async fn is_valid_tx(&self, tx: &serde_json::Value) -> Result<bool, Error>;
+
+    /// Get private logs by tags for note discovery.
+    async fn get_private_logs_by_tags(&self, tags: &[Fr]) -> Result<serde_json::Value, Error>;
+
+    /// Get public logs by tags from a specific contract.
+    async fn get_public_logs_by_tags_from_contract(
+        &self,
+        contract: &AztecAddress,
+        tags: &[Fr],
+    ) -> Result<serde_json::Value, Error>;
+
+    /// Register contract function signatures for debugging.
+    async fn register_contract_function_signatures(
+        &self,
+        signatures: &[String],
+    ) -> Result<(), Error>;
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +252,12 @@ impl HttpNodeClient {
         Self {
             transport: RpcTransport::new(url, timeout),
         }
+    }
+}
+
+impl Clone for HttpNodeClient {
+    fn clone(&self) -> Self {
+        Self::new(self.transport.url().to_owned(), self.transport.timeout())
     }
 }
 
@@ -220,6 +311,147 @@ impl AztecNode for HttpNodeClient {
     async fn get_contract_class(&self, id: &Fr) -> Result<Option<serde_json::Value>, Error> {
         self.transport
             .call("node_getContractClass", serde_json::json!([id]))
+            .await
+    }
+
+    async fn get_block_header(&self, block_number: u64) -> Result<serde_json::Value, Error> {
+        self.transport
+            .call("node_getBlockHeader", serde_json::json!([block_number]))
+            .await
+    }
+
+    async fn get_block(&self, block_number: u64) -> Result<Option<serde_json::Value>, Error> {
+        self.transport
+            .call("node_getBlock", serde_json::json!([block_number]))
+            .await
+    }
+
+    async fn get_note_hash_membership_witness(
+        &self,
+        block_number: u64,
+        note_hash: &Fr,
+    ) -> Result<Option<serde_json::Value>, Error> {
+        self.transport
+            .call(
+                "node_getNoteHashMembershipWitness",
+                serde_json::json!([block_param_json(block_number), note_hash]),
+            )
+            .await
+    }
+
+    async fn get_nullifier_membership_witness(
+        &self,
+        block_number: u64,
+        nullifier: &Fr,
+    ) -> Result<Option<serde_json::Value>, Error> {
+        self.transport
+            .call(
+                "node_getNullifierMembershipWitness",
+                serde_json::json!([block_param_json(block_number), nullifier]),
+            )
+            .await
+    }
+
+    async fn get_low_nullifier_membership_witness(
+        &self,
+        block_number: u64,
+        nullifier: &Fr,
+    ) -> Result<Option<serde_json::Value>, Error> {
+        self.transport
+            .call(
+                "node_getLowNullifierMembershipWitness",
+                serde_json::json!([block_param_json(block_number), nullifier]),
+            )
+            .await
+    }
+
+    async fn get_public_storage_at(
+        &self,
+        block_number: u64,
+        contract: &AztecAddress,
+        slot: &Fr,
+    ) -> Result<Fr, Error> {
+        self.transport
+            .call(
+                "node_getPublicStorageAt",
+                serde_json::json!([block_param_json(block_number), contract, slot]),
+            )
+            .await
+    }
+
+    async fn get_public_data_witness(
+        &self,
+        block_number: u64,
+        leaf_slot: &Fr,
+    ) -> Result<Option<serde_json::Value>, Error> {
+        self.transport
+            .call(
+                "node_getPublicDataWitness",
+                serde_json::json!([block_param_json(block_number), leaf_slot]),
+            )
+            .await
+    }
+
+    async fn get_l1_to_l2_message_membership_witness(
+        &self,
+        block_number: u64,
+        entry_key: &Fr,
+    ) -> Result<serde_json::Value, Error> {
+        self.transport
+            .call(
+                "node_getL1ToL2MessageMembershipWitness",
+                serde_json::json!([block_param_json(block_number), entry_key]),
+            )
+            .await
+    }
+
+    async fn simulate_public_calls(
+        &self,
+        tx: &serde_json::Value,
+        skip_fee_enforcement: bool,
+    ) -> Result<serde_json::Value, Error> {
+        self.transport
+            .call(
+                "node_simulatePublicCalls",
+                serde_json::json!([tx, skip_fee_enforcement]),
+            )
+            .await
+    }
+
+    async fn is_valid_tx(&self, tx: &serde_json::Value) -> Result<bool, Error> {
+        self.transport
+            .call("node_isValidTx", serde_json::json!([tx]))
+            .await
+    }
+
+    async fn get_private_logs_by_tags(&self, tags: &[Fr]) -> Result<serde_json::Value, Error> {
+        self.transport
+            .call("node_getPrivateLogsByTags", serde_json::json!([tags]))
+            .await
+    }
+
+    async fn get_public_logs_by_tags_from_contract(
+        &self,
+        contract: &AztecAddress,
+        tags: &[Fr],
+    ) -> Result<serde_json::Value, Error> {
+        self.transport
+            .call(
+                "node_getPublicLogsByTagsFromContract",
+                serde_json::json!([contract, tags]),
+            )
+            .await
+    }
+
+    async fn register_contract_function_signatures(
+        &self,
+        signatures: &[String],
+    ) -> Result<(), Error> {
+        self.transport
+            .call_void(
+                "node_registerContractFunctionSignatures",
+                serde_json::json!([signatures]),
+            )
             .await
     }
 }
@@ -693,6 +925,82 @@ mod tests {
 
         async fn get_contract_class(&self, _id: &Fr) -> Result<Option<serde_json::Value>, Error> {
             Ok(None)
+        }
+
+        async fn get_block_header(&self, _block_number: u64) -> Result<serde_json::Value, Error> {
+            Ok(serde_json::json!({"blockNumber": 1}))
+        }
+        async fn get_block(&self, _block_number: u64) -> Result<Option<serde_json::Value>, Error> {
+            Ok(None)
+        }
+        async fn get_note_hash_membership_witness(
+            &self,
+            _block_number: u64,
+            _note_hash: &Fr,
+        ) -> Result<Option<serde_json::Value>, Error> {
+            Ok(None)
+        }
+        async fn get_nullifier_membership_witness(
+            &self,
+            _block_number: u64,
+            _nullifier: &Fr,
+        ) -> Result<Option<serde_json::Value>, Error> {
+            Ok(None)
+        }
+        async fn get_low_nullifier_membership_witness(
+            &self,
+            _block_number: u64,
+            _nullifier: &Fr,
+        ) -> Result<Option<serde_json::Value>, Error> {
+            Ok(None)
+        }
+        async fn get_public_storage_at(
+            &self,
+            _block_number: u64,
+            _contract: &AztecAddress,
+            _slot: &Fr,
+        ) -> Result<Fr, Error> {
+            Ok(Fr::zero())
+        }
+        async fn get_public_data_witness(
+            &self,
+            _block_number: u64,
+            _leaf_slot: &Fr,
+        ) -> Result<Option<serde_json::Value>, Error> {
+            Ok(None)
+        }
+        async fn get_l1_to_l2_message_membership_witness(
+            &self,
+            _block_number: u64,
+            _entry_key: &Fr,
+        ) -> Result<serde_json::Value, Error> {
+            Ok(serde_json::Value::Null)
+        }
+        async fn simulate_public_calls(
+            &self,
+            _tx: &serde_json::Value,
+            _skip_fee_enforcement: bool,
+        ) -> Result<serde_json::Value, Error> {
+            Ok(serde_json::Value::Null)
+        }
+        async fn is_valid_tx(&self, _tx: &serde_json::Value) -> Result<bool, Error> {
+            Ok(true)
+        }
+        async fn get_private_logs_by_tags(&self, _tags: &[Fr]) -> Result<serde_json::Value, Error> {
+            Ok(serde_json::json!([]))
+        }
+        async fn get_public_logs_by_tags_from_contract(
+            &self,
+            _contract: &AztecAddress,
+            _tags: &[Fr],
+        ) -> Result<serde_json::Value, Error> {
+            Ok(serde_json::json!([]))
+        }
+        async fn register_contract_function_signatures(
+            &self,
+            _signatures: &[String],
+        ) -> Result<(), Error> {
+            Ok(())
         }
     }
 
