@@ -105,7 +105,7 @@ impl<'a, N: AztecNode> UtilityExecutionOracle<'a, N> {
             .ok_or_else(|| Error::InvalidData("getNotes: missing storage_slot".into()))?;
         let notes = self
             .note_store
-            .get_notes(&self.contract_address, storage_slot)
+            .get_notes_by_slot(&self.contract_address, storage_slot)
             .await?;
         let result: Vec<Fr> = notes.into_iter().flat_map(|n| n.note_data).collect();
         Ok(vec![result])
