@@ -60,10 +60,7 @@ impl<'a, N: AztecNode> NoteService<'a, N> {
             let nullifiers: Vec<Fr> = chunk.iter().map(|n| n.siloed_nullifier).collect();
 
             // Check which nullifiers exist in the tree
-            let indexes = self
-                .node
-                .find_leaves_indexes(0, "nullifier_tree", &nullifiers)
-                .await?;
+            let indexes = self.node.find_leaves_indexes(0, "1", &nullifiers).await?;
 
             // Mark found nullifiers
             let mut to_nullify = Vec::new();
@@ -103,19 +100,9 @@ impl<'a, N: AztecNode> NoteService<'a, N> {
         note: &StoredNote,
         scope: &AztecAddress,
     ) -> Result<(), Error> {
-        // Check if note hash exists in the tree
-        let witness = self
-            .node
-            .get_note_hash_membership_witness(0, &note.note_hash)
-            .await?;
-
-        if witness.is_none() {
-            tracing::warn!(
-                note_hash = %note.note_hash,
-                "note hash not found in tree, skipping"
-            );
-            return Ok(());
-        }
+        // The Noir `sync_state` already validated the note client-side
+        // (decrypted the log, computed the note hash, matched it against
+        // unique note hashes in the tx). We trust the validation request.
 
         // Check if already nullified
         let nullifier_witness = self

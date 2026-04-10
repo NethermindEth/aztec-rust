@@ -90,7 +90,15 @@ impl<'a, N: AztecNode> LogService<'a, N> {
             } else {
                 vec![]
             };
-            let mut private_logs = self.get_private_logs_by_tags(&[request.tag]).await?;
+            // The request tag from Noir is UNSILOED.  The node indexes
+            // private logs by the SILOED first field, so we must silo
+            // before querying.
+            let siloed_tag = if let Some(contract) = &request.contract_address {
+                compute_siloed_private_log_first_field(contract, &request.tag)
+            } else {
+                request.tag
+            };
+            let mut private_logs = self.get_private_logs_by_tags(&[siloed_tag]).await?;
             let private_logs = private_logs.pop().unwrap_or_default();
 
             if !public_logs.is_empty() && !private_logs.is_empty() {
@@ -209,7 +217,8 @@ impl<'a, N: AztecNode> LogService<'a, N> {
                 if let Some(entries) = tag_logs.as_array() {
                     for entry in entries {
                         let data = entry
-                            .get("data")
+                            .get("logData")
+                            .or_else(|| entry.get("data"))
                             .and_then(|d| d.as_array())
                             .map(|arr| {
                                 arr.iter()
@@ -279,7 +288,8 @@ impl<'a, N: AztecNode> LogService<'a, N> {
                 if let Some(entries) = tag_logs.as_array() {
                     for entry in entries {
                         let data = entry
-                            .get("data")
+                            .get("logData")
+                            .or_else(|| entry.get("data"))
                             .and_then(|d| d.as_array())
                             .map(|arr| {
                                 arr.iter()
