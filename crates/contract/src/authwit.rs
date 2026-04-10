@@ -185,39 +185,39 @@ async fn check_private_validity<W: Wallet>(
     }
 }
 
-/// Check public validity by calling `utility_is_consumable` on the AuthRegistry.
+/// Check public validity by reading the AuthRegistry's public storage directly.
+///
+/// The `approved_actions` storage in the AuthRegistry is a `Map<AztecAddress, Map<Field, bool>>`.
+/// Storage slot = `poseidon2(poseidon2(base_slot=1, on_behalf_of), message_hash)`.
 async fn check_public_validity<W: Wallet>(
     wallet: &W,
     on_behalf_of: &AztecAddress,
     message_hash: &Fr,
     _chain_info: &ChainInfo,
 ) -> bool {
-    let call = FunctionCall {
-        to: protocol_contract_address::auth_registry(),
-        selector: FunctionSelector::from_signature("utility_is_consumable((Field),Field)"),
-        args: vec![
-            AbiValue::Field(on_behalf_of.0),
-            AbiValue::Field(*message_hash),
-        ],
-        function_type: FunctionType::Utility,
-        is_static: true,
-        hide_msg_sender: false,
-    };
+    use aztec_core::hash::poseidon2_hash_with_separator;
 
-    let opts = ExecuteUtilityOptions {
-        scope: *on_behalf_of,
-        auth_witnesses: vec![],
-    };
+    // approved_actions is the second storage variable → base slot = 2
+    // (reject_all is at slot 1)
+    let base_slot = Fr::from(2u64);
+    // Map slot derivation uses DOM_SEP__PUBLIC_STORAGE_MAP_SLOT = 4015149901
+    const MAP_SLOT_SEP: u32 = 4_015_149_901;
+    let intermediate = poseidon2_hash_with_separator(&[base_slot, on_behalf_of.0], MAP_SLOT_SEP);
+    let storage_slot = poseidon2_hash_with_separator(&[intermediate, *message_hash], MAP_SLOT_SEP);
 
-    match wallet.execute_utility(call, opts).await {
-        Ok(result) => parse_boolean_result(&result.result),
+    match wallet
+        .get_public_storage_at(&protocol_contract_address::auth_registry(), &storage_slot)
+        .await
+    {
+        Ok(value) => value != Fr::zero(),
         Err(_) => false,
     }
 }
 
 /// Parse a boolean from a JSON value returned by utility execution.
 fn parse_boolean_result(value: &serde_json::Value) -> bool {
-    // The result may be a boolean, a number (0/1), or a hex-encoded field element
+    // The result may be a boolean, a number (0/1), a hex-encoded field element,
+    // or an array wrapping one of those.
     match value {
         serde_json::Value::Bool(b) => *b,
         serde_json::Value::Number(n) => n.as_u64() == Some(1),
@@ -226,6 +226,10 @@ fn parse_boolean_result(value: &serde_json::Value) -> bool {
             s != "0x0000000000000000000000000000000000000000000000000000000000000000"
                 && s != "0"
                 && s != "false"
+        }
+        serde_json::Value::Array(arr) => {
+            // Unwrap single-element arrays (common for utility return values)
+            arr.first().map_or(false, parse_boolean_result)
         }
         _ => false,
     }

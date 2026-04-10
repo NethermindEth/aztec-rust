@@ -405,6 +405,9 @@ pub trait Wallet: Send + Sync {
         from: AztecAddress,
         message_hash_or_intent: MessageHashOrIntent,
     ) -> Result<AuthWitness, Error>;
+
+    /// Read a public storage value at the given contract address and slot.
+    async fn get_public_storage_at(&self, contract: &AztecAddress, slot: &Fr) -> Result<Fr, Error>;
 }
 
 // ---------------------------------------------------------------------------
@@ -620,6 +623,14 @@ impl Wallet for MockWallet {
         _message_hash_or_intent: MessageHashOrIntent,
     ) -> Result<AuthWitness, Error> {
         Ok(AuthWitness::default())
+    }
+
+    async fn get_public_storage_at(
+        &self,
+        _contract: &AztecAddress,
+        _slot: &Fr,
+    ) -> Result<Fr, Error> {
+        Ok(Fr::zero())
     }
 }
 

@@ -539,6 +539,11 @@ impl<P: Pxe, N: AztecNode, A: AccountProvider> Wallet for BaseWallet<P, N, A> {
             .create_auth_wit(&from, message_hash_or_intent, &chain_info)
             .await
     }
+
+    async fn get_public_storage_at(&self, contract: &AztecAddress, slot: &Fr) -> Result<Fr, Error> {
+        // Use 0 = "latest" to get the most current state.
+        self.node.get_public_storage_at(0, contract, slot).await
+    }
 }
 
 /// Decode packed private events from the PXE into wallet-level [`PrivateEvent`] objects.
