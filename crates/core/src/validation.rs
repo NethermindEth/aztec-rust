@@ -112,7 +112,7 @@ mod tests {
 
     #[test]
     fn validate_calldata_count_mismatch() {
-        let mut tx = TypedTx {
+        let tx = TypedTx {
             tx_hash: TxHash::zero(),
             data: PrivateKernelTailPublicInputs {
                 for_public: Some(PartialPrivateTailPublicInputsForPublic {

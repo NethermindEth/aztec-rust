@@ -852,6 +852,7 @@ mod tests {
             _scopes: Vec<AztecAddress>,
         ) -> Result<TxProvingResult, Error> {
             Ok(TxProvingResult {
+                tx_hash: None,
                 private_execution_result: serde_json::json!({}),
                 public_inputs: PrivateKernelTailCircuitPublicInputs::from_bytes(vec![0]),
                 chonk_proof: ChonkProof::from_bytes(vec![0]),

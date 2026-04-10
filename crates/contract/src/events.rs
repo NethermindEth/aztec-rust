@@ -363,6 +363,12 @@ mod tests {
         ) -> Result<Vec<Option<u64>>, Error> {
             unimplemented!("not needed for event tests")
         }
+        async fn get_tx_by_hash(
+            &self,
+            _tx_hash: &TxHash,
+        ) -> Result<Option<serde_json::Value>, Error> {
+            unimplemented!("not needed for event tests")
+        }
     }
 
     fn sample_event_metadata() -> EventMetadataDefinition {
