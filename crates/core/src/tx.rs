@@ -340,15 +340,16 @@ pub fn compute_tx_request_hash(
     args_hash: Fr,
     tx_context: &TxContext,
     function_selector: FunctionSelector,
-    is_static: bool,
+    is_private: bool,
     salt: Fr,
 ) -> Fr {
+    // Field order matches TS: [origin, argsHash, txContext, functionData(selector, isPrivate), salt]
     let mut fields = Vec::with_capacity(15);
     fields.push(origin.0);
     fields.push(args_hash);
     fields.extend(tx_context.to_fields());
     fields.push(function_selector.to_field());
-    fields.push(Fr::from(is_static));
+    fields.push(Fr::from(is_private));
     fields.push(salt);
     poseidon2_hash_with_separator(&fields, domain_separator::TX_REQUEST)
 }

@@ -786,6 +786,9 @@ impl PrivateKernelTailPublicInputs {
         let is_for_public = self.for_public.is_some();
         let mut buf = Vec::with_capacity(if is_for_public { 91_000 } else { 43_000 });
 
+        // Field order matches TS PrivateKernelTailCircuitPublicInputs.toBuffer():
+        // [isForPublic, constants, gasUsed, feePayer, expirationTimestamp, accumulatedData]
+
         // Discriminator: boolean (1 byte)
         write_bool(&mut buf, is_for_public);
 
