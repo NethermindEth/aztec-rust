@@ -11,10 +11,20 @@ aztec-crypto = { path = "../crypto", version = "0.3.2" }
 aztec-node-client = { path = "../node-client", version = "0.3.2" }
 aztec-pxe-client = { path = "../pxe-client", version = "0.3.2" }
 async-trait = "0.1"
+base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sled = "0.34"
 tokio = { version = "1", features = ["sync", "process", "fs"] }
 tracing = "0.1"
+
+# Noir ACVM — pinned to the exact noir commit matching compiled contract artifacts
+acvm = { git = "https://github.com/noir-lang/noir.git", rev = "2db78f8894936db05c53430f364360ac9cc5c61f", package = "acvm" }
+brillig_vm = { git = "https://github.com/noir-lang/noir.git", rev = "2db78f8894936db05c53430f364360ac9cc5c61f", package = "brillig_vm" }
+acir = { git = "https://github.com/noir-lang/noir.git", rev = "2db78f8894936db05c53430f364360ac9cc5c61f", package = "acir" }
+noirc_abi = { git = "https://github.com/noir-lang/noir.git", rev = "2db78f8894936db05c53430f364360ac9cc5c61f", package = "noirc_abi" }
+bn254_blackbox_solver = { git = "https://github.com/noir-lang/noir.git", rev = "2db78f8894936db05c53430f364360ac9cc5c61f", package = "bn254_blackbox_solver" }
+flate2 = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

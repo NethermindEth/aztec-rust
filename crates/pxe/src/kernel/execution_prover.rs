@@ -8,7 +8,6 @@ use aztec_core::error::Error;
 use aztec_core::types::{AztecAddress, Fr};
 use aztec_node_client::AztecNode;
 
-use crate::execution::acvm_executor::PrivateExecutionResult;
 use crate::stores::{ContractStore, KeyStore};
 
 use super::oracle::PrivateKernelOracle;
@@ -405,6 +404,6 @@ pub struct PrivateCallExecution {
     pub call_stack_item: serde_json::Value,
     /// The execution result as opaque JSON.
     pub execution_result_json: serde_json::Value,
-    /// The structured execution result.
-    pub execution_result: PrivateExecutionResult,
+    /// The structured execution result (new typed version).
+    pub execution_result: crate::execution::execution_result::PrivateCallExecutionResult,
 }

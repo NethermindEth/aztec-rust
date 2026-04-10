@@ -235,13 +235,16 @@ impl<'a, N: AztecNode> PrivateKernelOracle<'a, N> {
 }
 
 fn extract_packed_public_bytecode(artifact: &ContractArtifact) -> Vec<u8> {
+    // Only public_dispatch carries the packed bytecode (mirrors TS retainBytecode filter).
     artifact
         .functions
         .iter()
-        .filter(|function| function.function_type == aztec_core::abi::FunctionType::Public)
-        .filter_map(|function| function.bytecode.as_deref())
-        .flat_map(decode_bytecode)
-        .collect()
+        .find(|f| {
+            f.function_type == aztec_core::abi::FunctionType::Public && f.name == "public_dispatch"
+        })
+        .and_then(|f| f.bytecode.as_deref())
+        .map(|bc| decode_bytecode(bc))
+        .unwrap_or_default()
 }
 
 fn decode_bytecode(encoded: &str) -> Vec<u8> {

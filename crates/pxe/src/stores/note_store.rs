@@ -33,8 +33,17 @@ impl Default for NoteStatus {
 pub struct StoredNote {
     /// The contract that owns this note.
     pub contract_address: AztecAddress,
+    /// The owner of the note.
+    #[serde(default)]
+    pub owner: AztecAddress,
     /// The storage slot within the contract.
     pub storage_slot: Fr,
+    /// Randomness used when constructing the note commitment.
+    #[serde(default)]
+    pub randomness: Fr,
+    /// The nonce injected into the note hash preimage by kernels.
+    #[serde(default)]
+    pub note_nonce: Fr,
     /// The note hash (commitment).
     pub note_hash: Fr,
     /// The siloed nullifier for this note.
@@ -43,6 +52,9 @@ pub struct StoredNote {
     pub note_data: Vec<Fr>,
     /// Whether this note has been nullified.
     pub nullified: bool,
+    /// Whether this note is still pending and not yet settled from chain sync.
+    #[serde(default)]
+    pub is_pending: bool,
     /// Block number when this note was nullified (if nullified).
     pub nullification_block_number: Option<u64>,
     /// Index in the note hash tree (if known).
@@ -169,7 +181,7 @@ impl NoteStore {
 
                 // Owner/scope filter
                 if let Some(ref owner) = filter.owner {
-                    if !note.scopes.contains(owner) {
+                    if note.owner != *owner {
                         return false;
                     }
                 }
@@ -463,11 +475,15 @@ mod tests {
     fn make_note(contract: u64, slot: u64, hash: u64, nullifier: u64) -> StoredNote {
         StoredNote {
             contract_address: AztecAddress::from(contract),
+            owner: AztecAddress::from(99u64),
             storage_slot: Fr::from(slot),
+            randomness: Fr::from(7u64),
+            note_nonce: Fr::from(11u64),
             note_hash: Fr::from(hash),
             siloed_nullifier: Fr::from(nullifier),
             note_data: vec![Fr::from(10u64), Fr::from(20u64)],
             nullified: false,
+            is_pending: false,
             nullification_block_number: None,
             leaf_index: None,
             block_number: Some(1),

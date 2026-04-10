@@ -4,6 +4,8 @@
 //! protocol, supporting both public and private logs with pagination.
 
 use aztec_core::error::Error;
+use aztec_core::hash::{compute_siloed_private_log_first_field, poseidon2_hash};
+use aztec_core::tx::TxHash;
 use aztec_core::types::{AztecAddress, Fr};
 use aztec_node_client::AztecNode;
 
@@ -37,6 +39,12 @@ pub struct TaggedLog {
     pub block_number: u64,
     /// Whether this is a public log.
     pub is_public: bool,
+    /// Transaction hash that emitted the log.
+    pub tx_hash: TxHash,
+    /// Unique note hashes created by the emitting transaction.
+    pub note_hashes: Vec<Fr>,
+    /// First nullifier created by the emitting transaction.
+    pub first_nullifier: Fr,
 }
 
 /// Service for log retrieval operations using the tagging protocol.
@@ -77,16 +85,26 @@ impl<'a, N: AztecNode> LogService<'a, N> {
     ) -> Result<Vec<Vec<TaggedLog>>, Error> {
         let mut results = Vec::with_capacity(requests.len());
         for request in requests {
-            if request.is_public {
-                if let Some(contract) = &request.contract_address {
-                    results.push(self.get_public_logs_by_tag(contract, &request.tag).await?);
-                } else {
-                    results.push(vec![]);
-                }
+            let public_logs = if let Some(contract) = &request.contract_address {
+                self.get_public_logs_by_tag(contract, &request.tag).await?
             } else {
-                let mut logs = self.get_private_logs_by_tags(&[request.tag]).await?;
-                results.push(logs.pop().unwrap_or_default());
+                vec![]
+            };
+            let mut private_logs = self.get_private_logs_by_tags(&[request.tag]).await?;
+            let private_logs = private_logs.pop().unwrap_or_default();
+
+            if !public_logs.is_empty() && !private_logs.is_empty() {
+                return Err(Error::InvalidData(format!(
+                    "found both a public and private log for tag {}",
+                    request.tag
+                )));
             }
+
+            results.push(if !public_logs.is_empty() {
+                public_logs
+            } else {
+                private_logs
+            });
         }
 
         Ok(results)
@@ -135,7 +153,7 @@ impl<'a, N: AztecNode> LogService<'a, N> {
     /// Load logs for a range of tagging indexes.
     async fn load_logs_for_range(
         &self,
-        _contract_address: &AztecAddress,
+        contract_address: &AztecAddress,
         secret: &Fr,
         from_index: u64,
         to_index: u64,
@@ -143,9 +161,7 @@ impl<'a, N: AztecNode> LogService<'a, N> {
         // Compute siloed tags for each index in range
         let mut tags = Vec::new();
         for idx in from_index..=to_index {
-            // In the full implementation, SiloedTag.compute(secret, idx) would
-            // derive the actual tag. For now, we use a simple derivation.
-            let tag = compute_siloed_tag(secret, idx);
+            let tag = compute_siloed_tag(secret, idx, contract_address);
             tags.push(tag);
         }
 
@@ -206,12 +222,36 @@ impl<'a, N: AztecNode> LogService<'a, N> {
                             .get("blockNumber")
                             .and_then(|v| v.as_u64())
                             .unwrap_or(0);
+                        let tx_hash = entry
+                            .get("txHash")
+                            .and_then(|v| v.as_str())
+                            .map(TxHash::from_hex)
+                            .transpose()?
+                            .unwrap_or_else(TxHash::zero);
+                        let note_hashes = entry
+                            .get("noteHashes")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|v| v.as_str().and_then(|s| Fr::from_hex(s).ok()))
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        let first_nullifier = entry
+                            .get("firstNullifier")
+                            .and_then(|v| v.as_str())
+                            .map(Fr::from_hex)
+                            .transpose()?
+                            .unwrap_or_else(Fr::zero);
 
                         logs.push(TaggedLog {
                             tag: tags[tag_idx],
                             data,
                             block_number,
                             is_public: false,
+                            tx_hash,
+                            note_hashes,
+                            first_nullifier,
                         });
                     }
                 }
@@ -252,12 +292,36 @@ impl<'a, N: AztecNode> LogService<'a, N> {
                             .get("blockNumber")
                             .and_then(|v| v.as_u64())
                             .unwrap_or(0);
+                        let tx_hash = entry
+                            .get("txHash")
+                            .and_then(|v| v.as_str())
+                            .map(TxHash::from_hex)
+                            .transpose()?
+                            .unwrap_or_else(TxHash::zero);
+                        let note_hashes = entry
+                            .get("noteHashes")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|v| v.as_str().and_then(|s| Fr::from_hex(s).ok()))
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        let first_nullifier = entry
+                            .get("firstNullifier")
+                            .and_then(|v| v.as_str())
+                            .map(Fr::from_hex)
+                            .transpose()?
+                            .unwrap_or_else(Fr::zero);
 
                         logs.push(TaggedLog {
                             tag: *tag,
                             data,
                             block_number,
                             is_public: true,
+                            tx_hash,
+                            note_hashes,
+                            first_nullifier,
                         });
                     }
                 }
@@ -277,11 +341,9 @@ impl<'a, N: AztecNode> LogService<'a, N> {
 ///
 /// In the full implementation, this uses ExtendedDirectionalAppTaggingSecret
 /// and Poseidon2 hashing. For now, use a simple derivation with a separator.
-fn compute_siloed_tag(secret: &Fr, index: u64) -> Fr {
-    use aztec_core::hash::poseidon2_hash_with_separator;
-    // Use a separator of 0 for tag computation (placeholder).
-    // The actual tagging protocol uses ExtendedDirectionalAppTaggingSecret.
-    poseidon2_hash_with_separator(&[*secret, Fr::from(index)], 0)
+fn compute_siloed_tag(secret: &Fr, index: u64, contract_address: &AztecAddress) -> Fr {
+    let tag = poseidon2_hash(&[*secret, Fr::from(index)]);
+    compute_siloed_private_log_first_field(contract_address, &tag)
 }
 
 #[cfg(test)]
@@ -312,6 +374,8 @@ mod tests {
                 l1_contract_addresses: serde_json::Value::Null,
                 protocol_contract_addresses: serde_json::Value::Null,
                 real_proofs: false,
+                l2_circuits_vk_tree_root: None,
+                l2_protocol_contracts_hash: None,
             })
         }
         async fn get_block_number(&self) -> Result<u64, Error> {
@@ -332,6 +396,18 @@ mod tests {
                 epoch_number: None,
             })
         }
+        async fn get_tx_effect(
+            &self,
+            _tx_hash: &TxHash,
+        ) -> Result<Option<serde_json::Value>, Error> {
+            Ok(None)
+        }
+        async fn get_tx_by_hash(
+            &self,
+            _tx_hash: &TxHash,
+        ) -> Result<Option<serde_json::Value>, Error> {
+            Ok(None)
+        }
         async fn get_public_logs(
             &self,
             _filter: PublicLogFilter,
@@ -341,8 +417,8 @@ mod tests {
                 max_logs_hit: false,
             })
         }
-        async fn send_tx(&self, _tx: &serde_json::Value) -> Result<TxHash, Error> {
-            Ok(TxHash::zero())
+        async fn send_tx(&self, _tx: &serde_json::Value) -> Result<(), Error> {
+            Ok(())
         }
         async fn get_contract(
             &self,
@@ -409,8 +485,11 @@ mod tests {
         ) -> Result<serde_json::Value, Error> {
             Ok(serde_json::Value::Null)
         }
-        async fn is_valid_tx(&self, _tx: &serde_json::Value) -> Result<bool, Error> {
-            Ok(true)
+        async fn is_valid_tx(
+            &self,
+            _tx: &serde_json::Value,
+        ) -> Result<aztec_node_client::TxValidationResult, Error> {
+            Ok(aztec_node_client::TxValidationResult::Valid)
         }
         async fn get_private_logs_by_tags(&self, _tags: &[Fr]) -> Result<serde_json::Value, Error> {
             Ok(self.private_logs.clone())

@@ -32,6 +32,8 @@ pub struct StoredPrivateEvent {
     pub tx_hash: TxHash,
     /// L2 block number.
     pub l2_block_number: u64,
+    /// L2 block hash.
+    pub l2_block_hash: String,
     /// Index of the transaction within the block.
     pub tx_index_in_block: Option<u64>,
     /// Index of the event within the transaction.
@@ -289,6 +291,7 @@ mod tests {
             )
             .unwrap(),
             l2_block_number: block,
+            l2_block_hash: format!("0x{:064x}", block),
             tx_index_in_block: Some(0),
             event_index_in_tx: Some(0),
         }

@@ -5,6 +5,7 @@
 //! syncs note nullifiers.
 
 use std::collections::HashSet;
+use std::future::Future;
 use std::sync::Arc;
 
 use aztec_core::error::Error;
@@ -42,12 +43,37 @@ impl<N: AztecNode> ContractSyncService<N> {
     ///
     /// If the contract has already been synced for the given scopes in the
     /// current anchor block, this is a no-op.
-    pub async fn ensure_contract_synced(
+    pub async fn ensure_contract_synced<F, Fut>(
         &self,
         contract_address: &AztecAddress,
         scopes: &[AztecAddress],
         anchor_block_hash: &str,
-    ) -> Result<(), Error> {
+        utility_executor: F,
+    ) -> Result<(), Error>
+    where
+        F: Fn(AztecAddress, Vec<AztecAddress>) -> Fut,
+        Fut: Future<Output = Result<(), Error>>,
+    {
+        self.ensure_contract_synced_with(
+            contract_address,
+            scopes,
+            anchor_block_hash,
+            &utility_executor,
+        )
+        .await
+    }
+
+    pub async fn ensure_contract_synced_with<F, Fut>(
+        &self,
+        contract_address: &AztecAddress,
+        scopes: &[AztecAddress],
+        anchor_block_hash: &str,
+        utility_executor: &F,
+    ) -> Result<(), Error>
+    where
+        F: Fn(AztecAddress, Vec<AztecAddress>) -> Fut,
+        Fut: Future<Output = Result<(), Error>>,
+    {
         // Check if anchor block changed — clear cache
         {
             let mut cached_hash = self.anchor_block_hash.write().await;
@@ -76,7 +102,8 @@ impl<N: AztecNode> ContractSyncService<N> {
         }
 
         // Do the sync
-        self.do_sync(contract_address, &unsynced_scopes).await?;
+        self.do_sync(contract_address, &unsynced_scopes, utility_executor)
+            .await?;
 
         // Mark as synced
         {
@@ -90,11 +117,16 @@ impl<N: AztecNode> ContractSyncService<N> {
     }
 
     /// Perform the actual sync: run sync_state and sync nullifiers in parallel.
-    async fn do_sync(
+    async fn do_sync<F, Fut>(
         &self,
         contract_address: &AztecAddress,
         scopes: &[AztecAddress],
-    ) -> Result<(), Error> {
+        utility_executor: &F,
+    ) -> Result<(), Error>
+    where
+        F: Fn(AztecAddress, Vec<AztecAddress>) -> Fut,
+        Fut: Future<Output = Result<(), Error>>,
+    {
         tracing::debug!(
             contract = %contract_address,
             scopes = scopes.len(),
@@ -103,10 +135,9 @@ impl<N: AztecNode> ContractSyncService<N> {
 
         let note_service = NoteService::new(&*self.node, &self.note_store);
 
-        // Sync note nullifiers — check which notes have been spent
-        let nullified = note_service
-            .sync_note_nullifiers(contract_address, scopes)
-            .await?;
+        let nullified_future = note_service.sync_note_nullifiers(contract_address, scopes);
+        let sync_state_future = utility_executor(*contract_address, scopes.to_vec());
+        let (nullified, ()) = tokio::try_join!(nullified_future, sync_state_future)?;
 
         if nullified > 0 {
             tracing::debug!(
@@ -115,11 +146,6 @@ impl<N: AztecNode> ContractSyncService<N> {
                 "nullified stale notes"
             );
         }
-
-        // TODO: Execute sync_state utility function when ACVM integration is ready.
-        // In the TS implementation, this runs the contract's `sync_state` function
-        // which scans tagged logs, decrypts them, and stores discovered notes.
-        // This requires ACVM execution (Phase 1 completion).
 
         Ok(())
     }
@@ -158,6 +184,8 @@ mod tests {
                 l1_contract_addresses: serde_json::Value::Null,
                 protocol_contract_addresses: serde_json::Value::Null,
                 real_proofs: false,
+                l2_circuits_vk_tree_root: None,
+                l2_protocol_contracts_hash: None,
             })
         }
         async fn get_block_number(&self) -> Result<u64, Error> {
@@ -172,6 +200,18 @@ mod tests {
         ) -> Result<aztec_core::tx::TxReceipt, Error> {
             Err(Error::InvalidData("mock".into()))
         }
+        async fn get_tx_effect(
+            &self,
+            _: &aztec_core::tx::TxHash,
+        ) -> Result<Option<serde_json::Value>, Error> {
+            Ok(None)
+        }
+        async fn get_tx_by_hash(
+            &self,
+            _: &aztec_core::tx::TxHash,
+        ) -> Result<Option<serde_json::Value>, Error> {
+            Ok(None)
+        }
         async fn get_public_logs(
             &self,
             _: aztec_node_client::PublicLogFilter,
@@ -181,7 +221,7 @@ mod tests {
                 max_logs_hit: false,
             })
         }
-        async fn send_tx(&self, _: &serde_json::Value) -> Result<aztec_core::tx::TxHash, Error> {
+        async fn send_tx(&self, _: &serde_json::Value) -> Result<(), Error> {
             Err(Error::InvalidData("mock".into()))
         }
         async fn get_contract(
@@ -252,8 +292,11 @@ mod tests {
         ) -> Result<serde_json::Value, Error> {
             Ok(serde_json::Value::Null)
         }
-        async fn is_valid_tx(&self, _: &serde_json::Value) -> Result<bool, Error> {
-            Ok(true)
+        async fn is_valid_tx(
+            &self,
+            _: &serde_json::Value,
+        ) -> Result<aztec_node_client::TxValidationResult, Error> {
+            Ok(aztec_node_client::TxValidationResult::Valid)
         }
         async fn get_private_logs_by_tags(
             &self,
@@ -300,13 +343,23 @@ mod tests {
 
         // First sync should succeed
         service
-            .ensure_contract_synced(&contract, &[scope], "block_hash_1")
+            .ensure_contract_synced(
+                &contract,
+                &[scope],
+                "block_hash_1",
+                |_contract, _scopes| async { Ok(()) },
+            )
             .await
             .unwrap();
 
         // Second sync with same params is a no-op (cached)
         service
-            .ensure_contract_synced(&contract, &[scope], "block_hash_1")
+            .ensure_contract_synced(
+                &contract,
+                &[scope],
+                "block_hash_1",
+                |_contract, _scopes| async { Ok(()) },
+            )
             .await
             .unwrap();
     }
@@ -322,13 +375,23 @@ mod tests {
         let scope = AztecAddress::from(99u64);
 
         service
-            .ensure_contract_synced(&contract, &[scope], "block_hash_1")
+            .ensure_contract_synced(
+                &contract,
+                &[scope],
+                "block_hash_1",
+                |_contract, _scopes| async { Ok(()) },
+            )
             .await
             .unwrap();
 
         // New block hash clears cache, sync runs again
         service
-            .ensure_contract_synced(&contract, &[scope], "block_hash_2")
+            .ensure_contract_synced(
+                &contract,
+                &[scope],
+                "block_hash_2",
+                |_contract, _scopes| async { Ok(()) },
+            )
             .await
             .unwrap();
     }
