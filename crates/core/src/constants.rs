@@ -13,6 +13,11 @@ pub mod protocol_contract_address {
         AztecAddress(Fr::from(5u64))
     }
 
+    /// The PublicChecks protocol contract.
+    pub fn public_checks() -> AztecAddress {
+        AztecAddress(Fr::from(6u64))
+    }
+
     /// The AuthRegistry protocol contract — manages public authorization witnesses.
     pub fn auth_registry() -> AztecAddress {
         AztecAddress(Fr::from(1u64))
@@ -42,6 +47,16 @@ pub mod protocol_contract_address {
     pub fn multi_call_entrypoint() -> AztecAddress {
         AztecAddress(Fr::from(4u64))
     }
+
+    /// Sentinel msg sender address used by protocol nullifiers.
+    ///
+    /// Upstream `NULL_MSG_SENDER_CONTRACT_ADDRESS = AztecAddress::from_field(-1)`.
+    pub fn null_msg_sender() -> AztecAddress {
+        AztecAddress(
+            Fr::from_hex("0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000000")
+                .expect("valid null msg sender address"),
+        )
+    }
 }
 
 /// Domain separators used in Poseidon2 hashing throughout the protocol.
@@ -67,6 +82,24 @@ pub mod domain_separator {
     ///
     /// TS: `DomainSeparator.PUBLIC_CALLDATA = 2760353947`
     pub const PUBLIC_CALLDATA: u32 = 2_760_353_947;
+    /// Domain separator for private tx hashes.
+    ///
+    /// TS: `DomainSeparator.PRIVATE_TX_HASH = 1971680439`
+    pub const PRIVATE_TX_HASH: u32 = 1_971_680_439;
+    /// Domain separator for public tx hashes.
+    ///
+    /// TS: `DomainSeparator.PUBLIC_TX_HASH = 1630108851`
+    pub const PUBLIC_TX_HASH: u32 = 1_630_108_851;
+
+    /// Domain separator for tx request hashes.
+    ///
+    /// TS: `DomainSeparator.TX_REQUEST = 3763737512`
+    pub const TX_REQUEST: u32 = 3_763_737_512;
+
+    /// Domain separator for the protocol contracts tuple hash.
+    ///
+    /// TS: `DomainSeparator.PROTOCOL_CONTRACTS = 3904434327`
+    pub const PROTOCOL_CONTRACTS: u32 = 3_904_434_327;
 
     /// Domain separator for public keys hash computation.
     pub const PUBLIC_KEYS_HASH: u32 = 777_457_226;
@@ -128,9 +161,167 @@ pub mod domain_separator {
     ///
     /// TS: `DomainSeparator.SILO_NULLIFIER = 3956568061`
     pub const SILO_NULLIFIER: u32 = 3_956_568_061;
+
+    /// Domain separator for unique note hash computation.
+    pub const UNIQUE_NOTE_HASH: u32 = 226_850_429;
+
+    /// Domain separator for note hash nonce computation.
+    pub const NOTE_HASH_NONCE: u32 = 1_721_808_740;
+
+    /// Domain separator for siloed note hash (inner silo step).
+    pub const SILOED_NOTE_HASH: u32 = 3_361_878_420;
+
+    /// Domain separator for siloed nullifier (inner silo step).
+    pub const SILOED_NULLIFIER: u32 = 57_496_191;
+
+    /// Domain separator for private log first field siloing.
+    pub const PRIVATE_LOG_FIRST_FIELD: u32 = 2_769_976_252;
 }
 
-// Size constants for deployment computations.
+// ---------------------------------------------------------------------------
+// Per-transaction limits (from constants.gen.ts)
+// ---------------------------------------------------------------------------
+
+/// Maximum note hashes per transaction.
+pub const MAX_NOTE_HASHES_PER_TX: usize = 64;
+/// Maximum nullifiers per transaction.
+pub const MAX_NULLIFIERS_PER_TX: usize = 64;
+/// Maximum private logs per transaction.
+pub const MAX_PRIVATE_LOGS_PER_TX: usize = 64;
+/// Maximum L2-to-L1 messages per transaction.
+pub const MAX_L2_TO_L1_MSGS_PER_TX: usize = 8;
+/// Maximum enqueued public calls per transaction.
+pub const MAX_ENQUEUED_CALLS_PER_TX: usize = 32;
+/// Maximum contract class logs per transaction.
+pub const MAX_CONTRACT_CLASS_LOGS_PER_TX: usize = 1;
+/// Size of a contract class log in field elements.
+pub const CONTRACT_CLASS_LOG_SIZE_IN_FIELDS: usize = 3023;
+
+// Per-call limits
+/// Maximum note hashes per call.
+pub const MAX_NOTE_HASHES_PER_CALL: usize = 16;
+/// Maximum nullifiers per call.
+pub const MAX_NULLIFIERS_PER_CALL: usize = 16;
+/// Maximum private call stack length per call.
+pub const MAX_PRIVATE_CALL_STACK_LENGTH_PER_CALL: usize = 8;
+/// Maximum enqueued calls per call.
+pub const MAX_ENQUEUED_CALLS_PER_CALL: usize = 32;
+/// Maximum L2-to-L1 messages per call.
+pub const MAX_L2_TO_L1_MSGS_PER_CALL: usize = 8;
+/// Maximum private logs per call.
+pub const MAX_PRIVATE_LOGS_PER_CALL: usize = 16;
+/// Maximum contract class logs per call.
+pub const MAX_CONTRACT_CLASS_LOGS_PER_CALL: usize = 1;
+
+// Read request limits
+/// Maximum note hash read requests per transaction.
+pub const MAX_NOTE_HASH_READ_REQUESTS_PER_TX: usize = 64;
+/// Maximum nullifier read requests per transaction.
+pub const MAX_NULLIFIER_READ_REQUESTS_PER_TX: usize = 64;
+/// Maximum key validation requests per transaction.
+pub const MAX_KEY_VALIDATION_REQUESTS_PER_TX: usize = 64;
+/// Maximum note hash read requests per call.
+pub const MAX_NOTE_HASH_READ_REQUESTS_PER_CALL: usize = 16;
+/// Maximum nullifier read requests per call.
+pub const MAX_NULLIFIER_READ_REQUESTS_PER_CALL: usize = 16;
+/// Maximum key validation requests per call.
+pub const MAX_KEY_VALIDATION_REQUESTS_PER_CALL: usize = 16;
+
+/// Maximum calldata fields across all enqueued public calls.
+pub const MAX_FR_CALLDATA_TO_ALL_ENQUEUED_CALLS: usize = 12_288;
+
+// Private log size
+/// Size of a private log in field elements.
+pub const PRIVATE_LOG_SIZE_IN_FIELDS: usize = 16;
+
+// ---------------------------------------------------------------------------
+// Tree heights
+// ---------------------------------------------------------------------------
+
+/// Note hash tree height.
+pub const NOTE_HASH_TREE_HEIGHT: usize = 42;
+/// Nullifier tree height.
+pub const NULLIFIER_TREE_HEIGHT: usize = 42;
+/// Public data tree height.
+pub const PUBLIC_DATA_TREE_HEIGHT: usize = 40;
+/// L1-to-L2 message tree height.
+pub const L1_TO_L2_MSG_TREE_HEIGHT: usize = 36;
+/// Archive tree height.
+pub const ARCHIVE_HEIGHT: usize = 30;
+/// VK tree height.
+pub const VK_TREE_HEIGHT: usize = 8;
+/// Canonical protocol contract tuple length.
+pub const MAX_PROTOCOL_CONTRACTS: usize = 11;
+
+/// Canonical VK tree root for the pinned Aztec 4.1.3 protocol artifacts.
+///
+/// This matches `aztec compute-genesis-values` and upstream
+/// `getVKTreeRoot()` from `aztec-packages`.
+pub fn current_vk_tree_root() -> Fr {
+    Fr::from_hex("0x1dd2644a17d1ddd8831287a78c5a1033b7ae35cdf2a3db833608856c062fc2ba")
+        .expect("valid canonical VK tree root")
+}
+
+// ---------------------------------------------------------------------------
+// Proof lengths
+// ---------------------------------------------------------------------------
+
+/// ChonkProof field count.
+pub const CHONK_PROOF_LENGTH: usize = 1935;
+/// Recursive proof field count.
+pub const RECURSIVE_PROOF_LENGTH: usize = 449;
+
+// ---------------------------------------------------------------------------
+// Gas constants
+// ---------------------------------------------------------------------------
+
+/// DA gas overhead per transaction.
+pub const TX_DA_GAS_OVERHEAD: u64 = 96;
+/// L2 gas overhead for transactions with public calls.
+pub const PUBLIC_TX_L2_GAS_OVERHEAD: u64 = 540_000;
+/// L2 gas overhead for private-only transactions.
+pub const PRIVATE_TX_L2_GAS_OVERHEAD: u64 = 440_000;
+/// Fixed AVM startup L2 gas.
+pub const FIXED_AVM_STARTUP_L2_GAS: u64 = 20_000;
+
+/// L2 gas per note hash.
+pub const L2_GAS_PER_NOTE_HASH: u64 = 9_200;
+/// L2 gas per nullifier.
+pub const L2_GAS_PER_NULLIFIER: u64 = 16_000;
+/// L2 gas per L2-to-L1 message.
+pub const L2_GAS_PER_L2_TO_L1_MSG: u64 = 5_200;
+/// L2 gas per private log.
+pub const L2_GAS_PER_PRIVATE_LOG: u64 = 2_500;
+/// L2 gas per contract class log.
+pub const L2_GAS_PER_CONTRACT_CLASS_LOG: u64 = 73_000;
+
+/// Bytes per field element for DA cost.
+pub const DA_BYTES_PER_FIELD: u64 = 32;
+/// DA gas per byte.
+pub const DA_GAS_PER_BYTE: u64 = 1;
+/// DA gas per field element.
+pub const DA_GAS_PER_FIELD: u64 = 32;
+
+/// Maximum processable L2 gas.
+pub const MAX_PROCESSABLE_L2_GAS: u64 = 6_540_000;
+/// Maximum processable DA gas per checkpoint.
+pub const MAX_PROCESSABLE_DA_GAS_PER_CHECKPOINT: u64 = 786_432;
+
+/// Default L2 gas limit.
+pub const DEFAULT_L2_GAS_LIMIT: u64 = 6_540_000;
+/// Default teardown L2 gas limit.
+pub const DEFAULT_TEARDOWN_L2_GAS_LIMIT: u64 = 1_000_000;
+/// Default DA gas limit.
+pub const DEFAULT_DA_GAS_LIMIT: u64 = 786_432;
+/// Default teardown DA gas limit.
+pub const DEFAULT_TEARDOWN_DA_GAS_LIMIT: u64 = 393_216;
+
+/// Maximum transaction lifetime in seconds.
+pub const MAX_TX_LIFETIME: u64 = 86_400;
+
+// ---------------------------------------------------------------------------
+// Size constants for deployment computations
+// ---------------------------------------------------------------------------
 
 /// Height of the private functions Merkle tree.
 pub const FUNCTION_TREE_HEIGHT: usize = 7;
@@ -138,11 +329,20 @@ pub const FUNCTION_TREE_HEIGHT: usize = 7;
 /// Maximum number of field elements in packed public bytecode.
 pub const MAX_PACKED_PUBLIC_BYTECODE_SIZE_IN_FIELDS: usize = 3000;
 
+/// Magic prefix for `ContractClassRegistry` emitted class-publication logs.
+pub fn contract_class_published_magic_value() -> Fr {
+    Fr::from_hex("0x20f5895a4e837356c2d551743df6bf642756dcd93cd31cbd37c556c90bf7f244")
+        .expect("valid contract class published magic value")
+}
+
+/// Magic prefix for `ContractInstanceRegistry` emitted instance-publication logs.
+pub fn contract_instance_published_magic_value() -> Fr {
+    Fr::from_hex("0x174c6b3d0fd14728e4fc5e53f7b262ab943546a7e125e2ed5e9fde3cf0b3e22f")
+        .expect("valid contract instance published magic value")
+}
+
 /// Maximum height of the artifact function tree.
 pub const ARTIFACT_FUNCTION_TREE_MAX_HEIGHT: usize = 7;
-
-/// Maximum processable L2 gas for a transaction.
-pub const MAX_PROCESSABLE_L2_GAS: u64 = 6_540_000;
 
 /// Bytecode capsule slot used by the Contract Class Registry.
 pub fn contract_class_registry_bytecode_capsule_slot() -> Fr {
@@ -210,6 +410,36 @@ mod tests {
         assert_eq!(super::MAX_PACKED_PUBLIC_BYTECODE_SIZE_IN_FIELDS, 3000);
         assert_eq!(super::ARTIFACT_FUNCTION_TREE_MAX_HEIGHT, 7);
         assert_eq!(super::MAX_PROCESSABLE_L2_GAS, 6_540_000);
+    }
+
+    #[test]
+    fn tx_limit_constants() {
+        assert_eq!(super::MAX_NOTE_HASHES_PER_TX, 64);
+        assert_eq!(super::MAX_NULLIFIERS_PER_TX, 64);
+        assert_eq!(super::MAX_PRIVATE_LOGS_PER_TX, 64);
+        assert_eq!(super::MAX_L2_TO_L1_MSGS_PER_TX, 8);
+        assert_eq!(super::MAX_ENQUEUED_CALLS_PER_TX, 32);
+        assert_eq!(super::MAX_CONTRACT_CLASS_LOGS_PER_TX, 1);
+        assert_eq!(super::CONTRACT_CLASS_LOG_SIZE_IN_FIELDS, 3023);
+        assert_eq!(super::CHONK_PROOF_LENGTH, 1935);
+    }
+
+    #[test]
+    fn gas_constants() {
+        assert_eq!(super::L2_GAS_PER_NOTE_HASH, 9_200);
+        assert_eq!(super::L2_GAS_PER_NULLIFIER, 16_000);
+        assert_eq!(super::DA_GAS_PER_FIELD, 32);
+        assert_eq!(super::PRIVATE_TX_L2_GAS_OVERHEAD, 440_000);
+        assert_eq!(super::PUBLIC_TX_L2_GAS_OVERHEAD, 540_000);
+    }
+
+    #[test]
+    fn kernel_domain_separators() {
+        assert_eq!(domain_separator::UNIQUE_NOTE_HASH, 226_850_429);
+        assert_eq!(domain_separator::NOTE_HASH_NONCE, 1_721_808_740);
+        assert_eq!(domain_separator::SILOED_NOTE_HASH, 3_361_878_420);
+        assert_eq!(domain_separator::SILOED_NULLIFIER, 57_496_191);
+        assert_eq!(domain_separator::PRIVATE_LOG_FIRST_FIELD, 2_769_976_252);
     }
 
     #[test]

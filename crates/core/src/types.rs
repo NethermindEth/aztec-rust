@@ -298,7 +298,8 @@ impl<'de> Deserialize<'de> for Fq {
 pub type GrumpkinScalar = Fq;
 
 /// A point on the Grumpkin curve, used for Aztec public keys.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Point {
     /// X coordinate.
     pub x: Fr,
@@ -382,7 +383,7 @@ impl<'de> Deserialize<'de> for AztecAddress {
 }
 
 /// An Ethereum L1 address (20 bytes).
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct EthAddress(pub [u8; 20]);
 
 impl From<[u8; 20]> for EthAddress {
@@ -424,7 +425,8 @@ impl<'de> Deserialize<'de> for EthAddress {
 }
 
 /// The set of master public keys associated with an Aztec account.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PublicKeys {
     /// Key used for nullifier derivation.
     pub master_nullifier_public_key: Point,
@@ -440,6 +442,49 @@ impl Point {
     /// Returns `true` if this is the zero/default point (all fields zero).
     pub fn is_zero(&self) -> bool {
         self.x == Fr::zero() && self.y == Fr::zero() && !self.is_infinite
+    }
+}
+
+impl<'de> Deserialize<'de> for Point {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct PointObject {
+            x: Fr,
+            y: Fr,
+            #[serde(default)]
+            is_infinite: bool,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum PointWire {
+            Packed(String),
+            Object(PointObject),
+        }
+
+        match PointWire::deserialize(deserializer)? {
+            PointWire::Packed(value) => {
+                let bytes = decode_fixed_hex::<64>(&value).map_err(serde::de::Error::custom)?;
+                let mut x = [0u8; 32];
+                let mut y = [0u8; 32];
+                x.copy_from_slice(&bytes[..32]);
+                y.copy_from_slice(&bytes[32..]);
+                Ok(Point {
+                    x: Fr::from(x),
+                    y: Fr::from(y),
+                    is_infinite: false,
+                })
+            }
+            PointWire::Object(point) => Ok(Point {
+                x: point.x,
+                y: point.y,
+                is_infinite: point.is_infinite,
+            }),
+        }
     }
 }
 
@@ -503,6 +548,57 @@ impl PublicKeys {
     }
 }
 
+impl Default for PublicKeys {
+    fn default() -> Self {
+        Self {
+            master_nullifier_public_key: Point {
+                x: Fr::from_hex(
+                    "0x1498945581e0eb9f8427ad6021184c700ef091d570892c437d12c7d90364bbd",
+                )
+                .expect("valid default NPK x"),
+                y: Fr::from_hex(
+                    "0x170ae506787c5c43d6ca9255d571c10fa9ffa9d141666e290c347c5c9ab7e344",
+                )
+                .expect("valid default NPK y"),
+                is_infinite: false,
+            },
+            master_incoming_viewing_public_key: Point {
+                x: Fr::from_hex(
+                    "0x0c044b05b6ca83b9c2dbae79cc1135155956a64e136819136e9947fe5e5866c",
+                )
+                .expect("valid default IVPK x"),
+                y: Fr::from_hex(
+                    "0x1c1f0ca244c7cd46b682552bff8ae77dea40b966a71de076ec3b7678f2bdb151",
+                )
+                .expect("valid default IVPK y"),
+                is_infinite: false,
+            },
+            master_outgoing_viewing_public_key: Point {
+                x: Fr::from_hex(
+                    "0x1b00316144359e9a3ec8e49c1cdb7eeb0cedd190dfd9dc90eea5115aa779e287",
+                )
+                .expect("valid default OVPK x"),
+                y: Fr::from_hex(
+                    "0x080ffc74d7a8b0bccb88ac11f45874172f3847eb8b92654aaa58a3d2b8dc7833",
+                )
+                .expect("valid default OVPK y"),
+                is_infinite: false,
+            },
+            master_tagging_public_key: Point {
+                x: Fr::from_hex(
+                    "0x019c111f36ad3fc1d9b7a7a14344314d2864b94f030594cd67f753ef774a1efb",
+                )
+                .expect("valid default TPK x"),
+                y: Fr::from_hex(
+                    "0x2039907fe37f08d10739255141bb066c506a12f7d1e8dfec21abc58494705b6f",
+                )
+                .expect("valid default TPK y"),
+                is_infinite: false,
+            },
+        }
+    }
+}
+
 /// A complete address combining the Aztec address, public keys, and partial address.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompleteAddress {
@@ -516,6 +612,7 @@ pub struct CompleteAddress {
 
 /// An Aztec contract instance (without address).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ContractInstance {
     /// Instance version.
     pub version: u8,
@@ -535,6 +632,7 @@ pub struct ContractInstance {
 
 /// An Aztec contract instance with its derived address.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ContractInstanceWithAddress {
     /// The contract's derived address.
     pub address: AztecAddress,

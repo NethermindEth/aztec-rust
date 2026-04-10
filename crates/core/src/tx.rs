@@ -2,7 +2,12 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
 use crate::abi::{AbiValue, FunctionSelector, FunctionType};
+use crate::constants::domain_separator;
 use crate::fee::GasSettings;
+use crate::hash::poseidon2_hash_with_separator;
+#[allow(unused_imports)]
+// Used by TypedTx; flagged unused when TypedTx has no constructors yet
+use crate::kernel_types::PrivateKernelTailPublicInputs;
 use crate::types::{decode_fixed_hex, encode_hex, AztecAddress, Fr};
 use crate::Error;
 
@@ -87,6 +92,7 @@ pub enum TxExecutionResult {
 
 /// A transaction receipt returned by the node.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TxReceipt {
     /// Hash of the transaction.
     pub tx_hash: TxHash,
@@ -97,6 +103,7 @@ pub struct TxReceipt {
     /// Error message if the transaction failed.
     pub error: Option<String>,
     /// Total fee paid for the transaction.
+    #[serde(default, deserialize_with = "option_u128_from_string_or_number")]
     pub transaction_fee: Option<u128>,
     /// Hash of the block containing this transaction.
     #[serde(default, with = "option_hex_bytes_32")]
@@ -135,6 +142,49 @@ mod option_hex_bytes_32 {
             }
             None => Ok(None),
         }
+    }
+}
+
+fn option_u128_from_string_or_number<'de, D>(deserializer: D) -> Result<Option<u128>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value: Option<serde_json::Value> = Option::deserialize(deserializer)?;
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Number(n)) => n
+            .as_u64()
+            .map(|v| Some(v as u128))
+            .ok_or_else(|| serde::de::Error::custom("invalid numeric transactionFee")),
+        Some(serde_json::Value::String(s)) => s
+            .parse::<u128>()
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+        Some(other) => Err(serde::de::Error::custom(format!(
+            "invalid transactionFee value: {other}"
+        ))),
+    }
+}
+
+mod base64_buffer {
+    use base64::Engine as _;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(value: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&base64::engine::general_purpose::STANDARD.encode(value))
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(serde::de::Error::custom)
     }
 }
 
@@ -245,6 +295,64 @@ pub struct TxContext {
     pub gas_settings: GasSettings,
 }
 
+impl TxContext {
+    /// Flatten into field elements using the upstream stdlib ordering.
+    pub fn to_fields(&self) -> Vec<Fr> {
+        let mut fields = Vec::with_capacity(10);
+        fields.push(self.chain_id);
+        fields.push(self.version);
+
+        let gas_limits = self.gas_settings.gas_limits.clone().unwrap_or_default();
+        fields.push(Fr::from(gas_limits.da_gas));
+        fields.push(Fr::from(gas_limits.l2_gas));
+
+        let teardown = self
+            .gas_settings
+            .teardown_gas_limits
+            .clone()
+            .unwrap_or_default();
+        fields.push(Fr::from(teardown.da_gas));
+        fields.push(Fr::from(teardown.l2_gas));
+
+        let max_fee = self
+            .gas_settings
+            .max_fee_per_gas
+            .clone()
+            .unwrap_or_default();
+        fields.push(Fr::from(max_fee.fee_per_da_gas));
+        fields.push(Fr::from(max_fee.fee_per_l2_gas));
+
+        let max_priority = self
+            .gas_settings
+            .max_priority_fee_per_gas
+            .clone()
+            .unwrap_or_default();
+        fields.push(Fr::from(max_priority.fee_per_da_gas));
+        fields.push(Fr::from(max_priority.fee_per_l2_gas));
+
+        fields
+    }
+}
+
+/// Compute the canonical tx-request hash used for the protocol nullifier.
+pub fn compute_tx_request_hash(
+    origin: AztecAddress,
+    args_hash: Fr,
+    tx_context: &TxContext,
+    function_selector: FunctionSelector,
+    is_static: bool,
+    salt: Fr,
+) -> Fr {
+    let mut fields = Vec::with_capacity(15);
+    fields.push(origin.0);
+    fields.push(args_hash);
+    fields.extend(tx_context.to_fields());
+    fields.push(function_selector.to_field());
+    fields.push(Fr::from(is_static));
+    fields.push(salt);
+    poseidon2_hash_with_separator(&fields, domain_separator::TX_REQUEST)
+}
+
 /// Pre-hashed values included in a transaction for oracle access.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -276,6 +384,140 @@ impl HashedValues {
     /// Return the stored hash of the contained values.
     pub fn hash(&self) -> Fr {
         self.hash
+    }
+}
+
+/// Preimage fields for a contract class log carried by a transaction.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ContractClassLogFields {
+    /// Fixed-width field array serialized through JSON-RPC.
+    #[serde(default)]
+    pub fields: Vec<Fr>,
+}
+
+impl ContractClassLogFields {
+    /// Construct from already-emitted fields, padding to the protocol width.
+    pub fn from_emitted_fields(mut emitted_fields: Vec<Fr>) -> Self {
+        const CONTRACT_CLASS_LOG_SIZE_IN_FIELDS: usize = 3023;
+        if emitted_fields.len() < CONTRACT_CLASS_LOG_SIZE_IN_FIELDS {
+            emitted_fields.resize(CONTRACT_CLASS_LOG_SIZE_IN_FIELDS, Fr::zero());
+        }
+        Self {
+            fields: emitted_fields,
+        }
+    }
+
+    /// Returns the prefix of non-empty emitted fields.
+    pub fn emitted_fields(&self) -> &[Fr] {
+        let last = self.fields.iter().rposition(|field| *field != Fr::zero());
+        match last {
+            Some(index) => &self.fields[..=index],
+            None => &[],
+        }
+    }
+}
+
+/// Serialized private-kernel tail public inputs.
+///
+/// Upstream stdlib encodes this as a buffer over JSON-RPC, so Rust stores the
+/// already-serialized bytes and emits them as base64.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(transparent)]
+pub struct PrivateKernelTailCircuitPublicInputs {
+    /// Serialized stdlib buffer bytes.
+    #[serde(with = "base64_buffer")]
+    pub bytes: Vec<u8>,
+}
+
+impl PrivateKernelTailCircuitPublicInputs {
+    /// Create from raw serialized bytes.
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        Self { bytes }
+    }
+}
+
+/// Serialized Chonk proof.
+///
+/// Upstream stdlib also transports this as a buffer over JSON-RPC.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(transparent)]
+pub struct ChonkProof {
+    /// Serialized stdlib buffer bytes.
+    #[serde(with = "base64_buffer")]
+    pub bytes: Vec<u8>,
+}
+
+impl ChonkProof {
+    /// Create from raw serialized bytes.
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        Self { bytes }
+    }
+}
+
+/// Node-facing transaction envelope matching the upstream stdlib `Tx` JSON shape.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Tx {
+    /// Private kernel tail public inputs, serialized as a stdlib buffer.
+    pub data: PrivateKernelTailCircuitPublicInputs,
+    /// Chonk proof, serialized as a stdlib buffer.
+    pub chonk_proof: ChonkProof,
+    /// Contract-class log preimages corresponding to the log hashes in `data`.
+    #[serde(default)]
+    pub contract_class_log_fields: Vec<ContractClassLogFields>,
+    /// Calldata preimages for enqueued public calls.
+    #[serde(default)]
+    pub public_function_calldata: Vec<HashedValues>,
+}
+
+impl Tx {
+    /// Convert to a JSON-RPC payload accepted by the node.
+    pub fn to_json_value(&self) -> Result<serde_json::Value, Error> {
+        serde_json::to_value(self).map_err(Error::from)
+    }
+}
+
+/// A typed transaction with parsed public inputs, for validation and inspection.
+///
+/// This carries the same wire data as [`Tx`] but with the kernel public inputs
+/// deserialized into proper types for programmatic access and validation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypedTx {
+    /// Transaction hash computed from public inputs.
+    pub tx_hash: TxHash,
+    /// Typed private kernel tail circuit public inputs.
+    pub data: PrivateKernelTailPublicInputs,
+    /// Chonk proof.
+    pub chonk_proof: ChonkProof,
+    /// Contract class log preimage fields.
+    pub contract_class_log_fields: Vec<ContractClassLogFields>,
+    /// Calldata preimages for enqueued public calls.
+    pub public_function_calldata: Vec<HashedValues>,
+}
+
+impl TypedTx {
+    /// Number of enqueued public calls in this transaction.
+    pub fn number_of_public_calls(&self) -> usize {
+        self.data.number_of_public_calls()
+    }
+
+    /// Total calldata field count across all public calls.
+    pub fn get_total_public_calldata_count(&self) -> usize {
+        self.public_function_calldata
+            .iter()
+            .map(|hv| hv.values.len())
+            .sum()
+    }
+
+    /// Get all public call requests paired with their calldata.
+    pub fn get_public_call_requests_with_calldata(
+        &self,
+    ) -> Vec<(&crate::kernel_types::PublicCallRequest, &HashedValues)> {
+        let requests = self.data.get_all_public_call_requests();
+        requests
+            .into_iter()
+            .zip(self.public_function_calldata.iter())
+            .collect()
     }
 }
 

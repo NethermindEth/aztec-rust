@@ -21,7 +21,7 @@ pub struct GasFees {
 }
 
 /// Gas limits and fee caps for a transaction.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GasSettings {
     /// Maximum gas allowed for the main execution phase.
@@ -34,18 +34,58 @@ pub struct GasSettings {
     pub max_priority_fee_per_gas: Option<GasFees>,
 }
 
+impl Default for GasSettings {
+    /// Returns sensible defaults matching the TS `GasSettings.default()`.
+    fn default() -> Self {
+        use crate::constants::*;
+        Self {
+            gas_limits: Some(Gas {
+                da_gas: DEFAULT_DA_GAS_LIMIT,
+                l2_gas: DEFAULT_L2_GAS_LIMIT,
+            }),
+            teardown_gas_limits: Some(Gas {
+                da_gas: DEFAULT_TEARDOWN_DA_GAS_LIMIT,
+                l2_gas: DEFAULT_TEARDOWN_L2_GAS_LIMIT,
+            }),
+            max_fee_per_gas: Some(GasFees {
+                fee_per_da_gas: 1,
+                fee_per_l2_gas: 1,
+            }),
+            max_priority_fee_per_gas: Some(GasFees::default()),
+        }
+    }
+}
+
+impl Gas {
+    pub fn new(da_gas: u64, l2_gas: u64) -> Self {
+        Self { da_gas, l2_gas }
+    }
+
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    pub fn add(&self, other: &Gas) -> Gas {
+        Gas {
+            da_gas: self.da_gas + other.da_gas,
+            l2_gas: self.l2_gas + other.l2_gas,
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::panic)]
 mod tests {
     use super::*;
 
     #[test]
-    fn gas_settings_default_is_empty() {
+    fn gas_settings_default_has_sensible_values() {
         let settings = GasSettings::default();
-        assert_eq!(settings.gas_limits, None);
-        assert_eq!(settings.teardown_gas_limits, None);
-        assert_eq!(settings.max_fee_per_gas, None);
-        assert_eq!(settings.max_priority_fee_per_gas, None);
+        let gl = settings.gas_limits.unwrap();
+        assert_eq!(gl.da_gas, crate::constants::DEFAULT_DA_GAS_LIMIT);
+        assert_eq!(gl.l2_gas, crate::constants::DEFAULT_L2_GAS_LIMIT);
+        assert!(settings.teardown_gas_limits.is_some());
+        assert!(settings.max_fee_per_gas.is_some());
     }
 
     #[test]

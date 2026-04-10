@@ -192,6 +192,11 @@ pub struct ContractArtifact {
     /// Source file map (opaque JSON).
     #[serde(default, skip_serializing_if = "Option::is_none", alias = "fileMap")]
     pub file_map: Option<serde_json::Value>,
+    /// Size of the PrivateContextInputs parameter for each private function.
+    /// Computed during nargo parsing and persisted with the artifact so PXE can
+    /// reconstruct private-function witnesses after store roundtrips.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_inputs_sizes: Option<std::collections::HashMap<String, usize>>,
 }
 
 impl ContractArtifact {
@@ -243,5 +248,298 @@ impl ContractArtifact {
     /// Serialize to a pretty-printed JSON string.
     pub fn to_json(&self) -> Result<String, Error> {
         serde_json::to_string_pretty(self).map_err(Error::from)
+    }
+
+    /// Parse a contract artifact from raw nargo compiler output.
+    ///
+    /// The nargo compiler output has a different structure than the Aztec-processed
+    /// format. This method handles the conversion:
+    /// - Strips `__aztec_nr_internals__` prefix from function names
+    /// - Maps `custom_attributes` to `function_type` (Private/Public/Utility)
+    /// - Extracts parameters from `abi.parameters`
+    /// - Computes function selectors from name + parameters
+    /// - Filters out the `inputs` parameter (PrivateContextInputs) from private functions
+    pub fn from_nargo_json(json: &str) -> Result<Self, Error> {
+        let raw: serde_json::Value = serde_json::from_str(json).map_err(Error::from)?;
+
+        let name = raw
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown")
+            .to_owned();
+
+        let outputs = raw.get("outputs").cloned();
+        let file_map = raw.get("file_map").cloned();
+
+        let raw_functions = raw
+            .get("functions")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let mut functions = Vec::new();
+        let mut context_inputs_sizes = std::collections::HashMap::new();
+
+        for raw_fn in &raw_functions {
+            if let Some(func) = Self::parse_nargo_function(raw_fn) {
+                // Compute PrivateContextInputs size for private functions
+                if func.function_type == FunctionType::Private {
+                    let abi = raw_fn.get("abi");
+                    let raw_params = abi
+                        .and_then(|a| a.get("parameters"))
+                        .and_then(|p| p.as_array());
+                    if let Some(params) = raw_params {
+                        for p in params {
+                            let param_name = p.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                            if param_name == "inputs" {
+                                let path = p
+                                    .pointer("/type/path")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                if path.contains("PrivateContextInputs") {
+                                    if let Some(typ) =
+                                        p.get("type").and_then(Self::parse_nargo_type)
+                                    {
+                                        let size = Self::count_abi_type_fields(&typ);
+                                        context_inputs_sizes.insert(func.name.clone(), size);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                functions.push(func);
+            }
+        }
+
+        Ok(Self {
+            name,
+            functions,
+            outputs,
+            file_map,
+            context_inputs_sizes: Some(context_inputs_sizes),
+        })
+    }
+
+    /// Parse a single function from raw nargo output.
+    fn parse_nargo_function(raw: &serde_json::Value) -> Option<FunctionArtifact> {
+        let raw_name = raw.get("name")?.as_str()?;
+        let attrs: Vec<String> = raw
+            .get("custom_attributes")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+        let is_unconstrained = raw
+            .get("is_unconstrained")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        // Determine function type from custom_attributes
+        let function_type = if attrs.iter().any(|a| a == "abi_private") {
+            FunctionType::Private
+        } else if attrs.iter().any(|a| a == "abi_utility") {
+            FunctionType::Utility
+        } else if attrs.iter().any(|a| a == "abi_public") {
+            FunctionType::Public
+        } else if is_unconstrained {
+            FunctionType::Utility
+        } else {
+            FunctionType::Private
+        };
+
+        let is_initializer = attrs.iter().any(|a| a == "abi_initializer");
+        let is_static = attrs.iter().any(|a| a == "abi_view");
+        let is_only_self = if attrs.iter().any(|a| a == "abi_only_self") {
+            Some(true)
+        } else {
+            None
+        };
+
+        // Strip __aztec_nr_internals__ prefix
+        let name = raw_name
+            .strip_prefix("__aztec_nr_internals__")
+            .or_else(|| raw_name.strip_prefix("__aztec_nr_internals___"))
+            .unwrap_or(raw_name)
+            .to_owned();
+
+        // Extract parameters from abi.parameters, filtering out PrivateContextInputs
+        let abi = raw.get("abi");
+        let raw_params = abi
+            .and_then(|a| a.get("parameters"))
+            .and_then(|p| p.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let parameters: Vec<AbiParameter> = raw_params
+            .iter()
+            .filter(|p| {
+                // Filter out the PrivateContextInputs parameter for private functions
+                let param_name = p.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                if param_name == "inputs" && function_type == FunctionType::Private {
+                    // Check if this is the PrivateContextInputs struct
+                    let path = p
+                        .pointer("/type/path")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    return !path.contains("PrivateContextInputs");
+                }
+                true
+            })
+            .filter_map(|p| Self::parse_nargo_parameter(p))
+            .collect();
+
+        // Extract return types
+        let return_types = abi
+            .and_then(|a| a.get("return_type"))
+            .and_then(|rt| rt.get("abi_type"))
+            .and_then(|t| Self::parse_nargo_type(t))
+            .map(|t| vec![t])
+            .unwrap_or_default();
+
+        // Get bytecode
+        let bytecode = raw
+            .get("bytecode")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_owned());
+
+        // Get debug symbols
+        let debug_symbols = raw.get("debug_symbols").cloned();
+
+        // Compute selector from name + parameters
+        let selector = Some(super::FunctionSelector::from_name_and_parameters(
+            &name,
+            &parameters,
+        ));
+
+        Some(FunctionArtifact {
+            name,
+            function_type,
+            is_initializer,
+            is_static,
+            is_only_self,
+            parameters,
+            return_types,
+            error_types: abi.and_then(|a| a.get("error_types")).cloned(),
+            selector,
+            bytecode,
+            verification_key_hash: None,
+            verification_key: None,
+            custom_attributes: Some(attrs),
+            is_unconstrained: Some(is_unconstrained),
+            debug_symbols,
+        })
+    }
+
+    /// Parse a parameter from nargo ABI format.
+    fn parse_nargo_parameter(raw: &serde_json::Value) -> Option<AbiParameter> {
+        let name = raw.get("name")?.as_str()?.to_owned();
+        let typ = raw.get("type").and_then(Self::parse_nargo_type)?;
+        let visibility = raw
+            .get("visibility")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_owned());
+        Some(AbiParameter {
+            name,
+            typ,
+            visibility,
+        })
+    }
+
+    /// Parse an ABI type from nargo format.
+    fn parse_nargo_type(raw: &serde_json::Value) -> Option<AbiType> {
+        let kind = raw.get("kind")?.as_str()?;
+        match kind {
+            "field" => Some(AbiType::Field),
+            "boolean" => Some(AbiType::Boolean),
+            "integer" => {
+                let sign = raw
+                    .get("sign")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unsigned")
+                    .to_owned();
+                let width = raw.get("width").and_then(|v| v.as_u64()).unwrap_or(32) as u16;
+                Some(AbiType::Integer { sign, width })
+            }
+            "array" => {
+                let element = raw
+                    .get("type")
+                    .or_else(|| raw.get("element"))
+                    .and_then(Self::parse_nargo_type)?;
+                let length = raw.get("length").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                Some(AbiType::Array {
+                    element: Box::new(element),
+                    length,
+                })
+            }
+            "string" => {
+                let length = raw.get("length").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                Some(AbiType::String { length })
+            }
+            "struct" => {
+                let name = raw
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown")
+                    .to_owned();
+                let raw_fields = raw.get("fields").and_then(|v| v.as_array())?;
+                let fields: Vec<AbiParameter> = raw_fields
+                    .iter()
+                    .filter_map(|f| Self::parse_nargo_parameter(f))
+                    .collect();
+                Some(AbiType::Struct { name, fields })
+            }
+            "tuple" => {
+                let raw_elements = raw
+                    .get("fields")
+                    .or_else(|| raw.get("elements"))
+                    .and_then(|v| v.as_array())?;
+                let elements: Vec<AbiType> = raw_elements
+                    .iter()
+                    .filter_map(Self::parse_nargo_type)
+                    .collect();
+                Some(AbiType::Tuple { elements })
+            }
+            _ => {
+                // Fallback: treat as field
+                Some(AbiType::Field)
+            }
+        }
+    }
+
+    /// Find a function by selector.
+    pub fn find_function_by_selector(
+        &self,
+        selector: &super::FunctionSelector,
+    ) -> Option<&FunctionArtifact> {
+        self.functions
+            .iter()
+            .find(|f| f.selector.as_ref() == Some(selector))
+    }
+
+    /// Count the number of field elements the PrivateContextInputs parameter
+    /// occupies for a given function. Returns 0 if the function has no such
+    /// parameter (public/utility functions).
+    ///
+    /// This is needed because compiled Noir bytecode expects the full
+    /// PrivateContextInputs flattened into the initial witness before user args.
+    pub fn private_context_inputs_size(&self, function_name: &str) -> usize {
+        self.context_inputs_sizes
+            .as_ref()
+            .and_then(|m| m.get(function_name).copied())
+            .unwrap_or(0)
+    }
+
+    /// Count the number of scalar fields an ABI type flattens to.
+    pub fn count_abi_type_fields(typ: &AbiType) -> usize {
+        match typ {
+            AbiType::Field | AbiType::Boolean => 1,
+            AbiType::Integer { .. } => 1,
+            AbiType::Array { element, length } => Self::count_abi_type_fields(element) * length,
+            AbiType::String { length } => *length,
+            AbiType::Struct { fields, .. } => fields
+                .iter()
+                .map(|f| Self::count_abi_type_fields(&f.typ))
+                .sum(),
+            AbiType::Tuple { elements } => elements.iter().map(Self::count_abi_type_fields).sum(),
+        }
     }
 }

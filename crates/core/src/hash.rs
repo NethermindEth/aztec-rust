@@ -20,7 +20,7 @@ use crate::Error;
 /// `state[3] = len * 2^64`.
 ///
 /// This matches barretenberg's `poseidon2_hash` and the TS SDK's `poseidon2Hash`.
-pub(crate) fn poseidon2_hash(inputs: &[Fr]) -> Fr {
+pub fn poseidon2_hash(inputs: &[Fr]) -> Fr {
     use ark_bn254::Fr as ArkFr;
     use taceo_poseidon2::bn254::t4::permutation;
 
@@ -122,6 +122,70 @@ pub fn compute_calldata_hash(calldata: &[Fr]) -> Fr {
     poseidon2_hash_with_separator(calldata, domain_separator::PUBLIC_CALLDATA)
 }
 
+// ---------------------------------------------------------------------------
+// Kernel hash functions (silo, unique note hash, etc.)
+// ---------------------------------------------------------------------------
+
+/// Silo a note hash with a contract address.
+///
+/// Mirrors TS `siloNoteHash(contract, noteHash)`.
+pub fn silo_note_hash(contract_address: &AztecAddress, note_hash: &Fr) -> Fr {
+    poseidon2_hash_with_separator(
+        &[contract_address.0, *note_hash],
+        domain_separator::SILOED_NOTE_HASH,
+    )
+}
+
+/// Silo a nullifier with a contract address.
+///
+/// Mirrors TS `siloNullifier(contract, innerNullifier)`.
+pub fn silo_nullifier(contract_address: &AztecAddress, inner_nullifier: &Fr) -> Fr {
+    poseidon2_hash_with_separator(
+        &[contract_address.0, *inner_nullifier],
+        domain_separator::SILOED_NULLIFIER,
+    )
+}
+
+/// Compute the protocol nullifier from a tx request hash.
+///
+/// Mirrors TS `computeProtocolNullifier(txRequestHash)`.
+pub fn compute_protocol_nullifier(tx_request_hash: &Fr) -> Fr {
+    silo_nullifier(
+        &constants::protocol_contract_address::null_msg_sender(),
+        tx_request_hash,
+    )
+}
+
+/// Compute a unique note hash from its nonce and siloed hash.
+///
+/// Mirrors TS `computeUniqueNoteHash(nonce, siloedNoteHash)`.
+pub fn compute_unique_note_hash(nonce: &Fr, siloed_note_hash: &Fr) -> Fr {
+    poseidon2_hash_with_separator(
+        &[*nonce, *siloed_note_hash],
+        domain_separator::UNIQUE_NOTE_HASH,
+    )
+}
+
+/// Compute the nonce for a note hash from the first nullifier and index.
+///
+/// Mirrors TS `computeNoteHashNonce(nullifierZero, noteHashIndex)`.
+pub fn compute_note_hash_nonce(first_nullifier: &Fr, note_hash_index: usize) -> Fr {
+    poseidon2_hash_with_separator(
+        &[*first_nullifier, Fr::from(note_hash_index as u64)],
+        domain_separator::NOTE_HASH_NONCE,
+    )
+}
+
+/// Silo the first field of a private log with a contract address.
+///
+/// Mirrors TS `computeSiloedPrivateLogFirstField(contract, field)`.
+pub fn compute_siloed_private_log_first_field(contract_address: &AztecAddress, field: &Fr) -> Fr {
+    poseidon2_hash_with_separator(
+        &[contract_address.0, *field],
+        domain_separator::PRIVATE_LOG_FIRST_FIELD,
+    )
+}
+
 /// Compute the inner authwit hash — the "intent" before siloing with consumer.
 ///
 /// `args` is typically `[caller, selector, args_hash]`.
@@ -148,6 +212,37 @@ pub fn compute_outer_auth_wit_hash(
         &[consumer.0, *chain_id, *version, *inner_hash],
         domain_separator::AUTHWIT_OUTER,
     )
+}
+
+/// Compute the protocol contracts hash from the known protocol contract addresses.
+///
+/// Mirrors TS `ProtocolContractAddress.computeProtocolContractsHash()` which hashes
+/// the five canonical protocol contract addresses (1..5) with Poseidon2.
+pub fn compute_protocol_contracts_hash() -> Fr {
+    // Upstream `ProtocolContractsList` for Aztec 4.1.3.
+    // These are the derived protocol contract addresses, not the canonical
+    // public interface addresses 1..=6.
+    let derived_addresses = [
+        Fr::from_hex("0x139f8eb6d6e7e7a7c0322c3b7558687a7e24201f11bf2c4cb2fe56c18d363695")
+            .expect("valid protocol contract address"),
+        Fr::from_hex("0x1254246c88aca5a66fa66f3aa78c408a698ebca3b713120497c7555dfc718592")
+            .expect("valid protocol contract address"),
+        Fr::from_hex("0x14d670efa326a07b99777b01fb706427ca776095246569150f2a3f17a7d4dc66")
+            .expect("valid protocol contract address"),
+        Fr::from_hex("0x230d0b47ba6d5ed99afb89d584f32ff33438b64f51000f252a140cf995781628")
+            .expect("valid protocol contract address"),
+        Fr::from_hex("0x204913186c0dd70015d05bf9100a12e31ccb7cc2527aacdfae0c19ad6439fcf4")
+            .expect("valid protocol contract address"),
+        Fr::from_hex("0x1198142fd84a58c0ab22d5fde371ce527042db49487e05206a326ad154952ac8")
+            .expect("valid protocol contract address"),
+        Fr::zero(),
+        Fr::zero(),
+        Fr::zero(),
+        Fr::zero(),
+        Fr::zero(),
+    ];
+
+    poseidon2_hash_with_separator(&derived_addresses, domain_separator::PROTOCOL_CONTRACTS)
 }
 
 /// Flatten ABI values into their field element representation.
@@ -403,11 +498,16 @@ fn sha256_merkle_root(leaves: &[Fr]) -> Fr {
     current[0]
 }
 
-/// Compute the SHA256 hash of a byte slice, returning the result as an `Fr`
-/// (reduced mod the BN254 scalar field order).
+/// Compute the SHA256 hash of a byte slice, returning the result as an `Fr`.
+///
+/// Matches the TS `sha256ToField` which truncates to 31 bytes and prepends a
+/// zero byte, guaranteeing the result fits in the BN254 scalar field.
 fn sha256_to_field(data: &[u8]) -> Fr {
     let hash = Sha256::digest(data);
-    Fr::from(<[u8; 32]>::try_from(hash.as_slice()).expect("SHA256 is 32 bytes"))
+    let mut bytes = [0u8; 32];
+    // Take first 31 bytes of hash, prepend 0x00 — matches TS `truncateAndPad`.
+    bytes[1..].copy_from_slice(&hash[..31]);
+    Fr::from(bytes)
 }
 
 /// Compute the artifact hash for a contract.
@@ -615,15 +715,14 @@ pub fn compute_private_functions_root_from_artifact(
 
 /// Extract packed public bytecode from an artifact.
 fn extract_packed_public_bytecode(artifact: &ContractArtifact) -> Vec<u8> {
-    let mut bytecode = Vec::new();
-    for func in &artifact.functions {
-        if func.function_type == FunctionType::Public {
-            if let Some(ref bc) = func.bytecode {
-                bytecode.extend_from_slice(&decode_artifact_bytes(bc));
-            }
-        }
-    }
-    bytecode
+    // Only public_dispatch carries the packed bytecode (mirrors TS retainBytecode filter).
+    artifact
+        .functions
+        .iter()
+        .find(|f| f.function_type == FunctionType::Public && f.name == "public_dispatch")
+        .and_then(|f| f.bytecode.as_ref())
+        .map(|bc| decode_artifact_bytes(bc))
+        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
@@ -1132,6 +1231,7 @@ mod tests {
             functions: vec![],
             outputs: None,
             file_map: None,
+            context_inputs_sizes: None,
         };
         let h1 = compute_artifact_hash(&artifact);
         let h2 = compute_artifact_hash(&artifact);
@@ -1145,8 +1245,22 @@ mod tests {
             functions: vec![],
             outputs: None,
             file_map: None,
+            context_inputs_sizes: None,
         };
         let id = compute_contract_class_id_from_artifact(&artifact).expect("class id");
         assert_ne!(id, Fr::zero());
+    }
+
+    #[test]
+    fn protocol_contracts_hash_is_deterministic() {
+        let h1 = compute_protocol_contracts_hash();
+        let h2 = compute_protocol_contracts_hash();
+        assert_eq!(h1, h2);
+        assert_ne!(h1, Fr::zero());
+        assert_eq!(
+            h1,
+            Fr::from_hex("0x2672340d9a0107a7b81e6d10d25b854debe613f3272e8738e8df0ca2ff297141")
+                .expect("valid expected protocol contracts hash")
+        );
     }
 }

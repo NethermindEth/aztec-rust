@@ -8,7 +8,10 @@
 use ark_bn254::Fr as ArkFr;
 use ark_ff::{AdditiveGroup, BigInteger, Field, PrimeField};
 
-use crate::types::{Fq, Fr, Point};
+use crate::{
+    types::{Fq, Fr, Point},
+    Error,
+};
 
 /// Grumpkin curve parameter: y^2 = x^3 + B, where B = -17.
 const B: i64 = -17;
@@ -133,6 +136,39 @@ pub fn scalar_mul(scalar: &Fq, point: &Point) -> Point {
     }
 
     result
+}
+
+/// Recover the canonical Grumpkin affine point from an x-coordinate.
+///
+/// Aztec addresses are the x-coordinate of a point whose y-coordinate is chosen
+/// to be the "positive" one, matching the upstream address derivation path.
+pub fn point_from_x(x: Fr) -> Result<Point, Error> {
+    let x_raw = x.0;
+    let rhs = x_raw * x_raw * x_raw - ArkFr::from(17u64);
+    let y = rhs
+        .sqrt()
+        .ok_or_else(|| Error::InvalidData("address x-coordinate is not on Grumpkin".into()))?;
+    let neg_y = -y;
+    let choose_positive =
+        |candidate: ArkFr| candidate.into_bigint() <= ArkFr::MODULUS_MINUS_ONE_DIV_TWO;
+    let chosen = if choose_positive(y) {
+        y
+    } else if choose_positive(neg_y) {
+        neg_y
+    } else {
+        y
+    };
+
+    Ok(Point {
+        x,
+        y: Fr(chosen),
+        is_infinite: false,
+    })
+}
+
+/// Returns whether the affine point uses Aztec's canonical "positive" y-coordinate.
+pub fn has_positive_y(point: &Point) -> bool {
+    point.y.0.into_bigint() <= ArkFr::MODULUS_MINUS_ONE_DIV_TWO
 }
 
 #[cfg(test)]

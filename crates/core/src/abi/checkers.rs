@@ -238,6 +238,7 @@ mod tests {
             functions: vec![],
             outputs: None,
             file_map: None,
+            context_inputs_sizes: None,
         };
         let errors = abi_checker(&artifact);
         assert!(!errors.is_empty());

@@ -6,7 +6,9 @@ pub mod error;
 pub mod fee;
 pub mod grumpkin;
 pub mod hash;
+pub mod kernel_types;
 pub mod tx;
 pub mod types;
+pub mod validation;
 
 pub use error::Error;
