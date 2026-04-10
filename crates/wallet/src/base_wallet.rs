@@ -624,6 +624,21 @@ mod tests {
         ) -> Result<(), Error> {
             Ok(())
         }
+        async fn get_block_hash_membership_witness(
+            &self,
+            _block_number: u64,
+            _block_hash: &Fr,
+        ) -> Result<Option<serde_json::Value>, Error> {
+            Ok(None)
+        }
+        async fn find_leaves_indexes(
+            &self,
+            _block_number: u64,
+            _tree_id: &str,
+            _leaves: &[Fr],
+        ) -> Result<Vec<Option<u64>>, Error> {
+            Ok(vec![])
+        }
     }
 
     // -----------------------------------------------------------------------

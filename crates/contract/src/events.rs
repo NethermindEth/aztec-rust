@@ -338,6 +338,21 @@ mod tests {
         ) -> Result<(), Error> {
             unimplemented!("not needed for event tests")
         }
+        async fn get_block_hash_membership_witness(
+            &self,
+            _block_number: u64,
+            _block_hash: &Fr,
+        ) -> Result<Option<serde_json::Value>, Error> {
+            unimplemented!("not needed for event tests")
+        }
+        async fn find_leaves_indexes(
+            &self,
+            _block_number: u64,
+            _tree_id: &str,
+            _leaves: &[Fr],
+        ) -> Result<Vec<Option<u64>>, Error> {
+            unimplemented!("not needed for event tests")
+        }
     }
 
     fn sample_event_metadata() -> EventMetadataDefinition {

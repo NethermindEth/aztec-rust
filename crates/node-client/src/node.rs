@@ -236,6 +236,23 @@ pub trait AztecNode: Send + Sync {
         &self,
         signatures: &[String],
     ) -> Result<(), Error>;
+
+    // --- Phase 2: methods required for EmbeddedPxe proving ---
+
+    /// Get a block hash membership witness in the archive tree.
+    async fn get_block_hash_membership_witness(
+        &self,
+        block_number: u64,
+        block_hash: &Fr,
+    ) -> Result<Option<serde_json::Value>, Error>;
+
+    /// Find leaf indexes in a specified merkle tree.
+    async fn find_leaves_indexes(
+        &self,
+        block_number: u64,
+        tree_id: &str,
+        leaves: &[Fr],
+    ) -> Result<Vec<Option<u64>>, Error>;
 }
 
 // ---------------------------------------------------------------------------
@@ -316,13 +333,19 @@ impl AztecNode for HttpNodeClient {
 
     async fn get_block_header(&self, block_number: u64) -> Result<serde_json::Value, Error> {
         self.transport
-            .call("node_getBlockHeader", serde_json::json!([block_number]))
+            .call(
+                "node_getBlockHeader",
+                serde_json::json!([block_param_json(block_number)]),
+            )
             .await
     }
 
     async fn get_block(&self, block_number: u64) -> Result<Option<serde_json::Value>, Error> {
         self.transport
-            .call("node_getBlock", serde_json::json!([block_number]))
+            .call(
+                "node_getBlock",
+                serde_json::json!([block_param_json(block_number)]),
+            )
             .await
     }
 
@@ -451,6 +474,33 @@ impl AztecNode for HttpNodeClient {
             .call_void(
                 "node_registerContractFunctionSignatures",
                 serde_json::json!([signatures]),
+            )
+            .await
+    }
+
+    async fn get_block_hash_membership_witness(
+        &self,
+        block_number: u64,
+        block_hash: &Fr,
+    ) -> Result<Option<serde_json::Value>, Error> {
+        self.transport
+            .call(
+                "node_getBlockHashMembershipWitness",
+                serde_json::json!([block_param_json(block_number), block_hash]),
+            )
+            .await
+    }
+
+    async fn find_leaves_indexes(
+        &self,
+        block_number: u64,
+        tree_id: &str,
+        leaves: &[Fr],
+    ) -> Result<Vec<Option<u64>>, Error> {
+        self.transport
+            .call(
+                "node_findLeavesIndexes",
+                serde_json::json!([block_param_json(block_number), tree_id, leaves]),
             )
             .await
     }
@@ -1001,6 +1051,21 @@ mod tests {
             _signatures: &[String],
         ) -> Result<(), Error> {
             Ok(())
+        }
+        async fn get_block_hash_membership_witness(
+            &self,
+            _block_number: u64,
+            _block_hash: &Fr,
+        ) -> Result<Option<serde_json::Value>, Error> {
+            Ok(None)
+        }
+        async fn find_leaves_indexes(
+            &self,
+            _block_number: u64,
+            _tree_id: &str,
+            _leaves: &[Fr],
+        ) -> Result<Vec<Option<u64>>, Error> {
+            Ok(vec![])
         }
     }
 
