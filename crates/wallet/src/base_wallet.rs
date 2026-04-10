@@ -11,7 +11,7 @@ use crate::abi::{AbiType, ContractArtifact};
 use crate::account_provider::AccountProvider;
 use crate::error::Error;
 use crate::node::{create_aztec_node_client, AztecNode, HttpNodeClient};
-use crate::pxe::{self, create_pxe_client, HttpPxeClient, Pxe, RegisterContractRequest};
+use crate::pxe::{self, Pxe, RegisterContractRequest};
 use crate::tx::{AuthWitness, ExecutionPayload, FunctionCall, TxHash};
 use crate::types::{AztecAddress, ContractInstanceWithAddress, Fr};
 use crate::wallet::{
@@ -416,15 +416,21 @@ pub fn create_wallet<P: Pxe, N: AztecNode, A: AccountProvider>(
     BaseWallet::new(pxe, node, accounts)
 }
 
-/// Create a [`BaseWallet`] backed by HTTP PXE and node clients.
-pub fn create_wallet_from_urls<A: AccountProvider>(
-    pxe_url: impl Into<String>,
+/// Create a [`BaseWallet`] backed by an embedded PXE (in-process) and HTTP node.
+///
+/// This is the recommended way to create a wallet for Aztec v4.x, where PXE
+/// runs client-side. Only requires a single `node_url` — no separate PXE server.
+#[cfg(feature = "embedded-pxe")]
+pub async fn create_embedded_wallet<A: AccountProvider>(
     node_url: impl Into<String>,
     accounts: A,
-) -> BaseWallet<HttpPxeClient, HttpNodeClient, A> {
-    let pxe = create_pxe_client(pxe_url);
+) -> Result<
+    BaseWallet<aztec_pxe::EmbeddedPxe<HttpNodeClient>, HttpNodeClient, A>,
+    crate::error::Error,
+> {
     let node = create_aztec_node_client(node_url);
-    BaseWallet::new(pxe, node, accounts)
+    let pxe = aztec_pxe::EmbeddedPxe::create_ephemeral(node.clone()).await?;
+    Ok(BaseWallet::new(pxe, node, accounts))
 }
 
 // ---------------------------------------------------------------------------
@@ -1477,15 +1483,5 @@ mod tests {
         );
         let info = wallet.get_chain_info().await.expect("get chain info");
         assert_eq!(info.chain_id, Fr::from(31337u64));
-    }
-
-    #[test]
-    fn test_create_wallet_from_urls_factory() {
-        let wallet = create_wallet_from_urls(
-            "http://localhost:8080",
-            "http://localhost:8081",
-            MockAccountProvider::new(vec![]),
-        );
-        let _ = wallet;
     }
 }

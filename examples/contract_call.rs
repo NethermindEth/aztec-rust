@@ -27,19 +27,17 @@ use aztec_rs::node::{create_aztec_node_client, wait_for_node, AztecNode, WaitOpt
 use aztec_rs::tx::{AuthWitness, Capsule, ExecutionPayload, TxStatus};
 use aztec_rs::types::{AztecAddress, CompleteAddress, Fr};
 use aztec_rs::wallet::{
-    create_wallet_from_urls, ProfileMode, ProfileOptions, SendOptions, SimulateOptions,
+    create_embedded_wallet, ProfileMode, ProfileOptions, SendOptions, SimulateOptions,
     TxSimulationResult,
 };
 
-fn make_wallet(
-    pxe_url: &str,
+async fn make_wallet(
     node_url: &str,
     secret_key: Fr,
     complete_address: CompleteAddress,
     alias: &str,
-) -> impl aztec_rs::wallet::Wallet {
-    create_wallet_from_urls(
-        pxe_url,
+) -> Result<impl aztec_rs::wallet::Wallet, aztec_rs::Error> {
+    create_embedded_wallet(
         node_url,
         SingleAccountProvider::new(
             complete_address,
@@ -47,11 +45,11 @@ fn make_wallet(
             alias,
         ),
     )
+    .await
 }
 
 #[tokio::main]
 async fn main() -> Result<(), aztec_rs::Error> {
-    let pxe_url = std::env::var("AZTEC_PXE_URL").unwrap_or_else(|_| "http://localhost:8080".into());
     let node_url =
         std::env::var("AZTEC_NODE_URL").unwrap_or_else(|_| "http://localhost:8080".into());
 
@@ -76,12 +74,12 @@ async fn main() -> Result<(), aztec_rs::Error> {
     );
 
     let bootstrap = make_wallet(
-        &pxe_url,
         &node_url,
         secret_key,
         CompleteAddress::default(),
         "bootstrap",
-    );
+    )
+    .await?;
     let manager = AccountManager::create(
         bootstrap,
         secret_key,
@@ -131,13 +129,8 @@ async fn main() -> Result<(), aztec_rs::Error> {
 
     // -- Compute deploy address (local, no PXE) --------------------------------
 
-    let deploy_wallet = make_wallet(
-        &pxe_url,
-        &node_url,
-        secret_key,
-        complete_address.clone(),
-        "deploy",
-    );
+    let deploy_wallet =
+        make_wallet(&node_url, secret_key, complete_address.clone(), "deploy").await?;
     let deploy_method = Contract::deploy(
         &deploy_wallet,
         artifact.clone(),
@@ -162,13 +155,7 @@ async fn main() -> Result<(), aztec_rs::Error> {
 
     // -- Build payloads locally (no PXE) ---------------------------------------
 
-    let wallet = make_wallet(
-        &pxe_url,
-        &node_url,
-        secret_key,
-        complete_address.clone(),
-        "main",
-    );
+    let wallet = make_wallet(&node_url, secret_key, complete_address.clone(), "main").await?;
     let contract = Contract::at(instance.address, artifact.clone(), wallet);
 
     let transfer_payload = contract
@@ -232,13 +219,8 @@ async fn main() -> Result<(), aztec_rs::Error> {
             ],
         )?
         .request()?;
-    let batch_wallet = make_wallet(
-        &pxe_url,
-        &node_url,
-        secret_key,
-        complete_address.clone(),
-        "batch",
-    );
+    let batch_wallet =
+        make_wallet(&node_url, secret_key, complete_address.clone(), "batch").await?;
     let batch = BatchCall::new(&batch_wallet, vec![p1, p2]);
     let merged = batch.request()?;
     println!("Batch: {} calls merged", merged.calls.len());
@@ -328,13 +310,7 @@ async fn main() -> Result<(), aztec_rs::Error> {
     let contract = Contract::at(
         instance.address,
         artifact,
-        make_wallet(
-            &pxe_url,
-            &node_url,
-            secret_key,
-            complete_address.clone(),
-            "interact",
-        ),
+        make_wallet(&node_url, secret_key, complete_address.clone(), "interact").await?,
     );
 
     // Simulate with gas estimation.

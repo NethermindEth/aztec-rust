@@ -5,8 +5,7 @@
 //!
 //! Run with:
 //! ```bash
-//! AZTEC_PXE_URL=http://localhost:8080 AZTEC_NODE_URL=http://localhost:8080 \
-//!     cargo run --example deploy_contract
+//! AZTEC_NODE_URL=http://localhost:8080 cargo run --example deploy_contract
 //! ```
 
 #![allow(clippy::print_stdout)]
@@ -16,11 +15,10 @@ use aztec_rs::account::{AccountManager, SchnorrAccountContract, SingleAccountPro
 use aztec_rs::deployment::{ContractDeployer, DeployOptions};
 use aztec_rs::node::{create_aztec_node_client, wait_for_node, AztecNode};
 use aztec_rs::types::{CompleteAddress, Fr};
-use aztec_rs::wallet::create_wallet_from_urls;
+use aztec_rs::wallet::create_embedded_wallet;
 
 #[tokio::main]
 async fn main() -> Result<(), aztec_rs::Error> {
-    let pxe_url = std::env::var("AZTEC_PXE_URL").unwrap_or_else(|_| "http://localhost:8080".into());
     let node_url =
         std::env::var("AZTEC_NODE_URL").unwrap_or_else(|_| "http://localhost:8080".into());
 
@@ -39,15 +37,15 @@ async fn main() -> Result<(), aztec_rs::Error> {
     // -- Create a wallet -------------------------------------------------------
 
     let secret_key = Fr::from(0xcafe_u64);
-    let bootstrap_wallet = create_wallet_from_urls(
-        &pxe_url,
+    let bootstrap_wallet = create_embedded_wallet(
         &node_url,
         SingleAccountProvider::new(
             CompleteAddress::default(),
             Box::new(SchnorrAccountContract::new(secret_key)),
             "bootstrap",
         ),
-    );
+    )
+    .await?;
     let manager = AccountManager::create(
         bootstrap_wallet,
         secret_key,
@@ -57,15 +55,15 @@ async fn main() -> Result<(), aztec_rs::Error> {
     .await?;
 
     let complete_address = manager.complete_address().await?;
-    let wallet = create_wallet_from_urls(
-        &pxe_url,
+    let wallet = create_embedded_wallet(
         &node_url,
         SingleAccountProvider::new(
             complete_address,
             Box::new(SchnorrAccountContract::new(secret_key)),
             "main",
         ),
-    );
+    )
+    .await?;
 
     // -- Load a contract artifact ----------------------------------------------
 

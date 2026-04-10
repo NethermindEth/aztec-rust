@@ -1,11 +1,10 @@
-//! Integration tests for `BaseWallet` against a live Aztec PXE + node.
+//! Integration tests for `BaseWallet` against a live Aztec node.
 //!
 //! These tests are `#[ignore]`d by default because they require a running
-//! Aztec network with both PXE and node endpoints. Run them with:
+//! Aztec node. Run them with:
 //!
 //! ```bash
 //! AZTEC_NODE_URL=http://localhost:8080 \
-//! AZTEC_PXE_URL=http://localhost:8080 \
 //! cargo test --test wallet_integration -- --ignored
 //! ```
 
@@ -16,7 +15,7 @@ use async_trait::async_trait;
 use aztec_rs::abi::ContractArtifact;
 use aztec_rs::fee::GasSettings;
 use aztec_rs::node::{create_aztec_node_client, AztecNode as _};
-use aztec_rs::pxe::{create_pxe_client, Pxe as _, TxExecutionRequest};
+use aztec_rs::pxe::TxExecutionRequest;
 use aztec_rs::tx::{AuthWitness, ExecutionPayload};
 use aztec_rs::types::{AztecAddress, CompleteAddress, Fr};
 use aztec_rs::wallet::{
@@ -73,27 +72,30 @@ impl AccountProvider for EmptyAccountProvider {
 // ---------------------------------------------------------------------------
 
 async fn require_live_wallet() -> Option<
-    BaseWallet<aztec_rs::pxe::HttpPxeClient, aztec_rs::node::HttpNodeClient, EmptyAccountProvider>,
+    BaseWallet<
+        aztec_rs::embedded_pxe::EmbeddedPxe<aztec_rs::node::HttpNodeClient>,
+        aztec_rs::node::HttpNodeClient,
+        EmptyAccountProvider,
+    >,
 > {
     let node_url =
         std::env::var("AZTEC_NODE_URL").unwrap_or_else(|_| "http://localhost:8080".to_owned());
-    let pxe_url =
-        std::env::var("AZTEC_PXE_URL").unwrap_or_else(|_| "http://localhost:8080".to_owned());
 
     let node = create_aztec_node_client(&node_url);
-    let pxe = create_pxe_client(&pxe_url);
 
-    // Single attempt for each — fail fast instead of retrying for 120s per test.
+    // Single attempt — fail fast instead of retrying for 120s per test.
     if let Err(err) = node.get_node_info().await {
         eprintln!("skipping: node not reachable: {err}");
         return None;
     }
-    if let Err(err) = pxe.get_synced_block_header().await {
-        eprintln!("skipping: PXE not reachable: {err}");
-        return None;
-    }
 
-    Some(BaseWallet::new(pxe, node, EmptyAccountProvider))
+    match aztec_rs::wallet::create_embedded_wallet(node_url, EmptyAccountProvider).await {
+        Ok(wallet) => Some(wallet),
+        Err(err) => {
+            eprintln!("skipping: failed to create embedded wallet: {err}");
+            None
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -101,7 +103,7 @@ async fn require_live_wallet() -> Option<
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires live PXE + node via AZTEC_PXE_URL and AZTEC_NODE_URL"]
+#[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn wallet_get_chain_info() {
     let Some(wallet) = require_live_wallet().await else {
         return;
@@ -117,7 +119,7 @@ async fn wallet_get_chain_info() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires live PXE + node via AZTEC_PXE_URL and AZTEC_NODE_URL"]
+#[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn wallet_get_accounts_empty_provider() {
     let Some(wallet) = require_live_wallet().await else {
         return;
@@ -134,7 +136,7 @@ async fn wallet_get_accounts_empty_provider() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires live PXE + node via AZTEC_PXE_URL and AZTEC_NODE_URL"]
+#[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn wallet_sender_roundtrip() {
     let Some(wallet) = require_live_wallet().await else {
         return;
@@ -161,7 +163,7 @@ async fn wallet_sender_roundtrip() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires live PXE + node via AZTEC_PXE_URL and AZTEC_NODE_URL"]
+#[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn wallet_contract_metadata_unknown() {
     let Some(wallet) = require_live_wallet().await else {
         return;
@@ -182,7 +184,7 @@ async fn wallet_contract_metadata_unknown() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires live PXE + node via AZTEC_PXE_URL and AZTEC_NODE_URL"]
+#[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn wallet_contract_class_metadata_unknown() {
     let Some(wallet) = require_live_wallet().await else {
         return;
@@ -200,7 +202,7 @@ async fn wallet_contract_class_metadata_unknown() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires live PXE + node via AZTEC_PXE_URL and AZTEC_NODE_URL"]
+#[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn wallet_register_contract_with_fixture() {
     use aztec_rs::pxe::Pxe;
     use aztec_rs::types::{ContractInstance, ContractInstanceWithAddress, PublicKeys};
@@ -253,7 +255,7 @@ async fn wallet_register_contract_with_fixture() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore = "requires live PXE + node via AZTEC_PXE_URL and AZTEC_NODE_URL"]
+#[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn wallet_chain_info_matches_node() {
     use aztec_rs::node::AztecNode;
 

@@ -1,4 +1,3 @@
-use std::time::Duration;
 use std::{fmt, vec};
 
 use async_trait::async_trait;
@@ -8,7 +7,6 @@ use aztec_core::abi::{ContractArtifact, EventSelector};
 use aztec_core::error::Error;
 use aztec_core::tx::{AuthWitness, FunctionCall, TxHash};
 use aztec_core::types::{AztecAddress, CompleteAddress, ContractInstanceWithAddress, Fr};
-use aztec_rpc::RpcTransport;
 
 // ---------------------------------------------------------------------------
 // Supporting types — opaque wrappers
@@ -405,215 +403,6 @@ pub trait Pxe: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// HTTP client
-// ---------------------------------------------------------------------------
-
-/// HTTP JSON-RPC backed PXE client.
-pub struct HttpPxeClient {
-    transport: RpcTransport,
-}
-
-impl HttpPxeClient {
-    fn new(url: String, timeout: Duration) -> Self {
-        Self {
-            transport: RpcTransport::new(url, timeout),
-        }
-    }
-}
-
-#[async_trait]
-impl Pxe for HttpPxeClient {
-    async fn get_synced_block_header(&self) -> Result<BlockHeader, Error> {
-        self.transport
-            .call("pxe_getSyncedBlockHeader", serde_json::json!([]))
-            .await
-    }
-
-    async fn get_contract_instance(
-        &self,
-        address: &AztecAddress,
-    ) -> Result<Option<ContractInstanceWithAddress>, Error> {
-        self.transport
-            .call("pxe_getContractInstance", serde_json::json!([address]))
-            .await
-    }
-
-    async fn get_contract_artifact(&self, id: &Fr) -> Result<Option<ContractArtifact>, Error> {
-        self.transport
-            .call("pxe_getContractArtifact", serde_json::json!([id]))
-            .await
-    }
-
-    async fn get_contracts(&self) -> Result<Vec<AztecAddress>, Error> {
-        self.transport
-            .call("pxe_getContracts", serde_json::json!([]))
-            .await
-    }
-
-    async fn register_account(
-        &self,
-        secret_key: &Fr,
-        partial_address: &Fr,
-    ) -> Result<CompleteAddress, Error> {
-        self.transport
-            .call(
-                "pxe_registerAccount",
-                serde_json::json!([secret_key, partial_address]),
-            )
-            .await
-    }
-
-    async fn get_registered_accounts(&self) -> Result<Vec<CompleteAddress>, Error> {
-        self.transport
-            .call("pxe_getRegisteredAccounts", serde_json::json!([]))
-            .await
-    }
-
-    async fn register_sender(&self, sender: &AztecAddress) -> Result<AztecAddress, Error> {
-        self.transport
-            .call("pxe_registerSender", serde_json::json!([sender]))
-            .await
-    }
-
-    async fn get_senders(&self) -> Result<Vec<AztecAddress>, Error> {
-        self.transport
-            .call("pxe_getSenders", serde_json::json!([]))
-            .await
-    }
-
-    async fn remove_sender(&self, sender: &AztecAddress) -> Result<(), Error> {
-        self.transport
-            .call_void("pxe_removeSender", serde_json::json!([sender]))
-            .await
-    }
-
-    async fn register_contract_class(&self, artifact: &ContractArtifact) -> Result<(), Error> {
-        self.transport
-            .call_void("pxe_registerContractClass", serde_json::json!([artifact]))
-            .await
-    }
-
-    async fn register_contract(&self, request: RegisterContractRequest) -> Result<(), Error> {
-        self.transport
-            .call_void("pxe_registerContract", serde_json::json!([request]))
-            .await
-    }
-
-    async fn update_contract(
-        &self,
-        address: &AztecAddress,
-        artifact: &ContractArtifact,
-    ) -> Result<(), Error> {
-        self.transport
-            .call_void("pxe_updateContract", serde_json::json!([address, artifact]))
-            .await
-    }
-
-    async fn simulate_tx(
-        &self,
-        tx_request: &TxExecutionRequest,
-        opts: SimulateTxOpts,
-    ) -> Result<TxSimulationResult, Error> {
-        self.transport
-            .call("pxe_simulateTx", serde_json::json!([tx_request, opts]))
-            .await
-    }
-
-    async fn prove_tx(
-        &self,
-        tx_request: &TxExecutionRequest,
-        scopes: Vec<AztecAddress>,
-    ) -> Result<TxProvingResult, Error> {
-        self.transport
-            .call("pxe_proveTx", serde_json::json!([tx_request, scopes]))
-            .await
-    }
-
-    async fn profile_tx(
-        &self,
-        tx_request: &TxExecutionRequest,
-        opts: ProfileTxOpts,
-    ) -> Result<TxProfileResult, Error> {
-        self.transport
-            .call("pxe_profileTx", serde_json::json!([tx_request, opts]))
-            .await
-    }
-
-    async fn execute_utility(
-        &self,
-        call: &FunctionCall,
-        opts: ExecuteUtilityOpts,
-    ) -> Result<UtilityExecutionResult, Error> {
-        self.transport
-            .call("pxe_executeUtility", serde_json::json!([call, opts]))
-            .await
-    }
-
-    async fn get_private_events(
-        &self,
-        event_selector: &EventSelector,
-        filter: PrivateEventFilter,
-    ) -> Result<Vec<PackedPrivateEvent>, Error> {
-        self.transport
-            .call(
-                "pxe_getPrivateEvents",
-                serde_json::json!([event_selector, filter]),
-            )
-            .await
-    }
-
-    async fn stop(&self) -> Result<(), Error> {
-        self.transport
-            .call_void("pxe_stop", serde_json::json!([]))
-            .await
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Factory
-// ---------------------------------------------------------------------------
-
-/// Create an HTTP JSON-RPC backed PXE client.
-///
-/// Uses a default timeout of 30 seconds.
-pub fn create_pxe_client(url: impl Into<String>) -> HttpPxeClient {
-    HttpPxeClient::new(url.into(), Duration::from_secs(30))
-}
-
-// ---------------------------------------------------------------------------
-// Polling helpers
-// ---------------------------------------------------------------------------
-
-/// Wait for the PXE to become ready by retrying `get_synced_block_header`.
-///
-/// Uses a default timeout of 120 seconds with a 1 second polling interval.
-/// Returns the [`BlockHeader`] on success, or a timeout error.
-pub async fn wait_for_pxe(pxe: &(impl Pxe + ?Sized)) -> Result<BlockHeader, Error> {
-    wait_for_pxe_opts(pxe, Duration::from_secs(120), Duration::from_secs(1)).await
-}
-
-async fn wait_for_pxe_opts(
-    pxe: &(impl Pxe + ?Sized),
-    timeout: Duration,
-    interval: Duration,
-) -> Result<BlockHeader, Error> {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        match pxe.get_synced_block_header().await {
-            Ok(header) => return Ok(header),
-            Err(_) if tokio::time::Instant::now() + interval < deadline => {
-                tokio::time::sleep(interval).await;
-            }
-            Err(e) => {
-                return Err(Error::Timeout(format!(
-                    "PXE not ready after {timeout:?}: {e}"
-                )));
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -831,21 +620,6 @@ mod tests {
     #[test]
     fn pxe_is_object_safe() {
         fn _assert_object_safe(_: &dyn Pxe) {}
-    }
-
-    // -- Send + Sync --
-
-    #[test]
-    fn http_pxe_client_is_send_sync() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<HttpPxeClient>();
-    }
-
-    // -- Factory --
-
-    #[test]
-    fn create_pxe_client_does_not_panic() {
-        let _client = create_pxe_client("http://localhost:8080");
     }
 
     // -- Test helpers --
@@ -1207,40 +981,5 @@ mod tests {
     async fn mock_stop() {
         let pxe = MockPxe::new_ready();
         pxe.stop().await.unwrap();
-    }
-
-    // -- wait_for_pxe tests --
-
-    #[tokio::test]
-    async fn wait_for_pxe_immediate_success() {
-        let pxe = MockPxe::new_ready();
-        let header = wait_for_pxe_opts(&pxe, Duration::from_secs(5), Duration::from_millis(10))
-            .await
-            .unwrap();
-        assert_eq!(header.data["globalVariables"]["blockNumber"], 1);
-    }
-
-    #[tokio::test]
-    async fn wait_for_pxe_delayed_success() {
-        let pxe = MockPxe::new_ready().with_header_sequence(vec![
-            Err(Error::Transport("not ready".into())),
-            Err(Error::Transport("not ready".into())),
-            Ok(sample_block_header()),
-        ]);
-        let header = wait_for_pxe_opts(&pxe, Duration::from_secs(5), Duration::from_millis(10))
-            .await
-            .unwrap();
-        assert_eq!(header.data["globalVariables"]["blockNumber"], 1);
-    }
-
-    #[tokio::test]
-    async fn wait_for_pxe_timeout() {
-        let pxe = MockPxe::new_ready()
-            .with_header_sequence(vec![Err(Error::Transport("not ready".into()))]);
-        let result =
-            wait_for_pxe_opts(&pxe, Duration::from_millis(50), Duration::from_millis(100)).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err, Error::Timeout(_)));
     }
 }
