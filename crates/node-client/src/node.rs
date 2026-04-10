@@ -616,10 +616,13 @@ impl AztecNode for HttpNodeClient {
             .into_iter()
             .map(|v| {
                 v.and_then(|val| {
-                    // Could be a plain number or an InBlock object { data: N }
-                    val.get("data")
-                        .and_then(|d| d.as_u64())
-                        .or_else(|| val.as_u64())
+                    // Could be a plain number, a string number, or an
+                    // InBlock object { data: N | "N" }.
+                    let extract = |v: &serde_json::Value| {
+                        v.as_u64()
+                            .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+                    };
+                    val.get("data").and_then(extract).or_else(|| extract(&val))
                 })
             })
             .collect())
