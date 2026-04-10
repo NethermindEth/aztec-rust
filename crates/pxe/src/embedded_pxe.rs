@@ -71,6 +71,8 @@ struct CallExecutionBundle {
     execution_result: crate::execution::execution_result::PrivateExecutionResult,
     contract_class_log_fields: Vec<aztec_core::tx::ContractClassLogFields>,
     public_function_calldata: Vec<aztec_core::tx::HashedValues>,
+    /// Return values from the first inner ACIR call (for private return value extraction).
+    first_acir_call_return_values: Vec<Fr>,
 }
 
 fn parse_encoded_calls(fields: &[Fr]) -> Result<Vec<ParsedEntrypointCall>, Error> {
@@ -397,6 +399,26 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
         Self::create(node, kv).await
     }
 
+    /// Recursively flatten an [`AbiValue`] into field elements.
+    fn abi_value_to_fields(v: &aztec_core::abi::AbiValue) -> Vec<Fr> {
+        match v {
+            aztec_core::abi::AbiValue::Field(f) => vec![*f],
+            aztec_core::abi::AbiValue::Integer(i) => vec![Fr::from(*i as u64)],
+            aztec_core::abi::AbiValue::Boolean(b) => vec![Fr::from(*b)],
+            aztec_core::abi::AbiValue::String(s) => s.chars().map(|c| Fr::from(c as u64)).collect(),
+            aztec_core::abi::AbiValue::Array(arr) => {
+                arr.iter().flat_map(Self::abi_value_to_fields).collect()
+            }
+            aztec_core::abi::AbiValue::Struct(fields) => fields
+                .values()
+                .flat_map(Self::abi_value_to_fields)
+                .collect(),
+            aztec_core::abi::AbiValue::Tuple(elems) => {
+                elems.iter().flat_map(Self::abi_value_to_fields).collect()
+            }
+        }
+    }
+
     /// Sync the block state from the node, handling reorgs.
     ///
     /// After sync, if the anchor block changed, wipe the contract sync cache.
@@ -634,6 +656,7 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
                 };
 
                 return Ok(Some(CallExecutionBundle {
+                    first_acir_call_return_values: Vec::new(),
                     execution_result: crate::execution::execution_result::PrivateExecutionResult {
                         entrypoint,
                         first_nullifier,
@@ -760,6 +783,7 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
                 };
 
                 return Ok(Some(CallExecutionBundle {
+                    first_acir_call_return_values: Vec::new(),
                     execution_result: crate::execution::execution_result::PrivateExecutionResult {
                         entrypoint,
                         first_nullifier,
@@ -966,10 +990,12 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
         let mut public_function_calldata = Vec::new();
         let mut contract_class_log_fields = Vec::new();
         let mut min_revertible_side_effect_counter = 0u32;
+        let mut first_acir_returns = Vec::new();
 
         for (idx, bundle) in bundles.into_iter().enumerate() {
             if idx == 0 {
                 first_nullifier = bundle.execution_result.first_nullifier;
+                first_acir_returns = bundle.first_acir_call_return_values;
                 min_revertible_side_effect_counter = bundle
                     .execution_result
                     .entrypoint
@@ -999,6 +1025,7 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
         };
 
         CallExecutionBundle {
+            first_acir_call_return_values: first_acir_returns,
             execution_result: crate::execution::execution_result::PrivateExecutionResult {
                 entrypoint: root,
                 first_nullifier,
@@ -1061,6 +1088,7 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
                     call.is_static,
                 )?;
             return Ok(CallExecutionBundle {
+                first_acir_call_return_values: Vec::new(),
                 execution_result,
                 contract_class_log_fields,
                 public_function_calldata,
@@ -1091,6 +1119,7 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
             contract_address,
             protocol_nullifier,
             Some(origin),
+            scopes.to_vec(),
         );
 
         let acvm_output = crate::execution::AcvmExecutor::execute_private(
@@ -1101,6 +1130,7 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
         )
         .await?;
 
+        let acir_call_returns = acvm_output.first_acir_call_return_values.clone();
         let mut execution_result = oracle.build_execution_result(acvm_output, contract_address);
         execution_result.entrypoint.call_context = aztec_core::kernel_types::CallContext {
             msg_sender: origin,
@@ -1160,6 +1190,7 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
             execution_result,
             contract_class_log_fields,
             public_function_calldata,
+            first_acir_call_return_values: acir_call_returns,
         })
     }
 
@@ -1734,7 +1765,7 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
     async fn simulate_tx(
         &self,
         tx_request: &TxExecutionRequest,
-        _opts: SimulateTxOpts,
+        opts: SimulateTxOpts,
     ) -> Result<TxSimulationResult, Error> {
         self.sync_block_state().await?;
 
@@ -1752,7 +1783,7 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
                     origin,
                     protocol_nullifier,
                     &anchor,
-                    &[],
+                    &opts.scopes,
                 )
                 .await?,
             );
@@ -1768,9 +1799,21 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
         )?;
 
         let pi = &kernel_output.public_inputs;
+
+        // Extract private return values — mirrors TS `getPrivateReturnValues()`.
+        // The aggregated entrypoint wraps the actual call bundles as nested
+        // execution results. The first one is the user's function call.
+        let private_return_values: Vec<String> = aggregated
+            .execution_result
+            .entrypoint
+            .nested_execution_results
+            .first()
+            .map(|r| r.return_values.iter().map(|f| f.to_string()).collect())
+            .unwrap_or_default();
+
         Ok(TxSimulationResult {
             data: serde_json::json!({
-                "returnValues": aggregated.execution_result.entrypoint.return_values.iter().map(|f| f.to_string()).collect::<Vec<_>>(),
+                "returnValues": private_return_values,
                 "gasUsed": {
                     "daGas": pi.gas_used.da_gas,
                     "l2Gas": pi.gas_used.l2_gas,
@@ -1932,16 +1975,11 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
                 .await?;
         }
 
-        // Encode arguments as field elements
+        // Encode arguments as field elements (recursively flatten structs/arrays)
         let args: Vec<Fr> = call
             .args
             .iter()
-            .map(|v| match v {
-                aztec_core::abi::AbiValue::Field(f) => *f,
-                aztec_core::abi::AbiValue::Integer(i) => Fr::from(*i as u64),
-                aztec_core::abi::AbiValue::Boolean(b) => Fr::from(*b),
-                _ => Fr::zero(),
-            })
+            .flat_map(Self::abi_value_to_fields)
             .collect();
 
         // Create utility oracle

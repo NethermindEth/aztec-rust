@@ -6,7 +6,7 @@ use aztec_core::kernel_types::{
     ScopedNoteHash, ScopedNullifier, ScopedReadRequest,
 };
 use aztec_core::tx::HashedValues;
-use aztec_core::types::{AztecAddress, Fr};
+use aztec_core::types::{AztecAddress, ContractInstance, Fr};
 use aztec_node_client::AztecNode;
 
 use super::acvm_executor::{AcvmExecutionOutput, OracleCallback};
@@ -42,6 +42,8 @@ pub struct PrivateExecutionOracle<'a, N: AztecNode> {
     auth_witnesses: Vec<(Fr, Vec<Fr>)>,
     /// Unconstrained sender override used by tagging during nested/private calls.
     sender_for_tags: Option<AztecAddress>,
+    /// Execution scopes — used to enforce key validation access control.
+    scopes: Vec<AztecAddress>,
 
     // --- Counter-bearing side effects (matching upstream oracle) ---
     /// Side-effect counter, incremented for each side effect.
@@ -72,6 +74,8 @@ pub struct PrivateExecutionOracle<'a, N: AztecNode> {
     min_revertible_side_effect_counter: u32,
     /// Public function calldata preimages.
     public_function_calldata: Vec<HashedValues>,
+    /// Captured nested execution results (for return value extraction).
+    nested_results: Vec<PrivateCallExecutionResult>,
 }
 
 /// A note created during execution (not yet committed to state).
@@ -265,6 +269,7 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
         contract_address: AztecAddress,
         protocol_nullifier: Fr,
         sender_for_tags: Option<AztecAddress>,
+        scopes: Vec<AztecAddress>,
     ) -> Self {
         Self {
             node,
@@ -280,6 +285,7 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             execution_cache: std::collections::HashMap::new(),
             auth_witnesses: Vec::new(),
             sender_for_tags,
+            scopes,
             side_effect_counter: 0,
             new_notes: Vec::new(),
             note_hashes: Vec::new(),
@@ -294,6 +300,7 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             nullifier_read_requests: Vec::new(),
             min_revertible_side_effect_counter: 0,
             public_function_calldata: Vec::new(),
+            nested_results: Vec::new(),
         }
     }
 
@@ -448,10 +455,44 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
 
     /// Return `KeyValidationRequest { pk_m: Point, sk_app: Field }` (4 fields).
     /// Uses pk_m_hash to find the right key type across all accounts.
+    ///
+    /// Enforces scope isolation: only keys belonging to accounts in the
+    /// current execution scopes are accessible.
     async fn get_secret_key(&self, args: &[Vec<Fr>]) -> Result<Vec<Vec<Fr>>, Error> {
+        use aztec_core::hash::poseidon2_hash;
+
         let pk_m_hash = *args.first().and_then(|v| v.first()).ok_or_else(|| {
             Error::InvalidData("getKeyValidationRequest: missing pk_m_hash".into())
         })?;
+
+        // Check scope: ensure the key owner is within the current scopes
+        if !self.scopes.is_empty() {
+            let mut key_in_scope = false;
+            for scope in &self.scopes {
+                if let Some(complete) = self.address_store.get(scope).await? {
+                    let pk = &complete.public_keys;
+                    for point in [
+                        &pk.master_nullifier_public_key,
+                        &pk.master_incoming_viewing_public_key,
+                        &pk.master_outgoing_viewing_public_key,
+                        &pk.master_tagging_public_key,
+                    ] {
+                        let hash = poseidon2_hash(&[point.x, point.y, Fr::from(point.is_infinite)]);
+                        if hash == pk_m_hash {
+                            key_in_scope = true;
+                            break;
+                        }
+                    }
+                    if key_in_scope {
+                        break;
+                    }
+                }
+            }
+            if !key_in_scope {
+                return Err(Error::InvalidData("Key validation request denied".into()));
+            }
+        }
+
         match self
             .key_store
             .get_key_validation_request(&pk_m_hash, &self.contract_address)
@@ -765,14 +806,8 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
         };
 
         match inst {
-            Some(inst) => Ok(vec![vec![
-                Fr::from(true), // exists
-                inst.inner.salt,
-                Fr::from(inst.inner.deployer),
-                inst.inner.current_contract_class_id,
-                inst.inner.initialization_hash,
-            ]]),
-            None => Ok(vec![vec![Fr::from(false)]]),
+            Some(inst) => Ok(contract_instance_to_fields(&inst.inner)),
+            None => Ok(vec![vec![Fr::zero()]; 16]),
         }
     }
 
@@ -1197,6 +1232,7 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             target_address,
             self.protocol_nullifier,
             self.sender_for_tags,
+            self.scopes.clone(),
         );
 
         // Share the execution cache so return values are accessible.
@@ -1228,6 +1264,18 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
                 nested_params_size,
                 target_address,
             );
+
+        // Capture the nested call's return values for extraction by simulate_tx.
+        // Only return_values are stored here — side effects (nullifiers, note
+        // hashes, etc.) are merged into the parent oracle below and must NOT be
+        // duplicated in nested_execution_results or the kernel will reject the
+        // tx with "Duplicate nullifier".
+        {
+            let mut minimal = PrivateCallExecutionResult::default();
+            minimal.contract_address = target_address;
+            minimal.return_values = acvm_output.return_values.clone();
+            self.nested_results.push(minimal);
+        }
 
         // Store the return values in the execution cache so the caller can look them up.
         self.execution_cache
@@ -1303,7 +1351,7 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             note_hash_nullifier_counter_map: self.note_hash_nullifier_counter_map.clone(),
             offchain_effects: self.offchain_effects.clone(),
             pre_tags: Vec::new(),
-            nested_execution_results: Vec::new(), // Nested calls added via ACIR mechanism
+            nested_execution_results: self.nested_results.clone(),
             contract_class_logs: self.contract_class_logs.clone(),
             note_hashes: self.note_hashes.clone(),
             nullifiers: self.nullifiers.clone(),
@@ -1327,6 +1375,34 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             public_function_calldata: self.public_function_calldata.clone(),
         }
     }
+}
+
+/// Serialize a [`ContractInstance`] into the flat field layout expected by
+/// the Noir `utilityGetContractInstance` / `privateGetContractInstance` oracle.
+///
+/// Field order must match the Noir `ContractInstance` struct:
+///   salt, deployer, contract_class_id, initialization_hash,
+///   npk_m (x, y, is_infinite), ivpk_m, ovpk_m, tpk_m
+pub(crate) fn contract_instance_to_fields(inst: &ContractInstance) -> Vec<Vec<Fr>> {
+    let pk = &inst.public_keys;
+    vec![
+        vec![inst.salt],
+        vec![Fr::from(inst.deployer)],
+        vec![inst.current_contract_class_id],
+        vec![inst.initialization_hash],
+        vec![pk.master_nullifier_public_key.x],
+        vec![pk.master_nullifier_public_key.y],
+        vec![Fr::from(pk.master_nullifier_public_key.is_infinite)],
+        vec![pk.master_incoming_viewing_public_key.x],
+        vec![pk.master_incoming_viewing_public_key.y],
+        vec![Fr::from(pk.master_incoming_viewing_public_key.is_infinite)],
+        vec![pk.master_outgoing_viewing_public_key.x],
+        vec![pk.master_outgoing_viewing_public_key.y],
+        vec![Fr::from(pk.master_outgoing_viewing_public_key.is_infinite)],
+        vec![pk.master_tagging_public_key.x],
+        vec![pk.master_tagging_public_key.y],
+        vec![Fr::from(pk.master_tagging_public_key.is_infinite)],
+    ]
 }
 
 #[async_trait::async_trait]

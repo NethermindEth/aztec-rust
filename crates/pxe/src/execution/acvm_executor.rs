@@ -29,6 +29,9 @@ pub struct AcvmExecutionOutput {
     pub witness: WitnessMap<FieldElement>,
     /// The ACIR bytecode used (for kernel proving).
     pub acir_bytecode: Vec<u8>,
+    /// Return values from the first ACIR sub-circuit call (if any).
+    /// Used to extract the inner function's return value from an entrypoint wrapper.
+    pub first_acir_call_return_values: Vec<Fr>,
 }
 
 /// Result of executing a utility (unconstrained) function.
@@ -154,6 +157,7 @@ impl AcvmExecutor {
 
         // Solve loop with oracle dispatch
         let mut last_private_fc = String::new();
+        let mut first_acir_call_return_values: Vec<Fr> = Vec::new();
         loop {
             let status = acvm.solve();
             match status {
@@ -221,6 +225,12 @@ impl AcvmExecutor {
                         .iter()
                         .filter_map(|w| sub_witness_map.get(w).copied())
                         .collect();
+                    // Capture the first ACIR sub-call return values for
+                    // inner function return value extraction.
+                    if first_acir_call_return_values.is_empty() {
+                        first_acir_call_return_values =
+                            return_values.iter().map(fe_to_fr).collect();
+                    }
                     acvm.resolve_pending_acir_call(return_values);
                 }
                 ACVMStatus::Failure(err) => {
@@ -246,6 +256,7 @@ impl AcvmExecutor {
             return_values,
             witness,
             acir_bytecode,
+            first_acir_call_return_values,
         })
     }
 

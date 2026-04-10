@@ -372,14 +372,8 @@ impl<'a, N: AztecNode> UtilityExecutionOracle<'a, N> {
         };
 
         match inst {
-            Some(inst) => Ok(vec![vec![
-                Fr::from(true),
-                inst.inner.salt,
-                Fr::from(inst.inner.deployer),
-                inst.inner.current_contract_class_id,
-                inst.inner.initialization_hash,
-            ]]),
-            None => Ok(vec![vec![Fr::from(false)]]),
+            Some(inst) => Ok(super::oracle::contract_instance_to_fields(&inst.inner)),
+            None => Ok(vec![vec![Fr::zero()]; 16]),
         }
     }
 
@@ -793,11 +787,43 @@ impl<'a, N: AztecNode> UtilityExecutionOracle<'a, N> {
     }
 
     /// Return `KeyValidationRequest { pk_m: Point, sk_app: Field }` (4 fields).
+    ///
+    /// Enforces scope isolation: only keys belonging to accounts in the
+    /// current execution scopes are accessible.
     async fn get_key_validation_request(&self, args: &[Vec<Fr>]) -> Result<Vec<Vec<Fr>>, Error> {
+        use aztec_core::hash::poseidon2_hash;
+
         let pk_m_hash = *args
             .first()
             .and_then(|v| v.first())
             .ok_or_else(|| Error::InvalidData("missing pk_m_hash".into()))?;
+
+        // Check scope: ensure the key owner is within the current scopes
+        let mut key_in_scope = false;
+        for scope in &self.scopes {
+            if let Some(complete) = self.address_store.get(scope).await? {
+                let pk = &complete.public_keys;
+                for point in [
+                    &pk.master_nullifier_public_key,
+                    &pk.master_incoming_viewing_public_key,
+                    &pk.master_outgoing_viewing_public_key,
+                    &pk.master_tagging_public_key,
+                ] {
+                    let hash = poseidon2_hash(&[point.x, point.y, Fr::from(point.is_infinite)]);
+                    if hash == pk_m_hash {
+                        key_in_scope = true;
+                        break;
+                    }
+                }
+                if key_in_scope {
+                    break;
+                }
+            }
+        }
+        if !key_in_scope {
+            return Err(Error::InvalidData("Key validation request denied".into()));
+        }
+
         match self
             .key_store
             .get_key_validation_request(&pk_m_hash, &self.contract_address)
