@@ -93,6 +93,12 @@ impl AcvmExecutor {
     fn convert_fc_result(function: &str, result: Vec<Vec<Fr>>) -> ForeignCallResult<FieldElement> {
         let force_array_indexes: &[usize] = match function {
             "utilityLoadCapsule" | "loadCapsule" | "getCapsule" => &[1],
+            // BoundedVec return: storage array at [0] must stay as Array
+            "utilityAes128Decrypt" | "aes128Decrypt" => &[0],
+            // Option<[Field; N]> return: is_some at [0], array at [1]
+            "utilityTryGetPublicKeysAndPartialAddress" | "tryGetPublicKeysAndPartialAddress" => {
+                &[1]
+            }
             _ => &[],
         };
         let values: Vec<ForeignCallParam<FieldElement>> = result
@@ -147,12 +153,14 @@ impl AcvmExecutor {
         );
 
         // Solve loop with oracle dispatch
+        let mut last_private_fc = String::new();
         loop {
             let status = acvm.solve();
             match status {
                 ACVMStatus::Solved => break,
                 ACVMStatus::InProgress => continue,
                 ACVMStatus::RequiresForeignCall(foreign_call) => {
+                    last_private_fc = foreign_call.function.clone();
                     let inputs = Self::convert_fc_inputs(&foreign_call.inputs);
                     let result = oracle
                         .handle_foreign_call(&foreign_call.function, inputs)
@@ -217,7 +225,7 @@ impl AcvmExecutor {
                 }
                 ACVMStatus::Failure(err) => {
                     return Err(Error::InvalidData(format!(
-                        "private function '{}' execution failed: {err}",
+                        "private function '{}' execution failed (last oracle: {last_private_fc}): {err}",
                         function_name
                     )));
                 }

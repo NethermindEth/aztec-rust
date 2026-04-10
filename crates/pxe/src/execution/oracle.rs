@@ -14,7 +14,9 @@ use super::execution_result::{
     PrivateCallExecutionResult, PrivateExecutionResult, PrivateLogData, PublicCallRequestData,
 };
 use crate::stores::note_store::{NoteFilter, NoteStatus, StoredNote};
-use crate::stores::{CapsuleStore, ContractStore, KeyStore, NoteStore};
+use crate::stores::{
+    AddressStore, CapsuleStore, ContractStore, KeyStore, NoteStore, SenderTaggingStore,
+};
 
 /// Oracle for private function execution.
 ///
@@ -26,6 +28,8 @@ pub struct PrivateExecutionOracle<'a, N: AztecNode> {
     key_store: &'a KeyStore,
     note_store: &'a NoteStore,
     capsule_store: &'a CapsuleStore,
+    address_store: &'a AddressStore,
+    sender_tagging_store: &'a SenderTaggingStore,
     /// The block header at which execution is anchored.
     block_header: serde_json::Value,
     /// The address of the contract being executed.
@@ -80,10 +84,10 @@ pub struct CachedNote {
 }
 
 impl<'a, N: AztecNode> PrivateExecutionOracle<'a, N> {
+    /// Map Noir NoteStatus enum values: ACTIVE = 1, ACTIVE_OR_NULLIFIED = 2.
     fn note_status_from_field(value: Fr) -> Result<NoteStatus, Error> {
         match value.to_usize() as u64 {
-            0 => Ok(NoteStatus::Active),
-            1 => Ok(NoteStatus::Nullified),
+            1 => Ok(NoteStatus::Active),
             2 => Ok(NoteStatus::ActiveOrNullified),
             other => Err(Error::InvalidData(format!("unknown note status: {other}"))),
         }
@@ -147,6 +151,8 @@ impl<'a, N: AztecNode> PrivateExecutionOracle<'a, N> {
         key_store: &'a KeyStore,
         note_store: &'a NoteStore,
         capsule_store: &'a CapsuleStore,
+        address_store: &'a AddressStore,
+        sender_tagging_store: &'a SenderTaggingStore,
         block_header: serde_json::Value,
         contract_address: AztecAddress,
         protocol_nullifier: Fr,
@@ -158,6 +164,8 @@ impl<'a, N: AztecNode> PrivateExecutionOracle<'a, N> {
             key_store,
             note_store,
             capsule_store,
+            address_store,
+            sender_tagging_store,
             block_header,
             contract_address,
             protocol_nullifier,
@@ -275,7 +283,7 @@ impl<'a, N: AztecNode> PrivateExecutionOracle<'a, N> {
             // Tagging
             "getSenderForTags" => self.get_sender_for_tags(),
             "setSenderForTags" => self.set_sender_for_tags(&args),
-            "getNextAppTagAsSender" => self.get_next_app_tag_as_sender(&args),
+            "getNextAppTagAsSender" => self.get_next_app_tag_as_sender(&args).await,
 
             // Misc
             "getRandomField" => Ok(vec![vec![Fr::random()]]),
@@ -349,41 +357,62 @@ impl<'a, N: AztecNode> PrivateExecutionOracle<'a, N> {
         }
     }
 
+    /// Return `KeyValidationRequest { pk_m: Point, sk_app: Field }` (4 fields).
+    /// Uses pk_m_hash to find the right key type across all accounts.
     async fn get_secret_key(&self, args: &[Vec<Fr>]) -> Result<Vec<Vec<Fr>>, Error> {
-        let pk_hash = args
-            .first()
-            .and_then(|v| v.first())
-            .ok_or_else(|| Error::InvalidData("getSecretKey: missing pk_hash".into()))?;
-        let sk = self
+        let pk_m_hash = *args.first().and_then(|v| v.first()).ok_or_else(|| {
+            Error::InvalidData("getKeyValidationRequest: missing pk_m_hash".into())
+        })?;
+        match self
             .key_store
-            .get_secret_key(pk_hash)
+            .get_key_validation_request(&pk_m_hash, &self.contract_address)
             .await?
-            .ok_or_else(|| Error::InvalidData("account not found in key store".into()))?;
-        Ok(vec![vec![sk]])
+        {
+            Some((pk_m, sk_app)) => Ok(vec![
+                vec![pk_m.x],
+                vec![pk_m.y],
+                vec![Fr::from(pk_m.is_infinite)],
+                vec![sk_app],
+            ]),
+            None => Ok(vec![
+                vec![Fr::zero()],
+                vec![Fr::zero()],
+                vec![Fr::zero()],
+                vec![Fr::zero()],
+            ]),
+        }
     }
 
+    /// Return Option<[Field; 13]> with 4 points (x, y, is_infinite) + partial_address.
     async fn get_public_keys_and_partial_address(
         &self,
         args: &[Vec<Fr>],
     ) -> Result<Vec<Vec<Fr>>, Error> {
-        let pk_hash = args
-            .first()
-            .and_then(|v| v.first())
-            .ok_or_else(|| Error::InvalidData("missing pk_hash arg".into()))?;
-        match self.key_store.get_public_keys(pk_hash).await? {
-            Some(public_keys) => Ok(vec![vec![
-                Fr::from(true), // found
-                public_keys.master_nullifier_public_key.x,
-                public_keys.master_nullifier_public_key.y,
-                public_keys.master_incoming_viewing_public_key.x,
-                public_keys.master_incoming_viewing_public_key.y,
-                public_keys.master_outgoing_viewing_public_key.x,
-                public_keys.master_outgoing_viewing_public_key.y,
-                public_keys.master_tagging_public_key.x,
-                public_keys.master_tagging_public_key.y,
-            ]]),
-            None => Ok(vec![vec![Fr::from(false)]]),
+        let address = AztecAddress(
+            *args
+                .first()
+                .and_then(|v| v.first())
+                .ok_or_else(|| Error::InvalidData("missing address arg".into()))?,
+        );
+
+        let Some(complete) = self.address_store.get(&address).await? else {
+            return Ok(vec![vec![Fr::zero()], vec![Fr::zero(); 13]]);
+        };
+
+        let pk = &complete.public_keys;
+        let mut fields = Vec::with_capacity(13);
+        for point in [
+            &pk.master_nullifier_public_key,
+            &pk.master_incoming_viewing_public_key,
+            &pk.master_outgoing_viewing_public_key,
+            &pk.master_tagging_public_key,
+        ] {
+            fields.push(point.x);
+            fields.push(point.y);
+            fields.push(Fr::from(point.is_infinite));
         }
+        fields.push(complete.partial_address);
+        Ok(vec![vec![Fr::from(true)], fields])
     }
 
     async fn get_notes(&self, args: &[Vec<Fr>]) -> Result<Vec<Vec<Fr>>, Error> {
@@ -910,24 +939,46 @@ impl<'a, N: AztecNode> PrivateExecutionOracle<'a, N> {
         Ok(vec![])
     }
 
-    fn get_next_app_tag_as_sender(&self, args: &[Vec<Fr>]) -> Result<Vec<Vec<Fr>>, Error> {
-        use aztec_core::hash::poseidon2_hash_with_separator;
+    async fn get_next_app_tag_as_sender(&self, args: &[Vec<Fr>]) -> Result<Vec<Vec<Fr>>, Error> {
+        use aztec_core::hash::poseidon2_hash;
 
-        let sender = args
-            .first()
-            .and_then(|v| v.first())
-            .copied()
-            .ok_or_else(|| Error::InvalidData("missing sender".into()))?;
-        let recipient = args
-            .get(1)
-            .and_then(|v| v.first())
-            .copied()
-            .ok_or_else(|| Error::InvalidData("missing recipient".into()))?;
+        let sender = AztecAddress(
+            *args
+                .first()
+                .and_then(|v| v.first())
+                .ok_or_else(|| Error::InvalidData("missing sender".into()))?,
+        );
+        let recipient = AztecAddress(
+            *args
+                .get(1)
+                .and_then(|v| v.first())
+                .ok_or_else(|| Error::InvalidData("missing recipient".into()))?,
+        );
 
-        // Upstream derives a directional app tag from sender, recipient, and the
-        // current contract-scoped tagging secret. We at least return a stable
-        // non-zero single-field tag with the correct oracle arity here.
-        let tag = poseidon2_hash_with_separator(&[sender, recipient, self.contract_address.0], 0);
+        // Compute the directional tagging secret (sender → recipient).
+        let Some(sender_complete) = self.address_store.get(&sender).await? else {
+            return Err(Error::InvalidData(format!(
+                "sender {sender} not in address store"
+            )));
+        };
+        let pk_hash = sender_complete.public_keys.hash();
+        let ivsk = self
+            .key_store
+            .get_master_incoming_viewing_secret_key(&pk_hash)
+            .await?
+            .ok_or_else(|| Error::InvalidData(format!("ivsk not found for sender {sender}")))?;
+        let secret = super::utility_oracle::compute_directional_tagging_secret(
+            &sender_complete,
+            ivsk,
+            &recipient,
+            &self.contract_address,
+            &recipient,
+        )?;
+
+        // Get and increment the sender-side tag index.
+        let index = self.sender_tagging_store.get_next_index(&secret).await?;
+
+        let tag = poseidon2_hash(&[secret, Fr::from(index)]);
         Ok(vec![vec![tag]])
     }
 
@@ -996,12 +1047,9 @@ impl<'a, N: AztecNode> PrivateExecutionOracle<'a, N> {
             min_revertible_side_effect_counter: self.min_revertible_side_effect_counter,
         };
 
-        // Determine first nullifier (protocol nullifier / nonce generator)
-        let first_nullifier = self
-            .nullifiers
-            .first()
-            .map(|n| n.nullifier.value)
-            .unwrap_or(self.protocol_nullifier);
+        // The first nullifier is always the protocol nullifier (hash of
+        // the tx request). Application nullifiers are separate.
+        let first_nullifier = self.protocol_nullifier;
 
         PrivateExecutionResult {
             entrypoint,

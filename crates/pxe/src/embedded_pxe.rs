@@ -1085,6 +1085,8 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
             &self.key_store,
             &self.note_store,
             &self.capsule_store,
+            &self.address_store,
+            &self.sender_tagging_store,
             anchor.data.clone(),
             contract_address,
             protocol_nullifier,
@@ -1109,6 +1111,39 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
                 .to_field(),
             is_static_call: function.is_static,
         };
+
+        // Extract circuit-constrained side effects from PrivateCircuitPublicInputs
+        // in the solved witness. These are NOT emitted through oracle calls.
+        {
+            let ctx_size = artifact.private_context_inputs_size(&function_name);
+            let user_args_size = call.encoded_args.len();
+            let params_size = ctx_size + user_args_size;
+
+            let (circuit_note_hashes, _circuit_nullifiers, circuit_logs) =
+                Self::extract_side_effects_from_witness(
+                    &execution_result.entrypoint.partial_witness,
+                    params_size,
+                    contract_address,
+                );
+            // Note hashes may come from oracle calls (notifyCreatedNote)
+            // OR from the PCPI witness. Only add PCPI note hashes if the
+            // oracle didn't produce any, to avoid duplicates.
+            if execution_result.entrypoint.note_hashes.is_empty() && !circuit_note_hashes.is_empty()
+            {
+                execution_result
+                    .entrypoint
+                    .note_hashes
+                    .extend(circuit_note_hashes);
+            }
+            // Private logs are always circuit-constrained (never from oracle).
+            if !circuit_logs.is_empty() {
+                execution_result
+                    .entrypoint
+                    .private_logs
+                    .extend(circuit_logs);
+            }
+        }
+
         self.persist_pending_notes(&execution_result, scopes)
             .await?;
 
@@ -1129,6 +1164,113 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
     }
 
     /// Extract the origin (msg_sender) from a TxExecutionRequest.
+    /// Extract all circuit-constrained side effects from the solved ACVM
+    /// witness (`PrivateCircuitPublicInputs`, 870 fields starting at
+    /// witness index `params_size`).
+    ///
+    /// Returns (note_hashes, nullifiers, private_logs).
+    fn extract_side_effects_from_witness(
+        witness: &acir::native_types::WitnessMap<acir::FieldElement>,
+        params_size: usize,
+        contract_address: AztecAddress,
+    ) -> (
+        Vec<aztec_core::kernel_types::ScopedNoteHash>,
+        Vec<aztec_core::kernel_types::ScopedNullifier>,
+        Vec<crate::execution::PrivateLogData>,
+    ) {
+        use aztec_core::kernel_types::{NoteHash, Nullifier, ScopedNoteHash, ScopedNullifier};
+
+        const PCPI_LENGTH: usize = 870;
+        const NOTE_HASHES_OFFSET: usize = 454;
+        const NOTE_HASH_LEN: usize = 2;
+        const MAX_NOTE_HASHES: usize = 16;
+        const NOTE_HASHES_ARRAY_LEN: usize = MAX_NOTE_HASHES * NOTE_HASH_LEN + 1;
+        const NULLIFIERS_OFFSET: usize = 487;
+        const NULLIFIER_LEN: usize = 3;
+        const MAX_NULLIFIERS: usize = 16;
+        const NULLIFIERS_ARRAY_LEN: usize = MAX_NULLIFIERS * NULLIFIER_LEN + 1;
+        const PRIVATE_LOGS_OFFSET: usize = 561;
+        const PRIVATE_LOG_DATA_LEN: usize = 19;
+        const PRIVATE_LOG_FIELDS: usize = 16;
+        const MAX_LOGS: usize = 16;
+        const PRIVATE_LOGS_ARRAY_LEN: usize = MAX_LOGS * PRIVATE_LOG_DATA_LEN + 1;
+
+        let pcpi_start = params_size;
+        let mut pcpi = Vec::with_capacity(PCPI_LENGTH);
+        for i in 0..PCPI_LENGTH {
+            let idx = acir::native_types::Witness((pcpi_start + i) as u32);
+            let val = witness
+                .get(&idx)
+                .map(|fe| crate::execution::field_conversion::fe_to_fr(fe))
+                .unwrap_or_else(Fr::zero);
+            pcpi.push(val);
+        }
+
+        // Extract note hashes
+        let nh_slice = &pcpi[NOTE_HASHES_OFFSET..][..NOTE_HASHES_ARRAY_LEN];
+        let nh_count = nh_slice[NOTE_HASHES_ARRAY_LEN - 1]
+            .to_usize()
+            .min(MAX_NOTE_HASHES);
+        let mut note_hashes = Vec::with_capacity(nh_count);
+        for i in 0..nh_count {
+            let base = i * NOTE_HASH_LEN;
+            let value = nh_slice[base];
+            let counter = nh_slice[base + 1].to_usize() as u32;
+            if value != Fr::zero() {
+                note_hashes.push(ScopedNoteHash {
+                    note_hash: NoteHash { value, counter },
+                    contract_address,
+                });
+            }
+        }
+
+        // Extract nullifiers
+        let null_slice = &pcpi[NULLIFIERS_OFFSET..][..NULLIFIERS_ARRAY_LEN];
+        let null_count = null_slice[NULLIFIERS_ARRAY_LEN - 1]
+            .to_usize()
+            .min(MAX_NULLIFIERS);
+        let mut nullifiers = Vec::with_capacity(null_count);
+        for i in 0..null_count {
+            let base = i * NULLIFIER_LEN;
+            let value = null_slice[base];
+            let note_hash = null_slice[base + 1];
+            let counter = null_slice[base + 2].to_usize() as u32;
+            if value != Fr::zero() {
+                nullifiers.push(ScopedNullifier {
+                    nullifier: Nullifier {
+                        value,
+                        note_hash,
+                        counter,
+                    },
+                    contract_address,
+                });
+            }
+        }
+
+        // Extract private logs
+        let logs_slice = &pcpi[PRIVATE_LOGS_OFFSET..][..PRIVATE_LOGS_ARRAY_LEN];
+        let log_count = logs_slice[PRIVATE_LOGS_ARRAY_LEN - 1]
+            .to_usize()
+            .min(MAX_LOGS);
+        let mut logs = Vec::with_capacity(log_count);
+        for i in 0..log_count {
+            let base = i * PRIVATE_LOG_DATA_LEN;
+            let fields: Vec<Fr> = logs_slice[base..base + PRIVATE_LOG_FIELDS].to_vec();
+            let emitted_length = logs_slice[base + PRIVATE_LOG_FIELDS].to_usize() as u32;
+            let counter = logs_slice[base + PRIVATE_LOG_DATA_LEN - 1].to_usize() as u32;
+            if emitted_length > 0 {
+                logs.push(crate::execution::PrivateLogData {
+                    fields,
+                    emitted_length,
+                    counter,
+                    contract_address,
+                });
+            }
+        }
+
+        (note_hashes, nullifiers, logs)
+    }
+
     fn extract_origin(&self, tx_request: &TxExecutionRequest) -> AztecAddress {
         tx_request
             .data

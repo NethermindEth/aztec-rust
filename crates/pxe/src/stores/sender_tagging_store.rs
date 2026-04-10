@@ -148,6 +148,21 @@ impl SenderTaggingStore {
         Ok(finalized.max(max_pending))
     }
 
+    /// Get the next available tag index for a secret and increment.
+    pub async fn get_next_index(&self, secret: &Fr) -> Result<u64, Error> {
+        let last = self.get_last_used_index(secret).await?;
+        let next = last + 1;
+        // Store as a pending index with a placeholder tx hash.
+        let key = pending_key(secret);
+        let mut pending = self.get_pending_indexes(secret).await?;
+        pending.push(PendingTagIndex {
+            index: next,
+            tx_hash: TxHash::zero(),
+        });
+        self.kv.put(&key, &serde_json::to_vec(&pending)?).await?;
+        Ok(next)
+    }
+
     /// Drop pending indexes for dropped transactions.
     pub async fn drop_pending_indexes(&self, tx_hashes: &[TxHash]) -> Result<(), Error> {
         let prefix = b"sender_tag:pending:";

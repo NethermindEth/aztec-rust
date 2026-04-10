@@ -43,10 +43,10 @@ pub struct UtilityExecutionOracle<'a, N: AztecNode> {
 }
 
 impl<'a, N: AztecNode> UtilityExecutionOracle<'a, N> {
+    /// Map Noir NoteStatus enum values: ACTIVE = 1, ACTIVE_OR_NULLIFIED = 2.
     fn note_status_from_field(value: Fr) -> Result<NoteStatus, Error> {
         match value.to_usize() as u64 {
-            0 => Ok(NoteStatus::Active),
-            1 => Ok(NoteStatus::Nullified),
+            1 => Ok(NoteStatus::Active),
             2 => Ok(NoteStatus::ActiveOrNullified),
             other => Err(Error::InvalidData(format!("unknown note status: {other}"))),
         }
@@ -205,8 +205,8 @@ impl<'a, N: AztecNode> UtilityExecutionOracle<'a, N> {
                 tracing::debug!("noir utility log oracle call");
                 Ok(vec![])
             }
-            "aes128Decrypt" => Err(Error::InvalidData("aes128Decrypt not implemented".into())),
-            "getSharedSecret" => Err(Error::InvalidData("getSharedSecret not implemented".into())),
+            "aes128Decrypt" => self.aes128_decrypt(&args),
+            "getSharedSecret" => self.get_shared_secret(&args).await,
 
             // Capsules
             "loadCapsule" | "getCapsule" => self.load_capsule(&args).await,
@@ -758,41 +758,180 @@ impl<'a, N: AztecNode> UtilityExecutionOracle<'a, N> {
         Ok(vec![vec![Fr::from(witness.is_some())]])
     }
 
+    /// Return Option<[Field; 13]> with 4 points (x, y, is_infinite) + partial_address.
     async fn get_public_keys_and_partial_address(
         &self,
         args: &[Vec<Fr>],
     ) -> Result<Vec<Vec<Fr>>, Error> {
-        let pk_hash = args
+        let address = AztecAddress(
+            *args
+                .first()
+                .and_then(|v| v.first())
+                .ok_or_else(|| Error::InvalidData("missing address arg".into()))?,
+        );
+
+        let Some(complete) = self.address_store.get(&address).await? else {
+            return Ok(vec![vec![Fr::zero()], vec![Fr::zero(); 13]]);
+        };
+
+        let pk = &complete.public_keys;
+        let mut fields = Vec::with_capacity(13);
+        for point in [
+            &pk.master_nullifier_public_key,
+            &pk.master_incoming_viewing_public_key,
+            &pk.master_outgoing_viewing_public_key,
+            &pk.master_tagging_public_key,
+        ] {
+            fields.push(point.x);
+            fields.push(point.y);
+            fields.push(Fr::from(point.is_infinite));
+        }
+        fields.push(complete.partial_address);
+        Ok(vec![vec![Fr::from(true)], fields])
+    }
+
+    /// Return `KeyValidationRequest { pk_m: Point, sk_app: Field }` (4 fields).
+    async fn get_key_validation_request(&self, args: &[Vec<Fr>]) -> Result<Vec<Vec<Fr>>, Error> {
+        let pk_m_hash = *args
             .first()
             .and_then(|v| v.first())
-            .ok_or_else(|| Error::InvalidData("missing pk_hash arg".into()))?;
-        match self.key_store.get_public_keys(pk_hash).await? {
-            Some(public_keys) => Ok(vec![vec![
-                Fr::from(true),
-                public_keys.master_nullifier_public_key.x,
-                public_keys.master_nullifier_public_key.y,
-                public_keys.master_incoming_viewing_public_key.x,
-                public_keys.master_incoming_viewing_public_key.y,
-                public_keys.master_outgoing_viewing_public_key.x,
-                public_keys.master_outgoing_viewing_public_key.y,
-                public_keys.master_tagging_public_key.x,
-                public_keys.master_tagging_public_key.y,
-            ]]),
-            None => Ok(vec![vec![Fr::from(false)]]),
+            .ok_or_else(|| Error::InvalidData("missing pk_m_hash".into()))?;
+        match self
+            .key_store
+            .get_key_validation_request(&pk_m_hash, &self.contract_address)
+            .await?
+        {
+            Some((pk_m, sk_app)) => Ok(vec![
+                vec![pk_m.x],
+                vec![pk_m.y],
+                vec![Fr::from(pk_m.is_infinite)],
+                vec![sk_app],
+            ]),
+            None => Ok(vec![
+                vec![Fr::zero()],
+                vec![Fr::zero()],
+                vec![Fr::zero()],
+                vec![Fr::zero()],
+            ]),
         }
     }
 
-    async fn get_key_validation_request(&self, args: &[Vec<Fr>]) -> Result<Vec<Vec<Fr>>, Error> {
-        let pk_hash = args
-            .first()
+    /// Compute shared secret: `address_secret * ephPk`.
+    async fn get_shared_secret(&self, args: &[Vec<Fr>]) -> Result<Vec<Vec<Fr>>, Error> {
+        use aztec_core::grumpkin;
+
+        let recipient = AztecAddress(
+            *args
+                .first()
+                .and_then(|v| v.first())
+                .ok_or_else(|| Error::InvalidData("getSharedSecret: missing recipient".into()))?,
+        );
+        let eph_pk_x = *args
+            .get(1)
             .and_then(|v| v.first())
-            .ok_or_else(|| Error::InvalidData("missing pk_hash".into()))?;
-        let sk = self
+            .ok_or_else(|| Error::InvalidData("getSharedSecret: missing eph_pk.x".into()))?;
+        let eph_pk_y = *args
+            .get(2)
+            .and_then(|v| v.first())
+            .ok_or_else(|| Error::InvalidData("getSharedSecret: missing eph_pk.y".into()))?;
+        let eph_pk_is_infinite = args
+            .get(3)
+            .and_then(|v| v.first())
+            .map(|f| f.to_usize() != 0)
+            .unwrap_or(false);
+
+        if eph_pk_is_infinite {
+            return Ok(vec![
+                vec![Fr::zero()],
+                vec![Fr::zero()],
+                vec![Fr::from(true)],
+            ]);
+        }
+
+        let Some(complete) = self.address_store.get(&recipient).await? else {
+            return Err(Error::InvalidData(format!(
+                "getSharedSecret: recipient {recipient} not in address store"
+            )));
+        };
+        let pk_hash = complete.public_keys.hash();
+        let Some(ivsk) = self
             .key_store
-            .get_secret_key(pk_hash)
+            .get_master_incoming_viewing_secret_key(&pk_hash)
             .await?
-            .ok_or_else(|| Error::InvalidData("account not found in key store".into()))?;
-        Ok(vec![vec![sk]])
+        else {
+            return Err(Error::InvalidData(format!(
+                "getSharedSecret: ivsk not found for {recipient}"
+            )));
+        };
+
+        let preaddress = aztec_core::hash::poseidon2_hash_with_separator(
+            &[pk_hash, complete.partial_address],
+            aztec_core::constants::domain_separator::CONTRACT_ADDRESS_V1,
+        );
+        let address_secret = compute_address_secret(preaddress, ivsk);
+
+        let eph_pk = aztec_core::types::Point {
+            x: eph_pk_x,
+            y: eph_pk_y,
+            is_infinite: false,
+        };
+        let shared = grumpkin::scalar_mul(&address_secret, &eph_pk);
+
+        Ok(vec![
+            vec![shared.x],
+            vec![shared.y],
+            vec![Fr::from(shared.is_infinite)],
+        ])
+    }
+
+    /// AES-128 CBC decryption oracle.
+    fn aes128_decrypt(&self, args: &[Vec<Fr>]) -> Result<Vec<Vec<Fr>>, Error> {
+        use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
+        type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
+
+        let ct_storage = args.first().cloned().unwrap_or_default();
+        let max_len = ct_storage.len();
+        let ct_len = args
+            .get(1)
+            .and_then(|v| v.first())
+            .map(|f| f.to_usize())
+            .unwrap_or(0);
+        let iv_fields = args.get(2).cloned().unwrap_or_default();
+        let key_fields = args.get(3).cloned().unwrap_or_default();
+
+        let ciphertext: Vec<u8> = ct_storage
+            .iter()
+            .take(ct_len)
+            .map(|f| f.to_usize() as u8)
+            .collect();
+        let iv: [u8; 16] = iv_fields
+            .iter()
+            .take(16)
+            .map(|f| f.to_usize() as u8)
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap_or([0u8; 16]);
+        let key: [u8; 16] = key_fields
+            .iter()
+            .take(16)
+            .map(|f| f.to_usize() as u8)
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap_or([0u8; 16]);
+
+        let plaintext = match Aes128CbcDec::new(&key.into(), &iv.into())
+            .decrypt_padded_vec_mut::<Pkcs7>(&ciphertext)
+        {
+            Ok(pt) => pt,
+            Err(e) => {
+                return Err(Error::InvalidData(format!("aes128 decrypt error: {e}")));
+            }
+        };
+
+        let pt_len = plaintext.len();
+        let mut storage: Vec<Fr> = plaintext.iter().map(|&b| Fr::from(u64::from(b))).collect();
+        storage.resize(max_len, Fr::zero());
+        Ok(vec![storage, vec![Fr::from(pt_len as u64)]])
     }
 
     fn get_auth_witness(&self, args: &[Vec<Fr>]) -> Result<Vec<Vec<Fr>>, Error> {
@@ -1031,7 +1170,7 @@ fn tx_hash_to_field(tx_hash: &TxHash) -> Result<Fr, Error> {
     Fr::from_hex(&tx_hash.to_string())
 }
 
-fn compute_directional_tagging_secret(
+pub(crate) fn compute_directional_tagging_secret(
     local_address: &aztec_core::types::CompleteAddress,
     local_ivsk: Fq,
     external_address: &AztecAddress,

@@ -112,6 +112,58 @@ impl KeyStore {
         }
     }
 
+    /// Find which account owns a given master public key hash, then return
+    /// the corresponding public key point and app-siloed secret key.
+    ///
+    /// Mirrors the TS `getKeyValidationRequest(pkMHash, contractAddress)`.
+    pub async fn get_key_validation_request(
+        &self,
+        pk_m_hash: &Fr,
+        app: &AztecAddress,
+    ) -> Result<Option<(aztec_core::types::Point, Fr)>, Error> {
+        use aztec_core::hash::poseidon2_hash;
+
+        let accounts = self.get_accounts().await?;
+        for account_pk_hash in &accounts {
+            let Some(sk) = self.get_secret_key(account_pk_hash).await? else {
+                continue;
+            };
+            let derived = derive_keys(&sk);
+            let pk = &derived.public_keys;
+            let keys_and_types = [
+                (
+                    &pk.master_nullifier_public_key,
+                    &derived.master_nullifier_hiding_key,
+                    KeyType::Nullifier,
+                ),
+                (
+                    &pk.master_incoming_viewing_public_key,
+                    &derived.master_incoming_viewing_secret_key,
+                    KeyType::IncomingViewing,
+                ),
+                (
+                    &pk.master_outgoing_viewing_public_key,
+                    &derived.master_outgoing_viewing_secret_key,
+                    KeyType::OutgoingViewing,
+                ),
+                (
+                    &pk.master_tagging_public_key,
+                    &derived.master_tagging_secret_key,
+                    KeyType::Tagging,
+                ),
+            ];
+
+            for (pk_m, sk_m, key_type) in &keys_and_types {
+                let hash = poseidon2_hash(&[pk_m.x, pk_m.y, Fr::from(pk_m.is_infinite)]);
+                if hash == *pk_m_hash {
+                    let sk_app = compute_app_secret_key(sk_m, app, *key_type);
+                    return Ok(Some(((*pk_m).clone(), sk_app)));
+                }
+            }
+        }
+        Ok(None)
+    }
+
     /// Compute an app-scoped secret key for a given key type.
     pub async fn get_app_secret_key(
         &self,

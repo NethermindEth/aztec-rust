@@ -212,8 +212,11 @@ fn db_slot_key(contract_address: &AztecAddress, slot: &Fr) -> Vec<u8> {
     format!("capsule_db:{contract_address}:{slot}").into_bytes()
 }
 
+/// Compute the capsule array entry slot using field addition, matching
+/// the Noir formula: `base_slot + 1 + index`.
 fn array_slot(base_slot: &Fr, index: usize) -> Fr {
-    Fr::from((base_slot.to_usize() + 1 + index) as u64)
+    // Use field arithmetic (not integer arithmetic) to match Noir.
+    Fr(base_slot.0 + Fr::from(1u64 + index as u64).0)
 }
 
 #[cfg(test)]
