@@ -118,6 +118,16 @@ pub mod domain_separator {
     ///
     /// TS: `DomainSeparator.SIGNATURE_PAYLOAD = 2279843839`
     pub const SIGNATURE_PAYLOAD: u32 = 2_279_843_839;
+
+    /// Domain separator for siloing note hashes with a contract address.
+    ///
+    /// TS: `DomainSeparator.SILO_NOTE_HASH = 1864988894`
+    pub const SILO_NOTE_HASH: u32 = 1_864_988_894;
+
+    /// Domain separator for siloing nullifiers with a contract address.
+    ///
+    /// TS: `DomainSeparator.SILO_NULLIFIER = 3956568061`
+    pub const SILO_NULLIFIER: u32 = 3_956_568_061;
 }
 
 // Size constants for deployment computations.
