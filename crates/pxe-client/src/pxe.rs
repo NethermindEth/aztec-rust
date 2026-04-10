@@ -689,11 +689,6 @@ mod tests {
             self.contracts = contracts;
             self
         }
-
-        fn with_header_sequence(mut self, results: Vec<Result<BlockHeader, Error>>) -> Self {
-            self.header_results = Mutex::new(results);
-            self
-        }
     }
 
     #[async_trait]

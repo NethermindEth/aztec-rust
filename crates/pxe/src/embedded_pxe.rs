@@ -19,8 +19,12 @@ use aztec_pxe_client::{
 };
 use tokio::sync::RwLock;
 
+use crate::kernel::prover::{BbPrivateKernelProver, BbProverConfig};
 use crate::stores::kv::KvStore;
-use crate::stores::{AddressStore, CapsuleStore, ContractStore, KeyStore, NoteStore, SenderStore};
+use crate::stores::{
+    AddressStore, CapsuleStore, ContractStore, KeyStore, NoteStore, PrivateEventStore,
+    RecipientTaggingStore, SenderStore, SenderTaggingStore,
+};
 use crate::sync::BlockSynchronizer;
 
 /// Embedded PXE that runs private execution logic in-process.
@@ -39,17 +43,41 @@ pub struct EmbeddedPxe<N: AztecNode> {
     block_header: RwLock<Option<serde_json::Value>>,
     /// Registered sender addresses for private log discovery.
     sender_store: SenderStore,
+    /// Phase 2: Sender tagging store for outgoing tag index tracking.
+    #[allow(dead_code)] // Used when full prove_tx flow is wired
+    sender_tagging_store: SenderTaggingStore,
+    /// Phase 2: Recipient tagging store for incoming tag index tracking.
+    #[allow(dead_code)] // Used when full prove_tx flow is wired
+    recipient_tagging_store: RecipientTaggingStore,
+    /// Phase 2: Private event store for discovered private events.
+    #[allow(dead_code)] // Used when get_private_events is wired
+    private_event_store: PrivateEventStore,
+    /// Phase 2: Kernel prover for generating proofs via bb binary.
+    kernel_prover: BbPrivateKernelProver,
 }
 
 impl<N: AztecNode> EmbeddedPxe<N> {
     /// Create a new EmbeddedPxe backed by the given node client and KV store.
     pub async fn create(node: N, kv: Arc<dyn KvStore>) -> Result<Self, Error> {
+        Self::create_with_prover_config(node, kv, BbProverConfig::default()).await
+    }
+
+    /// Create a new EmbeddedPxe with custom BB prover configuration.
+    pub async fn create_with_prover_config(
+        node: N,
+        kv: Arc<dyn KvStore>,
+        prover_config: BbProverConfig,
+    ) -> Result<Self, Error> {
         let contract_store = ContractStore::new(Arc::clone(&kv));
         let key_store = KeyStore::new(Arc::clone(&kv));
         let address_store = AddressStore::new(Arc::clone(&kv));
         let note_store = NoteStore::new(Arc::clone(&kv));
         let capsule_store = CapsuleStore::new(Arc::clone(&kv));
         let sender_store = SenderStore::new(Arc::clone(&kv));
+        let sender_tagging_store = SenderTaggingStore::new(Arc::clone(&kv));
+        let recipient_tagging_store = RecipientTaggingStore::new(Arc::clone(&kv));
+        let private_event_store = PrivateEventStore::new(Arc::clone(&kv));
+        let kernel_prover = BbPrivateKernelProver::new(prover_config);
 
         let pxe = Self {
             node,
@@ -60,6 +88,10 @@ impl<N: AztecNode> EmbeddedPxe<N> {
             capsule_store,
             block_header: RwLock::new(None),
             sender_store,
+            sender_tagging_store,
+            recipient_tagging_store,
+            private_event_store,
+            kernel_prover,
         };
 
         // Sync initial block header
@@ -306,11 +338,57 @@ impl<N: AztecNode + 'static> Pxe for EmbeddedPxe<N> {
     async fn prove_tx(
         &self,
         _tx_request: &TxExecutionRequest,
-        _scopes: Vec<AztecAddress>,
+        scopes: Vec<AztecAddress>,
     ) -> Result<TxProvingResult, Error> {
-        // Phase 2: requires bb prover integration
+        // Phase 2: Full proving flow
+        //
+        // 1. Sync block header
+        let header = self.sync_block_header().await?;
+
+        // 2. Extract block hash from header for consistent state reads
+        let block_hash = header
+            .pointer("/blockHash")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Fr::from_hex(s).ok())
+            .unwrap_or(Fr::zero());
+
+        // 3. Sync contract state for scopes
+        // TODO: When ContractSyncService is fully wired with ACVM,
+        // run sync for each contract referenced in the tx_request.
+
+        // 4. Execute private functions via ACVM
+        // TODO: When ACVM integration is complete, execute the private
+        // functions from tx_request and collect PrivateCallExecution results.
+        //
+        // For now, we construct the kernel execution prover and delegate
+        // to it. The actual ACVM execution is still pending Phase 1 completion.
+        let _ = &self.kernel_prover;
+        let _ = block_hash;
+        let _ = &scopes;
+
+        // 5. Run kernel circuit sequence: init → inner → reset → tail → hiding → chonk
+        // This requires the ACVM execution results from step 4.
+        // When complete, the flow will be:
+        //
+        // let execution_prover = PrivateKernelExecutionProver::from_stores(
+        //     &self.node,
+        //     &self.contract_store,
+        //     &self.key_store,
+        //     &self.kernel_prover,
+        //     block_hash,
+        //     KernelExecutionConfig::default(),
+        // );
+        // let result = execution_prover.prove_with_kernels(&executions).await?;
+        //
+        // 6. Store pre-tags in sender_tagging_store
+        // 7. Assemble TxProvingResult
+
+        // For now, return a structured error indicating the dependency on ACVM
         Err(Error::InvalidData(
-            "prove_tx requires bb prover integration (Phase 2)".into(),
+            "prove_tx: private execution (ACVM) not yet integrated — \
+             kernel prover infrastructure is ready but requires ACVM execution \
+             results from Phase 1 to produce proofs"
+                .into(),
         ))
     }
 
@@ -530,6 +608,21 @@ mod tests {
                 .unwrap()
                 .extend(signatures.iter().cloned());
             Ok(())
+        }
+        async fn get_block_hash_membership_witness(
+            &self,
+            _block_number: u64,
+            _block_hash: &Fr,
+        ) -> Result<Option<serde_json::Value>, Error> {
+            Ok(None)
+        }
+        async fn find_leaves_indexes(
+            &self,
+            _block_number: u64,
+            _tree_id: &str,
+            _leaves: &[Fr],
+        ) -> Result<Vec<Option<u64>>, Error> {
+            Ok(vec![])
         }
     }
 

@@ -29,4 +29,11 @@ pub mod stores;
 pub mod sync;
 
 pub use embedded_pxe::EmbeddedPxe;
+pub use kernel::{
+    BbPrivateKernelProver, BbProverConfig, ChonkProofWithPublicInputs, PrivateExecutionStep,
+    PrivateKernelExecutionProver, PrivateKernelOracle, PrivateKernelProver,
+    PrivateKernelSimulateOutput, SimulatedKernel,
+};
 pub use stores::kv::{InMemoryKvStore, KvStore};
+pub use stores::{NoteStore, PrivateEventStore, RecipientTaggingStore, SenderTaggingStore};
+pub use sync::{ContractSyncService, LogService, NoteService};
