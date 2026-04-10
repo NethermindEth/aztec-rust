@@ -350,10 +350,24 @@ impl<P: Pxe, N: AztecNode, A: AccountProvider> Wallet for BaseWallet<P, N, A> {
             skip_tx_validation: opts.skip_validation,
             skip_fee_enforcement: opts.skip_fee_enforcement,
             overrides: None,
-            scopes,
+            scopes: scopes.clone(),
         };
 
         let result = self.pxe.simulate_tx(&tx_request, pxe_opts).await?;
+
+        // Simulate public calls on the node (mirrors upstream PXE behaviour).
+        // The local PXE only executes the private part; public functions are
+        // executed by the sequencer, so we need the node's AVM simulator to
+        // catch public-side errors (e.g. duplicate nullifiers, assertions).
+        let proven = self.pxe.prove_tx(&tx_request, scopes).await?;
+        let tx = proven.to_tx();
+        if !tx.public_function_calldata.is_empty() {
+            let tx_hash = proven.tx_hash.ok_or_else(|| {
+                Error::InvalidData("PXE prove_tx result did not include a tx hash".into())
+            })?;
+            let tx_json = tx.to_json_value()?;
+            self.simulate_public_calls(&tx_hash, &tx_json).await?;
+        }
 
         Ok(TxSimulationResult {
             return_values: result.data.clone(),
