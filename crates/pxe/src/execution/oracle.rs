@@ -83,7 +83,115 @@ pub struct CachedNote {
     pub note_data: Vec<Fr>,
 }
 
-impl<'a, N: AztecNode> PrivateExecutionOracle<'a, N> {
+impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
+    /// Extract circuit-constrained side effects from a solved ACVM witness.
+    ///
+    /// Private logs, note hashes, and nullifiers are NOT emitted via oracle calls;
+    /// they are circuit outputs embedded in the witness at known PCPI offsets.
+    fn extract_side_effects_from_witness(
+        witness: &acir::native_types::WitnessMap<acir::FieldElement>,
+        params_size: usize,
+        contract_address: AztecAddress,
+    ) -> (
+        Vec<aztec_core::kernel_types::ScopedNoteHash>,
+        Vec<aztec_core::kernel_types::ScopedNullifier>,
+        Vec<PrivateLogData>,
+    ) {
+        use aztec_core::kernel_types::{NoteHash, Nullifier, ScopedNoteHash, ScopedNullifier};
+
+        const PCPI_LENGTH: usize = 870;
+        const NOTE_HASHES_OFFSET: usize = 454;
+        const NOTE_HASH_LEN: usize = 2;
+        const MAX_NOTE_HASHES: usize = 16;
+        const NOTE_HASHES_ARRAY_LEN: usize = MAX_NOTE_HASHES * NOTE_HASH_LEN + 1;
+        const NULLIFIERS_OFFSET: usize = 487;
+        const NULLIFIER_LEN: usize = 3;
+        const MAX_NULLIFIERS: usize = 16;
+        const NULLIFIERS_ARRAY_LEN: usize = MAX_NULLIFIERS * NULLIFIER_LEN + 1;
+        const PRIVATE_LOGS_OFFSET: usize = 561;
+        const PRIVATE_LOG_DATA_LEN: usize = 19;
+        const PRIVATE_LOG_FIELDS: usize = 16;
+        const MAX_LOGS: usize = 16;
+        const PRIVATE_LOGS_ARRAY_LEN: usize = MAX_LOGS * PRIVATE_LOG_DATA_LEN + 1;
+
+        let pcpi_start = params_size;
+        let mut pcpi = Vec::with_capacity(PCPI_LENGTH);
+        for i in 0..PCPI_LENGTH {
+            let idx = acir::native_types::Witness((pcpi_start + i) as u32);
+            let val = witness
+                .get(&idx)
+                .map(|fe| super::field_conversion::fe_to_fr(fe))
+                .unwrap_or_else(Fr::zero);
+            pcpi.push(val);
+        }
+
+        // Extract note hashes
+        let nh_slice = &pcpi[NOTE_HASHES_OFFSET..][..NOTE_HASHES_ARRAY_LEN];
+        let nh_count = nh_slice[NOTE_HASHES_ARRAY_LEN - 1]
+            .to_usize()
+            .min(MAX_NOTE_HASHES);
+        let mut note_hashes = Vec::with_capacity(nh_count);
+        for i in 0..nh_count {
+            let base = i * NOTE_HASH_LEN;
+            let value = nh_slice[base];
+            let counter = nh_slice[base + 1].to_usize() as u32;
+            if value != Fr::zero() {
+                note_hashes.push(ScopedNoteHash {
+                    note_hash: NoteHash { value, counter },
+                    contract_address,
+                });
+            }
+        }
+
+        // Extract nullifiers
+        let null_slice = &pcpi[NULLIFIERS_OFFSET..][..NULLIFIERS_ARRAY_LEN];
+        let null_count = null_slice[NULLIFIERS_ARRAY_LEN - 1]
+            .to_usize()
+            .min(MAX_NULLIFIERS);
+        let mut nullifiers = Vec::with_capacity(null_count);
+        for i in 0..null_count {
+            let base = i * NULLIFIER_LEN;
+            let value = null_slice[base];
+            let note_hash = null_slice[base + 1];
+            let counter = null_slice[base + 2].to_usize() as u32;
+            if value != Fr::zero() {
+                nullifiers.push(ScopedNullifier {
+                    nullifier: Nullifier {
+                        value,
+                        note_hash,
+                        counter,
+                    },
+                    contract_address,
+                });
+            }
+        }
+
+        // Extract private logs
+        let logs_slice = &pcpi[PRIVATE_LOGS_OFFSET..][..PRIVATE_LOGS_ARRAY_LEN];
+        let log_count = logs_slice[PRIVATE_LOGS_ARRAY_LEN - 1]
+            .to_usize()
+            .min(MAX_LOGS);
+        let mut logs = Vec::with_capacity(log_count);
+        for i in 0..log_count {
+            let base = i * PRIVATE_LOG_DATA_LEN;
+            let fields: Vec<Fr> = logs_slice[base..base + PRIVATE_LOG_FIELDS].to_vec();
+            let emitted_length = logs_slice[base + PRIVATE_LOG_FIELDS].to_usize() as u32;
+            let counter = logs_slice[base + PRIVATE_LOG_DATA_LEN - 1].to_usize() as u32;
+            if emitted_length > 0 {
+                logs.push(PrivateLogData {
+                    fields,
+                    emitted_length,
+                    counter,
+                    contract_address,
+                });
+            }
+        }
+
+        (note_hashes, nullifiers, logs)
+    }
+}
+
+impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
     /// Map Noir NoteStatus enum values: ACTIVE = 1, ACTIVE_OR_NULLIFIED = 2.
     fn note_status_from_field(value: Fr) -> Result<NoteStatus, Error> {
         match value.to_usize() as u64 {
@@ -319,26 +427,7 @@ impl<'a, N: AztecNode> PrivateExecutionOracle<'a, N> {
             "validateAndStoreEnqueuedNotesAndEvents" => Ok(vec![]),
 
             // Nested private function calls
-            "callPrivateFunction" => {
-                // Nested private calls require recursive ACVM execution with a new oracle
-                // instance. This is handled by the ContractFunctionSimulator in TS.
-                // For now, return a proper error; the ACIR call mechanism handles
-                // intra-contract calls, while cross-contract calls need this path.
-                let target = args
-                    .first()
-                    .and_then(|v| v.first())
-                    .map(|f| f.to_string())
-                    .unwrap_or_default();
-                let selector = args
-                    .get(1)
-                    .and_then(|v| v.first())
-                    .map(|f| f.to_string())
-                    .unwrap_or_default();
-                Err(Error::InvalidData(format!(
-                    "nested callPrivateFunction to {target}:{selector} requires recursive execution — \
-                     not yet implemented. Cross-contract private calls need the ContractFunctionSimulator."
-                )))
-            }
+            "callPrivateFunction" => self.call_private_function(&args).await,
 
             // Nullifier check
             "checkNullifierExists" => self.check_nullifier_exists(&args).await,
@@ -1002,6 +1091,187 @@ impl<'a, N: AztecNode> PrivateExecutionOracle<'a, N> {
             .await?;
         let exists = witness.is_some();
         Ok(vec![vec![Fr::from(exists)]])
+    }
+
+    /// Execute a nested private function call.
+    ///
+    /// Mirrors upstream TS `privateCallPrivateFunction`: creates a nested oracle
+    /// sharing the same stores, recursively executes the target function via
+    /// `AcvmExecutor::execute_private`, then merges side effects back.
+    ///
+    /// Input args: `[contractAddress], [functionSelector], [argsHash], [sideEffectCounter], [isStaticCall]`
+    /// Returns: `[[endSideEffectCounter, returnsHash]]`
+    async fn call_private_function(&mut self, args: &[Vec<Fr>]) -> Result<Vec<Vec<Fr>>, Error> {
+        let target_address = AztecAddress(
+            *args
+                .first()
+                .and_then(|v| v.first())
+                .ok_or_else(|| Error::InvalidData("missing target address".into()))?,
+        );
+        let selector_field = *args
+            .get(1)
+            .and_then(|v| v.first())
+            .ok_or_else(|| Error::InvalidData("missing function selector".into()))?;
+        let args_hash = *args
+            .get(2)
+            .and_then(|v| v.first())
+            .ok_or_else(|| Error::InvalidData("missing args hash".into()))?;
+        let _side_effect_counter = args
+            .get(3)
+            .and_then(|v| v.first())
+            .map(|f| f.to_usize() as u32)
+            .unwrap_or(0);
+        let _is_static = args
+            .get(4)
+            .and_then(|v| v.first())
+            .map(|f| *f != Fr::zero())
+            .unwrap_or(false);
+
+        // Look up the target contract's artifact.
+        let instance = self
+            .contract_store
+            .get_instance(&target_address)
+            .await?
+            .ok_or_else(|| {
+                Error::InvalidData(format!("nested call: contract not found: {target_address}"))
+            })?;
+        let artifact = self
+            .contract_store
+            .get_artifact(&instance.inner.current_contract_class_id)
+            .await?
+            .ok_or_else(|| {
+                Error::InvalidData(format!(
+                    "nested call: artifact not found for contract {target_address}"
+                ))
+            })?;
+
+        // Find the function by selector.
+        let selector = aztec_core::abi::FunctionSelector::from_field(selector_field);
+        let function = artifact
+            .find_function_by_selector(&selector)
+            .ok_or_else(|| {
+                Error::InvalidData(format!(
+                    "nested call: function with selector {selector} not found in {target_address}"
+                ))
+            })?;
+        let function_name = function.name.clone();
+
+        // Retrieve arguments from the execution cache using the args hash.
+        let cached_args = self
+            .execution_cache
+            .get(&args_hash)
+            .cloned()
+            .unwrap_or_default();
+
+        // Build the initial witness: PrivateContextInputs + user args.
+        // The context inputs include call_context, block header, tx_context, etc.
+        // For nested calls, msg_sender is the calling contract's address.
+        let context_inputs_size = artifact.private_context_inputs_size(&function_name);
+
+        // Build a minimal private context inputs witness matching what the circuit expects.
+        // The actual inputs are mostly zeros — the circuit reads real values from oracle calls.
+        let mut full_witness = vec![Fr::zero(); context_inputs_size];
+
+        // Patch call_context fields at the start of the context inputs:
+        // [msg_sender, contract_address, function_selector, is_static_call]
+        if full_witness.len() >= 4 {
+            full_witness[0] = self.contract_address.0; // msg_sender = calling contract
+            full_witness[1] = target_address.0; // contract_address = target
+            full_witness[2] = selector_field; // function_selector
+            full_witness[3] = Fr::zero(); // is_static_call
+        }
+
+        // Append user arguments.
+        full_witness.extend_from_slice(&cached_args);
+
+        // Create a nested oracle sharing the same stores.
+        let mut nested_oracle = PrivateExecutionOracle::new(
+            self.node,
+            self.contract_store,
+            self.key_store,
+            self.note_store,
+            self.capsule_store,
+            self.address_store,
+            self.sender_tagging_store,
+            self.block_header.clone(),
+            target_address,
+            self.protocol_nullifier,
+            self.sender_for_tags,
+        );
+
+        // Share the execution cache so return values are accessible.
+        nested_oracle.execution_cache = self.execution_cache.clone();
+        // Share auth witnesses.
+        nested_oracle.auth_witnesses = self.auth_witnesses.clone();
+        // Start the nested counter from the parent's current counter.
+        nested_oracle.side_effect_counter = self.side_effect_counter;
+
+        // Execute the nested private function.
+        let acvm_output = super::acvm_executor::AcvmExecutor::execute_private(
+            &artifact,
+            &function_name,
+            &full_witness,
+            &mut nested_oracle,
+        )
+        .await?;
+
+        let end_counter = nested_oracle.side_effect_counter;
+        let returns_hash = aztec_core::hash::compute_var_args_hash(&acvm_output.return_values);
+
+        // Extract circuit-constrained side effects (private logs, note hashes, etc.)
+        // from the nested witness. These are NOT emitted through oracle calls.
+        let nested_ctx_size = artifact.private_context_inputs_size(&function_name);
+        let nested_params_size = nested_ctx_size + cached_args.len();
+        let (circuit_note_hashes, _circuit_nullifiers, circuit_logs) =
+            Self::extract_side_effects_from_witness(
+                &acvm_output.witness,
+                nested_params_size,
+                target_address,
+            );
+
+        // Store the return values in the execution cache so the caller can look them up.
+        self.execution_cache
+            .insert(returns_hash, acvm_output.return_values);
+
+        // Merge the nested execution cache back into the parent.
+        for (k, v) in nested_oracle.execution_cache {
+            self.execution_cache.entry(k).or_insert(v);
+        }
+
+        // Merge side effects from the nested execution into the parent.
+        // Circuit-constrained side effects first (if oracle didn't produce any):
+        let oracle_has_note_hashes = !nested_oracle.note_hashes.is_empty();
+        self.note_hashes.extend(nested_oracle.note_hashes);
+        if !oracle_has_note_hashes && !circuit_note_hashes.is_empty() {
+            self.note_hashes.extend(circuit_note_hashes);
+        }
+        self.nullifiers.extend(nested_oracle.nullifiers);
+        self.private_logs.extend(nested_oracle.private_logs);
+        self.private_logs.extend(circuit_logs);
+        self.contract_class_logs
+            .extend(nested_oracle.contract_class_logs);
+        self.new_notes.extend(nested_oracle.new_notes);
+        self.note_hash_read_requests
+            .extend(nested_oracle.note_hash_read_requests);
+        self.nullifier_read_requests
+            .extend(nested_oracle.nullifier_read_requests);
+        self.public_call_requests
+            .extend(nested_oracle.public_call_requests);
+        self.public_function_calldata
+            .extend(nested_oracle.public_function_calldata);
+        self.offchain_effects.extend(nested_oracle.offchain_effects);
+        for (k, v) in nested_oracle.note_hash_nullifier_counter_map {
+            self.note_hash_nullifier_counter_map.insert(k, v);
+        }
+        if nested_oracle.public_teardown_call_request.is_some() {
+            self.public_teardown_call_request = nested_oracle.public_teardown_call_request;
+        }
+
+        // Advance the parent's side effect counter.
+        self.side_effect_counter = end_counter;
+
+        // Return [endSideEffectCounter, returnsHash] as a single array.
+        Ok(vec![vec![Fr::from(end_counter as u64), returns_hash]])
     }
 
     /// Get the block header.
