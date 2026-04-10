@@ -438,7 +438,6 @@ async fn expect_token_balance(
 #[tokio::test]
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn transfers_funds_from_user_a_to_b_via_pxe_a_followed_by_transfer_from_b_to_a_via_pxe_b() {
-    let _serial = serial_guard();
     let Some(((wallet_a, account_a_address), (wallet_b, account_b_address))) =
         setup_two_wallets().await
     else {
@@ -544,7 +543,6 @@ async fn transfers_funds_from_user_a_to_b_via_pxe_a_followed_by_transfer_from_b_
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn user_calls_a_public_function_on_a_contract_deployed_by_a_different_user_using_a_different_pxe(
 ) {
-    let _serial = serial_guard();
     let Some(((wallet_a, account_a_address), (wallet_b, account_b_address))) =
         setup_two_wallets().await
     else {
@@ -593,7 +591,6 @@ async fn user_calls_a_public_function_on_a_contract_deployed_by_a_different_user
 #[tokio::test]
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn private_state_is_zero_when_pxe_does_not_have_the_account_secret_key() {
-    let _serial = serial_guard();
     let Some(((wallet_a, account_a_address), (wallet_b, account_b_address))) =
         setup_two_wallets().await
     else {
@@ -664,7 +661,6 @@ async fn private_state_is_zero_when_pxe_does_not_have_the_account_secret_key() {
 #[tokio::test]
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn permits_sending_funds_to_a_user_before_they_have_registered_the_contract() {
-    let _serial = serial_guard();
     let Some(((wallet_a, account_a_address), (wallet_b, account_b_address))) =
         setup_two_wallets().await
     else {
@@ -728,7 +724,6 @@ async fn permits_sending_funds_to_a_user_before_they_have_registered_the_contrac
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn permits_sending_funds_to_a_user_and_spending_them_before_they_have_registered_the_contract(
 ) {
-    let _serial = serial_guard();
     let Some(((wallet_a, account_a_address), (wallet_b, account_b_address))) =
         setup_two_wallets().await
     else {
@@ -739,10 +734,15 @@ async fn permits_sending_funds_to_a_user_and_spending_them_before_they_have_regi
     let transfer_amount1 = 654u64;
     let transfer_amount2 = 323u64;
 
-    // setup an account that is shared across PXEs
+    // setup an account that is shared across PXEs — create a dedicated wallet
+    let Some((wallet_shared, shared_account_address)) = setup_wallet(TEST_ACCOUNT_2).await else {
+        return;
+    };
     let shared_secret =
         Fr::from_hex(TEST_ACCOUNT_2.secret_key).expect("valid test account secret key");
     let shared_account = imported_complete_address(TEST_ACCOUNT_2);
+
+    // Register the shared account keys on wallet A and B so they can discover notes
     wallet_a
         .pxe()
         .key_store()
@@ -755,9 +755,6 @@ async fn permits_sending_funds_to_a_user_and_spending_them_before_they_have_regi
         .add(&shared_account)
         .await
         .expect("seed shared address on A");
-    let shared_account_address = shared_account.address;
-
-    // Register the shared account on walletB
     wallet_b
         .pxe()
         .key_store()
@@ -770,6 +767,29 @@ async fn permits_sending_funds_to_a_user_and_spending_them_before_they_have_regi
         .add(&shared_account)
         .await
         .expect("seed shared address on B");
+    // Register senders across all wallets for tag discovery
+    wallet_shared
+        .pxe()
+        .register_sender(&account_a_address)
+        .await
+        .expect("shared registers A");
+    wallet_shared
+        .pxe()
+        .register_sender(&account_b_address)
+        .await
+        .expect("shared registers B");
+    // wallet_b needs the shared account as a sender to discover transfers from shared→b
+    wallet_b
+        .pxe()
+        .register_sender(&shared_account_address)
+        .await
+        .expect("B registers shared");
+    // wallet_a also needs shared as sender
+    wallet_a
+        .pxe()
+        .register_sender(&shared_account_address)
+        .await
+        .expect("A registers shared");
 
     // deploy the contract on PXE A
     let (token_address, token_artifact, token_instance) =
@@ -789,9 +809,12 @@ async fn permits_sending_funds_to_a_user_and_spending_them_before_they_have_regi
     )
     .await;
 
-    // Now send funds from Shared Wallet to B via PXE A
+    // Register the token on the shared wallet so it can execute transfer
+    register_contract_on_pxe(wallet_shared.pxe(), &token_artifact, &token_instance).await;
+
+    // Now send funds from Shared Wallet to B via the shared wallet
     send_token_method(
-        &wallet_a,
+        &wallet_shared,
         &token_artifact,
         token_address,
         "transfer",
