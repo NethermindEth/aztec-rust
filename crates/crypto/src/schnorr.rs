@@ -1,13 +1,16 @@
 //! Schnorr signature scheme on the Grumpkin curve.
 //!
-//! Implements the same Schnorr construction used by barretenberg / Noir:
-//! - Blake2s-256 for the challenge hash
+//! Implements the same Schnorr construction used by the Noir schnorr library:
+//! - Pedersen hash for binding the nonce point R to the public key
+//! - Blake2s-256 for the final challenge hash
 //! - Deterministic nonce via Blake2s(private_key || message)
 //! - Signature = (s, e) where s and e are 32-byte scalars
 
 use aztec_core::grumpkin;
 use aztec_core::types::{Fq, Fr, GrumpkinScalar, Point};
 use blake2::{Blake2s256, Digest};
+
+use crate::pedersen::pedersen_hash;
 
 /// A Schnorr signature (s, e) on the Grumpkin curve.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,29 +66,38 @@ fn generate_nonce(private_key: &GrumpkinScalar, message: &Fr) -> GrumpkinScalar 
     GrumpkinScalar::from_be_bytes_mod_order(&hash)
 }
 
-/// Compute the Schnorr challenge: `e = Blake2s(R.x || R.y || message)`.
-fn compute_challenge(r: &Point, message: &Fr) -> [u8; 32] {
+/// Compute the Schnorr challenge matching the Noir schnorr library:
+///
+/// ```text
+/// pedersen_h = pedersen_hash([R.x, public_key.x, public_key.y])
+/// e = blake2s(pedersen_h.to_be_bytes() || message)
+/// ```
+fn compute_challenge(r: &Point, public_key: &Point, message: &[u8]) -> [u8; 32] {
+    // Pedersen hash binds the nonce R to the signer's public key
+    let pedersen_h = pedersen_hash(&[r.x, public_key.x, public_key.y]);
+
     let mut hasher = Blake2s256::new();
-    hasher.update(r.x.to_be_bytes());
-    hasher.update(r.y.to_be_bytes());
-    hasher.update(message.to_be_bytes());
+    hasher.update(pedersen_h.to_be_bytes());
+    hasher.update(message);
     let hash = hasher.finalize();
     let mut out = [0u8; 32];
     out.copy_from_slice(&hash);
     out
 }
 
-/// Sign a message hash with a Grumpkin private key using Schnorr.
+/// Sign a message with a Grumpkin private key using Schnorr.
 ///
-/// The signing algorithm:
+/// The signing algorithm matches the Noir schnorr library:
 /// 1. `k = Blake2s(private_key || message)` (deterministic nonce)
 /// 2. `R = k * G`
-/// 3. `e = Blake2s(R.x || R.y || message)`
-/// 4. `s = k - private_key * e` (mod Grumpkin scalar order)
+/// 3. `public_key = private_key * G`
+/// 4. `e = Blake2s(pedersen_hash([R.x, public_key.x, public_key.y]) || message)`
+/// 5. `s = k - private_key * e` (mod Grumpkin scalar order)
 ///
 /// Returns a `SchnorrSignature` containing `(s, e)`.
 pub fn schnorr_sign(private_key: &GrumpkinScalar, message: &Fr) -> SchnorrSignature {
     let g = grumpkin::generator();
+    let public_key = grumpkin::scalar_mul(private_key, &g);
 
     // 1. Deterministic nonce
     let k = generate_nonce(private_key, message);
@@ -93,8 +105,8 @@ pub fn schnorr_sign(private_key: &GrumpkinScalar, message: &Fr) -> SchnorrSignat
     // 2. R = k * G
     let r = grumpkin::scalar_mul(&k, &g);
 
-    // 3. Challenge e = Blake2s(R.x || R.y || message)
-    let e_bytes = compute_challenge(&r, message);
+    // 3. Challenge: e = Blake2s(pedersen_hash([R.x, pubkey.x, pubkey.y]) || message_bytes)
+    let e_bytes = compute_challenge(&r, &public_key, &message.to_be_bytes());
     let e_scalar = GrumpkinScalar::from_be_bytes_mod_order(&e_bytes);
 
     // 4. s = k - private_key * e (mod Grumpkin scalar order)
@@ -108,9 +120,9 @@ pub fn schnorr_sign(private_key: &GrumpkinScalar, message: &Fr) -> SchnorrSignat
 
 /// Verify a Schnorr signature against a public key and message hash.
 ///
-/// The verification algorithm:
+/// The verification algorithm matches the Noir schnorr library:
 /// 1. `R' = s * G + e * public_key`
-/// 2. `e' = Blake2s(R'.x || R'.y || message)`
+/// 2. `e' = Blake2s(pedersen_hash([R'.x, public_key.x, public_key.y]) || message)`
 /// 3. Accept if `e == e'`
 pub fn schnorr_verify(public_key: &Point, message: &Fr, signature: &SchnorrSignature) -> bool {
     let g = grumpkin::generator();
@@ -123,8 +135,8 @@ pub fn schnorr_verify(public_key: &Point, message: &Fr, signature: &SchnorrSigna
     let e_pk = grumpkin::scalar_mul(&e_scalar, public_key);
     let r_prime = grumpkin::point_add(&s_g, &e_pk);
 
-    // e' = Blake2s(R'.x || R'.y || message)
-    let e_prime = compute_challenge(&r_prime, message);
+    // e' = Blake2s(pedersen_hash([R'.x, public_key.x, public_key.y]) || message)
+    let e_prime = compute_challenge(&r_prime, public_key, &message.to_be_bytes());
 
     signature.e == e_prime
 }
