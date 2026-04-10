@@ -160,10 +160,9 @@ impl SimulatedKernel {
         if is_private_only {
             // Step 4 (private-only): Compute unique note hashes
             let first_nullifier = execution_result.first_nullifier;
-            let mut rollup_nullifiers = siloed_nullifiers.clone();
-            if rollup_nullifiers.is_empty() {
-                rollup_nullifiers.push(first_nullifier);
-            }
+            // The protocol nullifier must always be at position 0.
+            let mut rollup_nullifiers = vec![first_nullifier];
+            rollup_nullifiers.extend(siloed_nullifiers.iter().copied());
             let unique_note_hashes: Vec<Fr> = siloed_note_hashes
                 .iter()
                 .enumerate()
@@ -217,25 +216,28 @@ impl SimulatedKernel {
                 min_revertible_counter,
             );
 
-            // Public-only transactions still need a first non-revertible nullifier in slot 0.
-            // Upstream simulator fixtures source this from the private execution result's
-            // first nullifier (protocol nullifier when there was no private nullifier emitted).
-            if nr_nullifiers.is_empty() {
-                nr_nullifiers.push(execution_result.first_nullifier);
-            }
+            // The protocol nullifier (derived from tx request hash) must always
+            // be at position 0 of the non-revertible nullifiers. The sequencer
+            // and nonce computation depend on this being the first nullifier.
+            nr_nullifiers.insert(0, execution_result.first_nullifier);
 
+            // Uniquify ALL note hashes, matching TS generateSimulatedProvingResult.
+            // The nonce generator is the first nullifier (protocol nullifier).
+            let nonce_generator = execution_result.first_nullifier;
             let nr_unique_note_hashes: Vec<Fr> = nr_note_hashes
                 .iter()
                 .enumerate()
-                .map(|(i, note_hash)| {
-                    if *note_hash == Fr::zero() {
+                .map(|(i, h)| {
+                    if *h == Fr::zero() {
                         Fr::zero()
                     } else {
-                        let nonce = compute_note_hash_nonce(&execution_result.first_nullifier, i);
-                        compute_unique_note_hash(&nonce, note_hash)
+                        let nonce = compute_note_hash_nonce(&nonce_generator, i);
+                        compute_unique_note_hash(&nonce, h)
                     }
                 })
                 .collect();
+            // Revertible note hashes are NOT uniquified for public txs —
+            // the sequencer/public kernel handles uniquification.
 
             // Build public call request arrays
             let mut nr_public_calls = Vec::new();

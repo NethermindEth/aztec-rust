@@ -201,10 +201,7 @@ impl<'a, N: AztecNode> UtilityExecutionOracle<'a, N> {
             // Misc
             "getRandomField" => Ok(vec![vec![Fr::random()]]),
             "assertCompatibleOracleVersion" => Ok(vec![]),
-            "log" => {
-                tracing::debug!("noir utility log oracle call");
-                Ok(vec![])
-            }
+            "log" => Ok(vec![]),
             "aes128Decrypt" => self.aes128_decrypt(&args),
             "getSharedSecret" => self.get_shared_secret(&args).await,
 
@@ -699,7 +696,10 @@ impl<'a, N: AztecNode> UtilityExecutionOracle<'a, N> {
                         randomness: request.randomness,
                         note_nonce: request.note_nonce,
                         note_hash: request.note_hash,
-                        siloed_nullifier: request.nullifier,
+                        siloed_nullifier: aztec_core::hash::silo_nullifier(
+                            &request.contract_address,
+                            &request.nullifier,
+                        ),
                         note_data: request.content,
                         nullified: false,
                         is_pending: false,
@@ -747,13 +747,15 @@ impl<'a, N: AztecNode> UtilityExecutionOracle<'a, N> {
     }
 
     async fn check_nullifier_exists(&self, args: &[Vec<Fr>]) -> Result<Vec<Vec<Fr>>, Error> {
-        let nullifier = args
+        let inner_nullifier = args
             .first()
             .and_then(|v| v.first())
             .ok_or_else(|| Error::InvalidData("missing nullifier".into()))?;
+        // Silo before looking up — the tree stores siloed nullifiers
+        let siloed = aztec_core::hash::silo_nullifier(&self.contract_address, inner_nullifier);
         let witness = self
             .node
-            .get_nullifier_membership_witness(0, nullifier)
+            .get_nullifier_membership_witness(0, &siloed)
             .await?;
         Ok(vec![vec![Fr::from(witness.is_some())]])
     }
