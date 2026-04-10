@@ -345,10 +345,10 @@ fn squash_transient_side_effects(
         .cloned()
         .collect();
 
-    // Filter private logs whose note hash was squashed
+    // Filter private logs whose associated note hash was squashed
     let filtered_logs: Vec<PrivateLogData> = private_logs
         .iter()
-        .filter(|log| !squashed_note_hash_counters.contains(&log.counter))
+        .filter(|log| !squashed_note_hash_counters.contains(&log.note_hash_counter))
         .cloned()
         .collect();
 

@@ -56,6 +56,9 @@ pub struct PrivateExecutionOracle<'a, N: AztecNode> {
     nullifiers: Vec<ScopedNullifier>,
     /// Maps note hash counter -> nullifier counter.
     note_hash_nullifier_counter_map: std::collections::HashMap<u32, u32>,
+    /// Siloed nullifier values of DB notes consumed during this execution.
+    /// Used to prevent returning already-consumed persistent notes from get_notes.
+    consumed_db_nullifiers: std::collections::HashSet<Fr>,
     /// Private logs emitted.
     private_logs: Vec<PrivateLogData>,
     /// Contract class logs emitted.
@@ -183,11 +186,13 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             let base = i * PRIVATE_LOG_DATA_LEN;
             let fields: Vec<Fr> = logs_slice[base..base + PRIVATE_LOG_FIELDS].to_vec();
             let emitted_length = logs_slice[base + PRIVATE_LOG_FIELDS].to_usize() as u32;
+            let note_hash_counter = logs_slice[base + PRIVATE_LOG_FIELDS + 1].to_usize() as u32;
             let counter = logs_slice[base + PRIVATE_LOG_DATA_LEN - 1].to_usize() as u32;
             if emitted_length > 0 {
                 logs.push(PrivateLogData {
                     fields,
                     emitted_length,
+                    note_hash_counter,
                     counter,
                     contract_address,
                 });
@@ -294,6 +299,7 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             note_hashes: Vec::new(),
             nullifiers: Vec::new(),
             note_hash_nullifier_counter_map: std::collections::HashMap::new(),
+            consumed_db_nullifiers: std::collections::HashSet::new(),
             private_logs: Vec::new(),
             contract_class_logs: Vec::new(),
             offchain_effects: Vec::new(),
@@ -614,6 +620,76 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             })
             .await?;
 
+        // Collect note hash values that were nullified (from counter map)
+        // for pending note filtering.
+        let mut nullified_hash_counts: std::collections::HashMap<Fr, usize> =
+            std::collections::HashMap::new();
+        for nh_counter in self.note_hash_nullifier_counter_map.keys() {
+            if let Some(nh) = self
+                .note_hashes
+                .iter()
+                .find(|h| h.note_hash.counter == *nh_counter)
+            {
+                *nullified_hash_counts.entry(nh.note_hash.value).or_insert(0) += 1;
+            }
+        }
+
+        // Filter out DB notes that have been consumed during this execution.
+        // We check the note's siloed_nullifier against consumed_db_nullifiers
+        // (which tracks siloed nullifiers computed from notify_nullified_note).
+        notes.retain(|n| {
+            if n.siloed_nullifier.is_zero() {
+                return true;
+            }
+            !self.consumed_db_nullifiers.contains(&n.siloed_nullifier)
+        });
+
+        // Include pending notes created during this execution that match the
+        // query filters (mirrors upstream `noteCache.getNotes(...)` merge).
+        // For notes with the same hash, only skip as many as were nullified.
+        let mut consumed_hash_counts: std::collections::HashMap<Fr, usize> =
+            std::collections::HashMap::new();
+        for pending in &self.new_notes {
+            if pending.contract_address != self.contract_address {
+                continue;
+            }
+            if pending.storage_slot != storage_slot {
+                continue;
+            }
+            if let Some(owner_addr) = owner {
+                if pending.owner != owner_addr {
+                    continue;
+                }
+            }
+            // Check the note hasn't been nullified: skip up to the number
+            // of times this hash was nullified.
+            if let Some(&max_nullified) = nullified_hash_counts.get(&pending.note_hash) {
+                let already_consumed = consumed_hash_counts.entry(pending.note_hash).or_insert(0);
+                if *already_consumed < max_nullified {
+                    *already_consumed += 1;
+                    continue;
+                }
+            }
+            notes.push(StoredNote {
+                contract_address: pending.contract_address,
+                owner: pending.owner,
+                storage_slot: pending.storage_slot,
+                randomness: pending.randomness,
+                note_nonce: Fr::zero(), // nonce unknown during private execution
+                note_hash: pending.note_hash,
+                siloed_nullifier: Fr::zero(),
+                note_data: pending.note_items.clone(),
+                nullified: false,
+                is_pending: true,
+                nullification_block_number: None,
+                leaf_index: None,
+                block_number: None,
+                tx_index_in_block: None,
+                note_index_in_tx: None,
+                scopes: vec![pending.owner],
+            });
+        }
+
         // Apply select-clause filtering (comparators).
         let selects = super::pick_notes::parse_select_clauses(args);
         notes = super::pick_notes::select_notes(notes, &selects);
@@ -644,10 +720,19 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             .first()
             .and_then(|v| v.first())
             .ok_or_else(|| Error::InvalidData("missing note_hash".into()))?;
-        let exists = self
+        // Check the persistent store first.
+        let mut exists = self
             .note_store
             .has_note(&self.contract_address, note_hash)
             .await?;
+        // Also check pending note hashes from the current execution
+        // (notes created by sibling calls within the same TX).
+        if !exists {
+            exists = self
+                .note_hashes
+                .iter()
+                .any(|nh| nh.note_hash.value == *note_hash);
+        }
         Ok(vec![vec![Fr::from(exists)]])
     }
 
@@ -728,6 +813,10 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
                 self.side_effect_counter += 1;
                 self.side_effect_counter
             });
+
+        // Track the siloed nullifier so DB notes can be filtered in get_notes.
+        let siloed = aztec_core::hash::silo_nullifier(&self.contract_address, &inner_nullifier);
+        self.consumed_db_nullifiers.insert(siloed);
 
         self.nullifiers.push(ScopedNullifier {
             nullifier: Nullifier {
@@ -852,6 +941,7 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
         self.private_logs.push(PrivateLogData {
             fields,
             emitted_length,
+            note_hash_counter: 0,
             counter,
             contract_address: self.contract_address,
         });
@@ -1281,6 +1371,22 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
         nested_oracle.min_revertible_side_effect_counter = self.min_revertible_side_effect_counter;
         // Share context witness prefix (block header + tx_context) for nested calls.
         nested_oracle.context_witness_prefix = self.context_witness_prefix.clone();
+        // Share parent state so nested calls can see notes/hashes from sibling
+        // calls. Track inherited sizes to avoid duplicating during merge.
+        nested_oracle.new_notes = self.new_notes.clone();
+        nested_oracle.note_hashes = self.note_hashes.clone();
+        nested_oracle.nullifiers = self.nullifiers.clone();
+        nested_oracle.note_hash_nullifier_counter_map =
+            self.note_hash_nullifier_counter_map.clone();
+        nested_oracle.consumed_db_nullifiers = self.consumed_db_nullifiers.clone();
+        let inherited_new_notes = self.new_notes.len();
+        let inherited_note_hashes = self.note_hashes.len();
+        let inherited_nullifiers = self.nullifiers.len();
+        let inherited_counter_map_keys: std::collections::HashSet<u32> = self
+            .note_hash_nullifier_counter_map
+            .keys()
+            .copied()
+            .collect();
 
         // Execute the nested private function.
         let acvm_output = super::acvm_executor::AcvmExecutor::execute_private(
@@ -1291,7 +1397,34 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
         )
         .await?;
 
-        let end_counter = nested_oracle.side_effect_counter;
+        // Compute the actual end counter from the maximum counter across all
+        // side effects produced by the nested call. The oracle's side_effect_counter
+        // may not advance when counters come from circuit args, so we scan
+        // note hashes, nullifiers, and logs to find the true maximum.
+        let end_counter = {
+            let nh_max = nested_oracle
+                .note_hashes
+                .iter()
+                .skip(inherited_note_hashes)
+                .map(|nh| nh.note_hash.counter)
+                .max()
+                .unwrap_or(0);
+            let null_max = nested_oracle
+                .nullifiers
+                .iter()
+                .skip(inherited_nullifiers)
+                .map(|n| n.nullifier.counter)
+                .max()
+                .unwrap_or(0);
+            let log_max = nested_oracle
+                .private_logs
+                .iter()
+                .map(|l| l.counter)
+                .max()
+                .unwrap_or(0);
+            let oracle_counter = nested_oracle.side_effect_counter;
+            nh_max.max(null_max).max(log_max).max(oracle_counter)
+        };
 
         // Extract returns_hash and end_side_effect_counter from the PCPI
         // in the witness, not from ACIR return values. The PCPI starts at
@@ -1366,18 +1499,38 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
         }
 
         // Merge side effects from the nested execution into the parent.
-        // Circuit-constrained side effects first (if oracle didn't produce any):
-        let oracle_has_note_hashes = !nested_oracle.note_hashes.is_empty();
-        self.note_hashes.extend(nested_oracle.note_hashes);
+        // Skip inherited items to avoid duplicates — only take new additions.
+        let new_note_hashes: Vec<_> = nested_oracle
+            .note_hashes
+            .into_iter()
+            .skip(inherited_note_hashes)
+            .collect();
+        let oracle_has_note_hashes = !new_note_hashes.is_empty();
+        self.note_hashes.extend(new_note_hashes);
         if !oracle_has_note_hashes && !circuit_note_hashes.is_empty() {
             self.note_hashes.extend(circuit_note_hashes);
         }
-        self.nullifiers.extend(nested_oracle.nullifiers);
-        self.private_logs.extend(nested_oracle.private_logs);
-        self.private_logs.extend(circuit_logs);
+        self.nullifiers.extend(
+            nested_oracle
+                .nullifiers
+                .into_iter()
+                .skip(inherited_nullifiers),
+        );
+        // Prefer circuit-extracted private logs (which have the correct
+        // note_hash_counter) over oracle-emitted logs (which have 0).
+        if !circuit_logs.is_empty() {
+            self.private_logs.extend(circuit_logs);
+        } else {
+            self.private_logs.extend(nested_oracle.private_logs);
+        }
         self.contract_class_logs
             .extend(nested_oracle.contract_class_logs);
-        self.new_notes.extend(nested_oracle.new_notes);
+        self.new_notes.extend(
+            nested_oracle
+                .new_notes
+                .into_iter()
+                .skip(inherited_new_notes),
+        );
         self.note_hash_read_requests
             .extend(nested_oracle.note_hash_read_requests);
         self.nullifier_read_requests
@@ -1388,11 +1541,16 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             .extend(nested_oracle.public_function_calldata);
         self.offchain_effects.extend(nested_oracle.offchain_effects);
         for (k, v) in nested_oracle.note_hash_nullifier_counter_map {
-            self.note_hash_nullifier_counter_map.insert(k, v);
+            if !inherited_counter_map_keys.contains(&k) {
+                self.note_hash_nullifier_counter_map.insert(k, v);
+            }
         }
         if nested_oracle.public_teardown_call_request.is_some() {
             self.public_teardown_call_request = nested_oracle.public_teardown_call_request;
         }
+        // Merge consumed DB nullifiers from nested call.
+        self.consumed_db_nullifiers
+            .extend(&nested_oracle.consumed_db_nullifiers);
 
         // Advance the parent's side effect counter.
         self.side_effect_counter = end_counter;

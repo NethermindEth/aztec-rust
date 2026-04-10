@@ -234,6 +234,9 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
                 else {
                     continue;
                 };
+                // Notes that were both created and nullified in this execution
+                // are transient (squashed by the kernel). Mark them as nullified
+                // so they don't appear as active in subsequent queries.
                 let stored = crate::stores::note_store::StoredNote {
                     contract_address: note.contract_address,
                     owner: note.owner,
@@ -243,7 +246,7 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
                     note_hash: note.note_hash,
                     siloed_nullifier,
                     note_data: note.note_items.clone(),
-                    nullified: false,
+                    nullified: true,
                     is_pending: true,
                     nullification_block_number: None,
                     leaf_index: None,
@@ -785,6 +788,7 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
                     private_logs: vec![crate::execution::execution_result::PrivateLogData {
                         fields: emitted_private_log_fields,
                         emitted_length: 15,
+                        note_hash_counter: 0,
                         counter: 3,
                         contract_address,
                     }],
@@ -1419,11 +1423,13 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
             let base = i * PRIVATE_LOG_DATA_LEN;
             let fields: Vec<Fr> = logs_slice[base..base + PRIVATE_LOG_FIELDS].to_vec();
             let emitted_length = logs_slice[base + PRIVATE_LOG_FIELDS].to_usize() as u32;
+            let note_hash_counter = logs_slice[base + PRIVATE_LOG_FIELDS + 1].to_usize() as u32;
             let counter = logs_slice[base + PRIVATE_LOG_DATA_LEN - 1].to_usize() as u32;
             if emitted_length > 0 {
                 logs.push(crate::execution::PrivateLogData {
                     fields,
                     emitted_length,
+                    note_hash_counter,
                     counter,
                     contract_address,
                 });

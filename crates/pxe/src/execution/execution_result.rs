@@ -213,6 +213,8 @@ pub struct PrivateLogData {
     pub fields: Vec<Fr>,
     /// Emitted length (non-padded).
     pub emitted_length: u32,
+    /// Counter of the note hash this log is associated with (for squashing).
+    pub note_hash_counter: u32,
     /// Side-effect counter.
     pub counter: u32,
     /// Contract that emitted this log.
