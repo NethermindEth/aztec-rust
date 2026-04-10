@@ -533,7 +533,10 @@ impl AztecNode for HttpNodeClient {
         tree_id: &str,
         leaves: &[Fr],
     ) -> Result<Vec<Option<u64>>, Error> {
-        self.transport
+        // The node returns InBlock<bigint>[] — objects with { data, l2BlockNumber, l2BlockHash }
+        // or null for leaves not found. We extract just the `data` field.
+        let raw: Vec<Option<serde_json::Value>> = self
+            .transport
             .call(
                 "node_findLeavesIndexes",
                 serde_json::json!([
@@ -542,7 +545,18 @@ impl AztecNode for HttpNodeClient {
                     leaves
                 ]),
             )
-            .await
+            .await?;
+        Ok(raw
+            .into_iter()
+            .map(|v| {
+                v.and_then(|val| {
+                    // Could be a plain number or an InBlock object { data: N }
+                    val.get("data")
+                        .and_then(|d| d.as_u64())
+                        .or_else(|| val.as_u64())
+                })
+            })
+            .collect())
     }
 
     async fn get_tx_by_hash(&self, tx_hash: &TxHash) -> Result<Option<serde_json::Value>, Error> {
