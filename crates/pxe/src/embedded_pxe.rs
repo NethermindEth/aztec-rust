@@ -294,7 +294,7 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
             request.first_call_args_hash,
             &request.tx_context,
             request.function_selector,
-            false, // isStatic — upstream default
+            true, // isPrivate — the account entrypoint is a private function
             request.salt,
         ))
     }
@@ -1879,6 +1879,10 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
         opts: ExecuteUtilityOpts,
     ) -> Result<UtilityExecutionResult, Error> {
         self.sync_block_state().await?;
+        // Always wipe the contract sync cache before utility execution.
+        // This ensures we pick up nullifier-tree changes from recently
+        // mined transactions (which may share the same block number).
+        self.contract_sync_service.wipe().await;
         let anchor = self.get_anchor_block_header().await?;
 
         // Look up the artifact for the target contract

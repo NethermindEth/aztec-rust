@@ -40,6 +40,7 @@ impl<'a, N: AztecNode> NoteService<'a, N> {
         &self,
         contract_address: &AztecAddress,
         scopes: &[AztecAddress],
+        anchor_block_number: u64,
     ) -> Result<u64, Error> {
         let filter = NoteFilter {
             contract_address: Some(*contract_address),
@@ -59,8 +60,15 @@ impl<'a, N: AztecNode> NoteService<'a, N> {
         for chunk in notes.chunks(MAX_RPC_LEN) {
             let nullifiers: Vec<Fr> = chunk.iter().map(|n| n.siloed_nullifier).collect();
 
-            // Check which nullifiers exist in the tree
-            let indexes = self.node.find_leaves_indexes(0, "1", &nullifiers).await?;
+            // Check nullifiers exist in tree using membership witness
+            let mut indexes: Vec<Option<u64>> = Vec::with_capacity(nullifiers.len());
+            for nullifier in &nullifiers {
+                let witness = self
+                    .node
+                    .get_nullifier_membership_witness(anchor_block_number, nullifier)
+                    .await?;
+                indexes.push(witness.map(|_| 0));
+            }
 
             // Mark found nullifiers
             let mut to_nullify = Vec::new();

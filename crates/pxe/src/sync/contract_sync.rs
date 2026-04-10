@@ -134,8 +134,11 @@ impl<N: AztecNode> ContractSyncService<N> {
         );
 
         let note_service = NoteService::new(&*self.node, &self.note_store);
+        // Use the latest block from the node for nullifier lookups
+        let anchor_block = self.node.get_block_number().await.unwrap_or(0);
 
-        let nullified_future = note_service.sync_note_nullifiers(contract_address, scopes);
+        let nullified_future =
+            note_service.sync_note_nullifiers(contract_address, scopes, anchor_block);
         let sync_state_future = utility_executor(*contract_address, scopes.to_vec());
         let (nullified, ()) = tokio::try_join!(nullified_future, sync_state_future)?;
 
