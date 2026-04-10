@@ -7,6 +7,8 @@
 //! ```
 
 #![allow(
+    clippy::await_holding_lock,
+    clippy::doc_markdown,
     clippy::expect_used,
     clippy::print_stderr,
     clippy::similar_names,
@@ -181,7 +183,7 @@ fn event_selector_from_signature(signature: &str) -> EventSelector {
     EventSelector(FunctionSelector::from_signature(signature).to_field())
 }
 
-/// EventMetadataDefinition for ExampleEvent0 { value0: Field, value1: Field }
+/// `EventMetadataDefinition` for `ExampleEvent0` { value0: Field, value1: Field }
 fn example_event0_metadata() -> EventMetadataDefinition {
     EventMetadataDefinition {
         event_selector: event_selector_from_signature("ExampleEvent0(Field,Field)"),
@@ -204,7 +206,7 @@ fn example_event0_metadata() -> EventMetadataDefinition {
     }
 }
 
-/// EventMetadataDefinition for ExampleEvent1 { value2: AztecAddress, value3: u8 }
+/// `EventMetadataDefinition` for `ExampleEvent1` { value2: `AztecAddress`, value3: u8 }
 fn example_event1_metadata() -> EventMetadataDefinition {
     EventMetadataDefinition {
         event_selector: event_selector_from_signature("ExampleEvent1((Field),u8)"),
@@ -237,8 +239,8 @@ fn example_event1_metadata() -> EventMetadataDefinition {
     }
 }
 
-/// EventMetadataDefinition for ExampleNestedEvent { nested: NestedStruct, extra_value: Field }
-/// where NestedStruct { a: Field, b: Field, c: AztecAddress }
+/// `EventMetadataDefinition` for `ExampleNestedEvent` { nested: `NestedStruct`, `extra_value`: Field }
+/// where `NestedStruct` { a: Field, b: Field, c: `AztecAddress` }
 fn example_nested_event_metadata() -> EventMetadataDefinition {
     EventMetadataDefinition {
         event_selector: event_selector_from_signature(
@@ -315,7 +317,7 @@ async fn deploy_test_log(
     (result.instance.address, artifact)
 }
 
-/// Call a function on the TestLog contract and return the tx hash.
+/// Call a function on the `TestLog` contract and return the tx hash.
 async fn call_test_log(
     wallet: &TestWallet,
     artifact: &ContractArtifact,
@@ -359,7 +361,7 @@ async fn get_block_number(node: &HttpNodeClient, tx_hash: &TxHash) -> u64 {
     receipt.block_number.expect("block number in receipt")
 }
 
-/// Build an AztecAddress AbiValue (struct with inner field).
+/// Build an `AztecAddress` `AbiValue` (struct with inner field).
 fn abi_address(address: AztecAddress) -> AbiValue {
     let mut fields = BTreeMap::new();
     fields.insert("inner".to_owned(), AbiValue::Field(Fr::from(address)));
@@ -829,7 +831,7 @@ fn extract_private_log_tags(block_json: &serde_json::Value) -> Vec<String> {
                     if let Some(fields) = fields {
                         // Skip empty logs (all fields are zero)
                         let is_empty = fields.iter().all(|f| {
-                            f.as_str().map_or(true, |s| {
+                            f.as_str().is_none_or(|s| {
                                 s == "0x0000000000000000000000000000000000000000000000000000000000000000"
                                     || s == "0x0"
                                     || s == "0"
