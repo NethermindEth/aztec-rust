@@ -141,9 +141,7 @@ async fn register_account_for_authwit(
         .expect("register account instance");
 }
 
-async fn create_wallet(
-    primary: ImportedTestAccount,
-) -> Option<(TestWallet, AztecAddress)> {
+async fn create_wallet(primary: ImportedTestAccount) -> Option<(TestWallet, AztecAddress)> {
     let url = node_url();
     let node = create_aztec_node_client(&url);
     if let Err(err) = node.get_node_info().await {
@@ -241,9 +239,7 @@ fn build_call(
 #[tokio::test]
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn emits_public_nullifier_then_tries_same_nullifier() {
-    let (wallet, default_account) = create_wallet(TEST_ACCOUNT_0)
-        .await
-        .expect("wallet setup");
+    let (wallet, default_account) = create_wallet(TEST_ACCOUNT_0).await.expect("wallet setup");
 
     let artifact = load_test_contract_artifact();
 
