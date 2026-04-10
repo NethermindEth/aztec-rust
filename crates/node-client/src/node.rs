@@ -84,7 +84,48 @@ pub struct PublicLogFilter {
     pub after_log: Option<LogId>,
 }
 
+/// Identifier for a public log entry, as returned by the node.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicLogId {
+    /// Block number containing the log.
+    pub block_number: u64,
+    /// Hash of the block containing the log.
+    #[serde(default)]
+    pub block_hash: Option<String>,
+    /// Hash of the transaction that emitted the log.
+    #[serde(default)]
+    pub tx_hash: Option<TxHash>,
+    /// Index of the transaction within the block.
+    #[serde(default)]
+    pub tx_index: Option<u64>,
+    /// Index of the log within the block.
+    pub log_index: u64,
+}
+
+/// The log body as returned by the node.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicLogBody {
+    /// Address of the contract that emitted the log.
+    pub contract_address: AztecAddress,
+    /// Field element data comprising the log payload.
+    pub fields: Vec<Fr>,
+}
+
 /// A single public log entry returned by the node.
+///
+/// The node returns `{ id: { blockNumber, txHash, logIndex, ... }, log: { contractAddress, fields } }`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicLogEntry {
+    /// Log identifier with block/tx/index metadata.
+    pub id: PublicLogId,
+    /// Log body with contract address and field data.
+    pub log: PublicLogBody,
+}
+
+/// A flattened view of a public log for downstream consumers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicLog {
@@ -99,6 +140,26 @@ pub struct PublicLog {
     pub block_number: u64,
     /// Index of the log within the block.
     pub log_index: u64,
+}
+
+impl From<PublicLogEntry> for PublicLog {
+    fn from(entry: PublicLogEntry) -> Self {
+        Self {
+            contract_address: entry.log.contract_address,
+            data: entry.log.fields,
+            tx_hash: entry.id.tx_hash,
+            block_number: entry.id.block_number,
+            log_index: entry.id.log_index,
+        }
+    }
+}
+
+/// Raw response from the node's `getPublicLogs` RPC.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawPublicLogsResponse {
+    logs: Vec<PublicLogEntry>,
+    max_logs_hit: bool,
 }
 
 /// Response from a public logs query.
@@ -335,9 +396,14 @@ impl AztecNode for HttpNodeClient {
     }
 
     async fn get_public_logs(&self, filter: PublicLogFilter) -> Result<PublicLogsResponse, Error> {
-        self.transport
+        let raw: RawPublicLogsResponse = self
+            .transport
             .call("node_getPublicLogs", serde_json::json!([filter]))
-            .await
+            .await?;
+        Ok(PublicLogsResponse {
+            logs: raw.logs.into_iter().map(PublicLog::from).collect(),
+            max_logs_hit: raw.max_logs_hit,
+        })
     }
 
     async fn send_tx(&self, tx: &serde_json::Value) -> Result<(), Error> {
