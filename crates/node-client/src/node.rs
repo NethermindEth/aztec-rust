@@ -536,7 +536,11 @@ impl AztecNode for HttpNodeClient {
         self.transport
             .call(
                 "node_findLeavesIndexes",
-                serde_json::json!([block_param_json(block_number), tree_id, leaves]),
+                serde_json::json!([
+                    block_param_json(block_number),
+                    tree_id.parse::<u8>().unwrap_or(0),
+                    leaves
+                ]),
             )
             .await
     }
