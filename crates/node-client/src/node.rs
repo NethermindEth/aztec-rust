@@ -42,6 +42,12 @@ pub struct NodeInfo {
     pub protocol_contract_addresses: serde_json::Value,
     /// Whether the node is running with real (non-mock) proofs.
     pub real_proofs: bool,
+    /// L2 circuits verification key tree root.
+    #[serde(default)]
+    pub l2_circuits_vk_tree_root: Option<String>,
+    /// L2 protocol contracts hash.
+    #[serde(default)]
+    pub l2_protocol_contracts_hash: Option<String>,
 }
 
 /// Identifies a specific log entry within a block.
@@ -105,6 +111,18 @@ pub struct PublicLogsResponse {
     pub max_logs_hit: bool,
 }
 
+/// Result of validating a transaction against current node state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "lowercase")]
+pub enum TxValidationResult {
+    /// Transaction is valid for current inclusion rules.
+    Valid,
+    /// Transaction is invalid with one or more validator reasons.
+    Invalid { reason: Vec<String> },
+    /// Transaction validation was skipped with explanation.
+    Skipped { reason: Vec<String> },
+}
+
 /// Options controlling `wait_for_tx` polling behavior.
 #[derive(Debug, Clone)]
 pub struct WaitOpts {
@@ -151,7 +169,7 @@ pub trait AztecNode: Send + Sync {
     /// Query public logs matching the given filter.
     async fn get_public_logs(&self, filter: PublicLogFilter) -> Result<PublicLogsResponse, Error>;
     /// Send a proven transaction to the network for inclusion.
-    async fn send_tx(&self, tx: &serde_json::Value) -> Result<TxHash, Error>;
+    async fn send_tx(&self, tx: &serde_json::Value) -> Result<(), Error>;
     /// Get a publicly deployed contract instance by address.
     async fn get_contract(
         &self,
@@ -219,7 +237,7 @@ pub trait AztecNode: Send + Sync {
     ) -> Result<serde_json::Value, Error>;
 
     /// Validate a simulated transaction.
-    async fn is_valid_tx(&self, tx: &serde_json::Value) -> Result<bool, Error>;
+    async fn is_valid_tx(&self, tx: &serde_json::Value) -> Result<TxValidationResult, Error>;
 
     /// Get private logs by tags for note discovery.
     async fn get_private_logs_by_tags(&self, tags: &[Fr]) -> Result<serde_json::Value, Error>;
@@ -237,6 +255,12 @@ pub trait AztecNode: Send + Sync {
         signatures: &[String],
     ) -> Result<(), Error>;
 
+    /// Get the effect of a transaction by its hash.
+    ///
+    /// Returns the full tx effect including nullifiers, block metadata,
+    /// and positional indexes needed for event validation.
+    async fn get_tx_effect(&self, tx_hash: &TxHash) -> Result<Option<serde_json::Value>, Error>;
+
     // --- Phase 2: methods required for EmbeddedPxe proving ---
 
     /// Get a block hash membership witness in the archive tree.
@@ -253,6 +277,12 @@ pub trait AztecNode: Send + Sync {
         tree_id: &str,
         leaves: &[Fr],
     ) -> Result<Vec<Option<u64>>, Error>;
+
+    /// Get a full transaction by its hash.
+    ///
+    /// Returns the wire-format Tx including the serialized kernel public inputs
+    /// buffer and chonk proof.
+    async fn get_tx_by_hash(&self, tx_hash: &TxHash) -> Result<Option<serde_json::Value>, Error>;
 }
 
 // ---------------------------------------------------------------------------
@@ -310,9 +340,9 @@ impl AztecNode for HttpNodeClient {
             .await
     }
 
-    async fn send_tx(&self, tx: &serde_json::Value) -> Result<TxHash, Error> {
+    async fn send_tx(&self, tx: &serde_json::Value) -> Result<(), Error> {
         self.transport
-            .call("node_sendTx", serde_json::json!([tx]))
+            .call_void("node_sendTx", serde_json::json!([tx]))
             .await
     }
 
@@ -321,13 +351,13 @@ impl AztecNode for HttpNodeClient {
         address: &AztecAddress,
     ) -> Result<Option<ContractInstanceWithAddress>, Error> {
         self.transport
-            .call("node_getContract", serde_json::json!([address]))
+            .call_optional("node_getContract", serde_json::json!([address]))
             .await
     }
 
     async fn get_contract_class(&self, id: &Fr) -> Result<Option<serde_json::Value>, Error> {
         self.transport
-            .call("node_getContractClass", serde_json::json!([id]))
+            .call_optional("node_getContractClass", serde_json::json!([id]))
             .await
     }
 
@@ -342,7 +372,7 @@ impl AztecNode for HttpNodeClient {
 
     async fn get_block(&self, block_number: u64) -> Result<Option<serde_json::Value>, Error> {
         self.transport
-            .call(
+            .call_optional(
                 "node_getBlock",
                 serde_json::json!([block_param_json(block_number)]),
             )
@@ -355,7 +385,7 @@ impl AztecNode for HttpNodeClient {
         note_hash: &Fr,
     ) -> Result<Option<serde_json::Value>, Error> {
         self.transport
-            .call(
+            .call_optional(
                 "node_getNoteHashMembershipWitness",
                 serde_json::json!([block_param_json(block_number), note_hash]),
             )
@@ -368,7 +398,7 @@ impl AztecNode for HttpNodeClient {
         nullifier: &Fr,
     ) -> Result<Option<serde_json::Value>, Error> {
         self.transport
-            .call(
+            .call_optional(
                 "node_getNullifierMembershipWitness",
                 serde_json::json!([block_param_json(block_number), nullifier]),
             )
@@ -381,7 +411,7 @@ impl AztecNode for HttpNodeClient {
         nullifier: &Fr,
     ) -> Result<Option<serde_json::Value>, Error> {
         self.transport
-            .call(
+            .call_optional(
                 "node_getLowNullifierMembershipWitness",
                 serde_json::json!([block_param_json(block_number), nullifier]),
             )
@@ -408,7 +438,7 @@ impl AztecNode for HttpNodeClient {
         leaf_slot: &Fr,
     ) -> Result<Option<serde_json::Value>, Error> {
         self.transport
-            .call(
+            .call_optional(
                 "node_getPublicDataWitness",
                 serde_json::json!([block_param_json(block_number), leaf_slot]),
             )
@@ -441,7 +471,7 @@ impl AztecNode for HttpNodeClient {
             .await
     }
 
-    async fn is_valid_tx(&self, tx: &serde_json::Value) -> Result<bool, Error> {
+    async fn is_valid_tx(&self, tx: &serde_json::Value) -> Result<TxValidationResult, Error> {
         self.transport
             .call("node_isValidTx", serde_json::json!([tx]))
             .await
@@ -478,13 +508,19 @@ impl AztecNode for HttpNodeClient {
             .await
     }
 
+    async fn get_tx_effect(&self, tx_hash: &TxHash) -> Result<Option<serde_json::Value>, Error> {
+        self.transport
+            .call_optional("node_getTxEffect", serde_json::json!([tx_hash]))
+            .await
+    }
+
     async fn get_block_hash_membership_witness(
         &self,
         block_number: u64,
         block_hash: &Fr,
     ) -> Result<Option<serde_json::Value>, Error> {
         self.transport
-            .call(
+            .call_optional(
                 "node_getBlockHashMembershipWitness",
                 serde_json::json!([block_param_json(block_number), block_hash]),
             )
@@ -502,6 +538,12 @@ impl AztecNode for HttpNodeClient {
                 "node_findLeavesIndexes",
                 serde_json::json!([block_param_json(block_number), tree_id, leaves]),
             )
+            .await
+    }
+
+    async fn get_tx_by_hash(&self, tx_hash: &TxHash) -> Result<Option<serde_json::Value>, Error> {
+        self.transport
+            .call_optional("node_getTxByHash", serde_json::json!([tx_hash]))
             .await
     }
 }
@@ -720,6 +762,8 @@ mod tests {
             enr: None,
             l1_contract_addresses: serde_json::json!({}),
             protocol_contract_addresses: serde_json::json!({}),
+            l2_circuits_vk_tree_root: None,
+            l2_protocol_contracts_hash: None,
             real_proofs: true,
         };
         let json = serde_json::to_string(&info).unwrap();
@@ -874,6 +918,8 @@ mod tests {
                 enr: None,
                 l1_contract_addresses: serde_json::json!({}),
                 protocol_contract_addresses: serde_json::json!({}),
+                l2_circuits_vk_tree_root: None,
+                l2_protocol_contracts_hash: None,
                 real_proofs: false,
             }
         }
@@ -962,8 +1008,8 @@ mod tests {
             })
         }
 
-        async fn send_tx(&self, _tx: &serde_json::Value) -> Result<TxHash, Error> {
-            Ok(TxHash::zero())
+        async fn send_tx(&self, _tx: &serde_json::Value) -> Result<(), Error> {
+            Ok(())
         }
 
         async fn get_contract(
@@ -981,6 +1027,12 @@ mod tests {
             Ok(serde_json::json!({"blockNumber": 1}))
         }
         async fn get_block(&self, _block_number: u64) -> Result<Option<serde_json::Value>, Error> {
+            Ok(None)
+        }
+        async fn get_tx_effect(
+            &self,
+            _tx_hash: &TxHash,
+        ) -> Result<Option<serde_json::Value>, Error> {
             Ok(None)
         }
         async fn get_note_hash_membership_witness(
@@ -1033,8 +1085,8 @@ mod tests {
         ) -> Result<serde_json::Value, Error> {
             Ok(serde_json::Value::Null)
         }
-        async fn is_valid_tx(&self, _tx: &serde_json::Value) -> Result<bool, Error> {
-            Ok(true)
+        async fn is_valid_tx(&self, _tx: &serde_json::Value) -> Result<TxValidationResult, Error> {
+            Ok(TxValidationResult::Valid)
         }
         async fn get_private_logs_by_tags(&self, _tags: &[Fr]) -> Result<serde_json::Value, Error> {
             Ok(serde_json::json!([]))
@@ -1066,6 +1118,12 @@ mod tests {
             _leaves: &[Fr],
         ) -> Result<Vec<Option<u64>>, Error> {
             Ok(vec![])
+        }
+        async fn get_tx_by_hash(
+            &self,
+            _tx_hash: &TxHash,
+        ) -> Result<Option<serde_json::Value>, Error> {
+            Ok(None)
         }
     }
 
