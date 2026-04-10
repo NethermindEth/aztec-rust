@@ -88,6 +88,10 @@ pub mod node {
 pub mod pxe {
     pub use aztec_pxe_client::pxe::*;
 }
+/// Embedded PXE implementation (in-process, client-side).
+pub mod embedded_pxe {
+    pub use aztec_pxe::*;
+}
 /// Transaction types, receipts, statuses, and execution payloads.
 pub mod tx {
     pub use aztec_core::tx::*;
