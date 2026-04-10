@@ -568,6 +568,18 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
             return Some("publish_for_public_execution");
         }
 
+        // AuthRegistry protocol contract
+        if *addr == protocol_contract_address::auth_registry() {
+            if sel
+                == aztec_core::abi::FunctionSelector::from_signature("set_authorized(Field,bool)")
+            {
+                return Some("set_authorized(Field,bool)");
+            }
+            if sel == aztec_core::abi::FunctionSelector::from_signature("consume((Field),Field)") {
+                return Some("consume((Field),Field)");
+            }
+        }
+
         None
     }
 
@@ -797,6 +809,70 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
         }
 
         Ok(None)
+    }
+
+    /// Handle public function calls to protocol contracts that may not be
+    /// registered in the local contract store (e.g. AuthRegistry).
+    ///
+    /// For public calls the PXE only needs to build a `PublicCallRequestData`;
+    /// it does not execute the function — that happens on the sequencer.
+    fn protocol_public_execution(
+        contract_address: AztecAddress,
+        function_name: &str,
+        encoded_args: &[Fr],
+        origin: AztecAddress,
+        first_nullifier: Fr,
+        hide_msg_sender: bool,
+        is_static_call: bool,
+    ) -> Result<Option<CallExecutionBundle>, Error> {
+        use crate::execution::execution_result::{
+            PrivateCallExecutionResult, PrivateExecutionResult, PublicCallRequestData,
+        };
+
+        // Only handle known protocol contract addresses.
+        if contract_address != protocol_contract_address::auth_registry() {
+            return Ok(None);
+        }
+
+        // Compute selector from function name.
+        let selector_fr: Fr = FunctionSelector::from_signature(function_name).into();
+        let mut calldata = vec![selector_fr];
+        calldata.extend_from_slice(encoded_args);
+        let hashed = aztec_core::tx::HashedValues::from_calldata(calldata);
+        let calldata_hash = hashed.hash();
+        let msg_sender = if hide_msg_sender {
+            AztecAddress::zero()
+        } else {
+            origin
+        };
+
+        let entrypoint = PrivateCallExecutionResult {
+            contract_address: origin,
+            public_call_requests: vec![PublicCallRequestData {
+                contract_address,
+                msg_sender,
+                is_static_call,
+                calldata_hash,
+                counter: 2,
+            }],
+            start_side_effect_counter: 2,
+            min_revertible_side_effect_counter: 2,
+            end_side_effect_counter: 3,
+            ..Default::default()
+        };
+
+        let exec_result = PrivateExecutionResult {
+            entrypoint,
+            first_nullifier,
+            public_function_calldata: vec![hashed.clone()],
+        };
+
+        Ok(Some(CallExecutionBundle {
+            first_acir_call_return_values: Vec::new(),
+            execution_result: exec_result,
+            contract_class_log_fields: vec![],
+            public_function_calldata: vec![hashed],
+        }))
     }
 
     #[allow(dead_code)]
@@ -1061,6 +1137,20 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
             return Ok(bundle);
         }
 
+        // Handle public calls to protocol contracts (e.g. AuthRegistry)
+        // that may not be registered in the local contract store.
+        if let Some(bundle) = Self::protocol_public_execution(
+            contract_address,
+            &function_name,
+            &call.encoded_args,
+            origin,
+            protocol_nullifier,
+            call.hide_msg_sender,
+            call.is_static,
+        )? {
+            return Ok(bundle);
+        }
+
         let contract_instance = self.contract_store.get_instance(&contract_address).await?;
         let class_id = contract_instance
             .as_ref()
@@ -1121,6 +1211,28 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
             Some(origin),
             scopes.to_vec(),
         );
+
+        // Extract and set auth witnesses from the TX request so nested
+        // calls (e.g. verify_private_authwit) can look up the signature.
+        if let Some(auth_witnesses) = tx_request.data.get("authWitnesses").and_then(|v| {
+            serde_json::from_value::<Vec<aztec_core::tx::AuthWitness>>(v.clone()).ok()
+        }) {
+            let pairs: Vec<(Fr, Vec<Fr>)> = auth_witnesses
+                .iter()
+                .map(|aw| (aw.request_hash, aw.fields.clone()))
+                .collect();
+            oracle.set_auth_witnesses(pairs);
+        }
+
+        // Store the block-header + tx-context portion of the witness so
+        // nested calls can reuse it (for chain_id, version, etc.).
+        let context_inputs_size = artifact.private_context_inputs_size(&function_name);
+        if context_inputs_size > 5 {
+            // Skip call_context (4 fields), take everything up to (but not
+            // including) the last field (start_side_effect_counter).
+            oracle.context_witness_prefix =
+                full_witness[4..context_inputs_size.saturating_sub(1)].to_vec();
+        }
 
         let acvm_output = crate::execution::AcvmExecutor::execute_private(
             &artifact,

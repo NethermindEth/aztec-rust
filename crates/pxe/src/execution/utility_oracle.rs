@@ -194,6 +194,9 @@ impl<'a, N: AztecNode> UtilityExecutionOracle<'a, N> {
             // Membership witnesses
             "getNoteHashMembershipWitness" => Ok(vec![vec![]]),
             "getNullifierMembershipWitness" => Ok(vec![vec![]]),
+            "getLowNullifierMembershipWitness" => {
+                self.get_low_nullifier_membership_witness(&args).await
+            }
             "getBlockHashMembershipWitness" => Ok(vec![vec![]]),
             "getPublicDataWitness" => Ok(vec![vec![]]),
             "getL1ToL2MembershipWitness" => Ok(vec![vec![]]),
@@ -447,7 +450,6 @@ impl<'a, N: AztecNode> UtilityExecutionOracle<'a, N> {
             found = notes.len(),
             "utility_get_notes"
         );
-
         if offset >= notes.len() {
             notes.clear();
         } else if offset > 0 {
@@ -784,6 +786,113 @@ impl<'a, N: AztecNode> UtilityExecutionOracle<'a, N> {
         }
         fields.push(complete.partial_address);
         Ok(vec![vec![Fr::from(true)], fields])
+    }
+
+    /// Return `NullifierMembershipWitness` from the node.
+    ///
+    /// The Noir struct has 5 deserialization slots:
+    /// - index (1 field)
+    /// - leaf_preimage.nullifier (1 field)
+    /// - leaf_preimage.next_nullifier (1 field)
+    /// - leaf_preimage.next_index (1 field)
+    /// - path (NULLIFIER_TREE_HEIGHT = 42 fields)
+    /// Parse a JSON value as a field element (hex string) or a number.
+    fn parse_field_or_number(val: Option<&serde_json::Value>) -> Fr {
+        val.and_then(|v| {
+            if let Some(s) = v.as_str() {
+                Fr::from_hex(s)
+                    .ok()
+                    .or_else(|| s.parse::<u64>().ok().map(Fr::from))
+            } else {
+                v.as_u64().map(Fr::from)
+            }
+        })
+        .unwrap_or(Fr::zero())
+    }
+
+    async fn get_low_nullifier_membership_witness(
+        &self,
+        args: &[Vec<Fr>],
+    ) -> Result<Vec<Vec<Fr>>, Error> {
+        let _block_hash = args
+            .first()
+            .and_then(|v| v.first())
+            .copied()
+            .unwrap_or(Fr::zero());
+        let nullifier = args.get(1).and_then(|v| v.first()).ok_or_else(|| {
+            Error::InvalidData("getLowNullifierMembershipWitness: missing nullifier".into())
+        })?;
+
+        let witness_json = self
+            .node
+            .get_low_nullifier_membership_witness(0, nullifier)
+            .await?;
+
+        // Parse the JSON response from the node into the 5-slot format
+        // expected by the Noir `NullifierMembershipWitness` struct.
+        //
+        // Node response format:
+        // { "index": "N", "leafPreimage": { "leaf": { "nullifier": "0x..." },
+        //   "nextKey": "0x...", "nextIndex": "N" }, "siblingPath": "<base64>" }
+        if let Some(json) = witness_json {
+            let index = Self::parse_field_or_number(json.get("index"));
+
+            let preimage = json.get("leafPreimage").unwrap_or(&json);
+            let leaf = preimage.get("leaf").unwrap_or(preimage);
+            let nullifier_val = leaf
+                .get("nullifier")
+                .and_then(|v| v.as_str())
+                .and_then(|s| Fr::from_hex(s).ok())
+                .unwrap_or(Fr::zero());
+            let next_nullifier = preimage
+                .get("nextKey")
+                .or_else(|| preimage.get("nextNullifier"))
+                .and_then(|v| v.as_str())
+                .and_then(|s| Fr::from_hex(s).ok())
+                .unwrap_or(Fr::zero());
+            let next_index = Self::parse_field_or_number(preimage.get("nextIndex"));
+
+            // siblingPath is base64-encoded binary: 42 x 32-byte BE field elements
+            let path = json
+                .get("siblingPath")
+                .and_then(|v| v.as_str())
+                .and_then(|s| {
+                    use base64::Engine;
+                    base64::engine::general_purpose::STANDARD.decode(s).ok()
+                })
+                .map(|bytes| {
+                    bytes
+                        .chunks(32)
+                        .map(|chunk| {
+                            let mut padded = [0u8; 32];
+                            let start = 32usize.saturating_sub(chunk.len());
+                            padded[start..].copy_from_slice(chunk);
+                            Fr::from(padded)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| vec![Fr::zero(); 42]);
+
+            let mut path = path;
+            path.resize(42, Fr::zero());
+
+            Ok(vec![
+                vec![index],
+                vec![nullifier_val],
+                vec![next_nullifier],
+                vec![next_index],
+                path,
+            ])
+        } else {
+            // Return zeros if witness not found
+            Ok(vec![
+                vec![Fr::zero()],
+                vec![Fr::zero()],
+                vec![Fr::zero()],
+                vec![Fr::zero()],
+                vec![Fr::zero(); 42],
+            ])
+        }
     }
 
     /// Return `KeyValidationRequest { pk_m: Point, sk_app: Field }` (4 fields).

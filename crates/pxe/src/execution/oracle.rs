@@ -76,6 +76,9 @@ pub struct PrivateExecutionOracle<'a, N: AztecNode> {
     public_function_calldata: Vec<HashedValues>,
     /// Captured nested execution results (for return value extraction).
     nested_results: Vec<PrivateCallExecutionResult>,
+    /// Block-header + tx-context fields from the entrypoint witness,
+    /// shared with nested calls so that chain_id/version are correct.
+    pub(crate) context_witness_prefix: Vec<Fr>,
 }
 
 /// A note created during execution (not yet committed to state).
@@ -301,6 +304,7 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             min_revertible_side_effect_counter: 0,
             public_function_calldata: Vec::new(),
             nested_results: Vec::new(),
+            context_witness_prefix: Vec::new(),
         }
     }
 
@@ -526,6 +530,10 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
         );
 
         let Some(complete) = self.address_store.get(&address).await? else {
+            tracing::debug!(
+                queried_address = %address,
+                "getPublicKeysAndPartialAddress: address not found in store"
+            );
             return Ok(vec![vec![Fr::zero()], vec![Fr::zero(); 13]]);
         };
 
@@ -912,8 +920,8 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
                 return Ok(vec![witness.clone()]);
             }
         }
-        // Return empty if no auth witness found (not an error)
-        Ok(vec![])
+        // Return a zero-filled witness when not found (Noir expects [Field; 64]).
+        Ok(vec![vec![Fr::zero(); 64]])
     }
 
     fn enqueue_public_function_call(
@@ -1156,7 +1164,7 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             .and_then(|v| v.first())
             .map(|f| f.to_usize() as u32)
             .unwrap_or(0);
-        let _is_static = args
+        let is_static = args
             .get(4)
             .and_then(|v| v.first())
             .map(|f| *f != Fr::zero())
@@ -1203,18 +1211,36 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
         // For nested calls, msg_sender is the calling contract's address.
         let context_inputs_size = artifact.private_context_inputs_size(&function_name);
 
-        // Build a minimal private context inputs witness matching what the circuit expects.
-        // The actual inputs are mostly zeros — the circuit reads real values from oracle calls.
-        let mut full_witness = vec![Fr::zero(); context_inputs_size];
-
-        // Patch call_context fields at the start of the context inputs:
-        // [msg_sender, contract_address, function_selector, is_static_call]
-        if full_witness.len() >= 4 {
-            full_witness[0] = self.contract_address.0; // msg_sender = calling contract
-            full_witness[1] = target_address.0; // contract_address = target
-            full_witness[2] = selector_field; // function_selector
-            full_witness[3] = Fr::zero(); // is_static_call
-        }
+        // Build the private context inputs witness for the nested call.
+        // Reuse the parent's context witness prefix (block header + tx_context)
+        // so that chain_id, version, and other context values are correct.
+        let mut full_witness = if !self.context_witness_prefix.is_empty()
+            && self.context_witness_prefix.len() + 4 <= context_inputs_size
+        {
+            // Layout: [call_context(4), block_header+tx_context..., side_effect_counter]
+            let mut w = Vec::with_capacity(context_inputs_size);
+            // Call context
+            w.push(self.contract_address.0); // msg_sender = calling contract
+            w.push(target_address.0); // contract_address = target
+            w.push(selector_field); // function_selector
+            w.push(Fr::from(is_static)); // is_static_call
+                                         // Block header + tx_context from parent
+            w.extend_from_slice(&self.context_witness_prefix);
+            // Side effect counter
+            w.push(Fr::from(self.side_effect_counter as u64));
+            // Pad to context_inputs_size
+            w.resize(context_inputs_size, Fr::zero());
+            w
+        } else {
+            let mut w = vec![Fr::zero(); context_inputs_size];
+            if w.len() >= 4 {
+                w[0] = self.contract_address.0;
+                w[1] = target_address.0;
+                w[2] = selector_field;
+                w[3] = Fr::from(is_static);
+            }
+            w
+        };
 
         // Append user arguments.
         full_witness.extend_from_slice(&cached_args);
@@ -1241,6 +1267,11 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
         nested_oracle.auth_witnesses = self.auth_witnesses.clone();
         // Start the nested counter from the parent's current counter.
         nested_oracle.side_effect_counter = self.side_effect_counter;
+        // Inherit revertibility threshold so nested calls answer
+        // `isSideEffectCounterRevertible` consistently with the parent.
+        nested_oracle.min_revertible_side_effect_counter = self.min_revertible_side_effect_counter;
+        // Share context witness prefix (block header + tx_context) for nested calls.
+        nested_oracle.context_witness_prefix = self.context_witness_prefix.clone();
 
         // Execute the nested private function.
         let acvm_output = super::acvm_executor::AcvmExecutor::execute_private(
@@ -1252,7 +1283,41 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
         .await?;
 
         let end_counter = nested_oracle.side_effect_counter;
-        let returns_hash = aztec_core::hash::compute_var_args_hash(&acvm_output.return_values);
+
+        // Extract returns_hash and end_side_effect_counter from the PCPI
+        // in the witness, not from ACIR return values. The PCPI starts at
+        // offset `nested_params_size` in the witness.
+        let nested_ctx_size_for_pcpi = artifact.private_context_inputs_size(&function_name);
+        let pcpi_start = nested_ctx_size_for_pcpi + cached_args.len();
+        // PCPI layout: call_context(4), args_hash(1), returns_hash(1), ...
+        const PCPI_RETURNS_HASH_OFFSET: usize = 5;
+
+        let returns_hash = {
+            let idx = acir::native_types::Witness((pcpi_start + PCPI_RETURNS_HASH_OFFSET) as u32);
+            acvm_output
+                .witness
+                .get(&idx)
+                .map(|fe| super::field_conversion::fe_to_fr(fe))
+                .unwrap_or_else(|| {
+                    // Fallback: compute from return values (may be empty → zero hash)
+                    aztec_core::hash::compute_var_args_hash(&acvm_output.return_values)
+                })
+        };
+
+        // Also store the return values from the execution cache stored by
+        // the nested circuit itself (via storeInExecutionCache oracle).
+        // The circuit stores its return values at returns_hash before it
+        // finishes, so they should already be in the nested oracle's cache.
+        // We only need to ensure our cache also has them.
+        if !self.execution_cache.contains_key(&returns_hash) {
+            if let Some(cached) = nested_oracle.execution_cache.get(&returns_hash) {
+                self.execution_cache.insert(returns_hash, cached.clone());
+            } else {
+                // Store ACVM return values as fallback
+                self.execution_cache
+                    .insert(returns_hash, acvm_output.return_values.clone());
+            }
+        }
 
         // Extract circuit-constrained side effects (private logs, note hashes, etc.)
         // from the nested witness. These are NOT emitted through oracle calls.
@@ -1276,10 +1341,6 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             minimal.return_values = acvm_output.return_values.clone();
             self.nested_results.push(minimal);
         }
-
-        // Store the return values in the execution cache so the caller can look them up.
-        self.execution_cache
-            .insert(returns_hash, acvm_output.return_values);
 
         // Merge the nested execution cache back into the parent.
         for (k, v) in nested_oracle.execution_cache {

@@ -102,6 +102,8 @@ impl AcvmExecutor {
             "utilityTryGetPublicKeysAndPartialAddress" | "tryGetPublicKeysAndPartialAddress" => {
                 &[1]
             }
+            // Execution cache returns an array of field elements.
+            "privateLoadFromExecutionCache" | "loadFromExecutionCache" => &[0],
             _ => &[],
         };
         let values: Vec<ForeignCallParam<FieldElement>> = result
@@ -166,6 +168,11 @@ impl AcvmExecutor {
                 ACVMStatus::RequiresForeignCall(foreign_call) => {
                     last_private_fc = foreign_call.function.clone();
                     let inputs = Self::convert_fc_inputs(&foreign_call.inputs);
+                    tracing::trace!(
+                        function = function_name,
+                        oracle = foreign_call.function.as_str(),
+                        "private oracle call"
+                    );
                     let result = oracle
                         .handle_foreign_call(&foreign_call.function, inputs)
                         .await?;
@@ -294,12 +301,19 @@ impl AcvmExecutor {
             &empty_assertions,
         );
 
+        let mut last_fc = String::new();
         loop {
             let status = acvm.solve();
             match status {
                 ACVMStatus::Solved => break,
                 ACVMStatus::InProgress => continue,
                 ACVMStatus::RequiresForeignCall(foreign_call) => {
+                    last_fc = foreign_call.function.clone();
+                    tracing::trace!(
+                        function = function_name,
+                        oracle = foreign_call.function.as_str(),
+                        "utility oracle call"
+                    );
                     let inputs = Self::convert_fc_inputs(&foreign_call.inputs);
                     let result = oracle
                         .handle_foreign_call(&foreign_call.function, inputs)
@@ -316,7 +330,7 @@ impl AcvmExecutor {
                 }
                 ACVMStatus::Failure(err) => {
                     return Err(Error::InvalidData(format!(
-                        "utility function '{}' execution failed: {err}",
+                        "utility function '{}' execution failed (last oracle: {last_fc}): {err}",
                         function_name
                     )));
                 }
