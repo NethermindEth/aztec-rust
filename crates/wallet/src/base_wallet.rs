@@ -625,7 +625,7 @@ mod tests {
         TxExecutionRequest, TxProfileResult as PxeTxProfileResult, TxProvingResult,
         TxSimulationResult as PxeTxSimulationResult, UtilityExecutionResult as PxeUtilityResult,
     };
-    use crate::tx::{TxReceipt, TxStatus};
+    use crate::tx::{TxExecutionResult, TxReceipt, TxStatus};
     use crate::types::{CompleteAddress, ContractInstance, PublicKeys};
     use std::sync::Mutex;
 
@@ -688,8 +688,8 @@ mod tests {
         async fn get_tx_receipt(&self, _tx_hash: &TxHash) -> Result<TxReceipt, Error> {
             Ok(TxReceipt {
                 tx_hash: TxHash::zero(),
-                status: TxStatus::Pending,
-                execution_result: None,
+                status: TxStatus::Checkpointed,
+                execution_result: Some(TxExecutionResult::Success),
                 error: None,
                 transaction_fee: None,
                 block_hash: None,
@@ -874,7 +874,12 @@ mod tests {
                     data: serde_json::json!({"profileData": "test"}),
                 },
                 proving_result: TxProvingResult {
-                    tx_hash: Some(TxHash::zero()),
+                    tx_hash: Some(
+                        TxHash::from_hex(
+                            "0x00000000000000000000000000000000000000000000000000000000deadbeef",
+                        )
+                        .expect("test hash"),
+                    ),
                     private_execution_result: serde_json::json!({}),
                     public_inputs: aztec_core::tx::PrivateKernelTailCircuitPublicInputs::from_bytes(
                         vec![0],
