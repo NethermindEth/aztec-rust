@@ -53,6 +53,13 @@ pub fn encode_value(typ: &AbiType, value: &AbiValue, out: &mut Vec<Fr>) -> Resul
             }
             Ok(())
         }
+        // Allow passing a raw field element for integer parameters. This is
+        // needed when the value exceeds `i128::MAX` (e.g. U128 values ≥ 2^127
+        // or intentional overflow values like 2^128 for testing).
+        (AbiType::Integer { .. }, AbiValue::Field(field)) => {
+            out.push(*field);
+            Ok(())
+        }
         (AbiType::Array { element, length }, AbiValue::Array(items)) => {
             if items.len() != *length {
                 return Err(Error::Abi(format!(

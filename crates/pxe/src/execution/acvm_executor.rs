@@ -59,13 +59,36 @@ pub struct AcvmExecutor;
 
 impl AcvmExecutor {
     /// Decode base64-encoded bytecode and deserialize into an ACIR Program.
+    ///
+    /// The ACIR library always expects gzip-compressed data. Some contract
+    /// artifacts (notably unconstrained/utility functions from nargo) ship
+    /// with uncompressed bytecode, so we detect the format and compress on
+    /// the fly when necessary.
     fn decode_program(bytecode_b64: &str) -> Result<Program<FieldElement>, Error> {
         let bytecode_bytes =
             base64::Engine::decode(&base64::engine::general_purpose::STANDARD, bytecode_b64)
                 .map_err(|e| Error::InvalidData(format!("base64 decode error: {e}")))?;
 
-        Program::deserialize_program(&bytecode_bytes)
-            .map_err(|e| Error::InvalidData(format!("ACIR deserialize error: {e}")))
+        // Check for gzip magic bytes (0x1f 0x8b).
+        let is_gzip =
+            bytecode_bytes.len() >= 2 && bytecode_bytes[0] == 0x1f && bytecode_bytes[1] == 0x8b;
+
+        if is_gzip {
+            Program::deserialize_program(&bytecode_bytes)
+                .map_err(|e| Error::InvalidData(format!("ACIR deserialize error: {e}")))
+        } else {
+            // Uncompressed bytecode — wrap in gzip so the ACIR deserializer
+            // (which always runs GzDecoder) can process it.
+            use std::io::Write;
+            let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            enc.write_all(&bytecode_bytes)
+                .map_err(|e| Error::InvalidData(format!("gzip compress error: {e}")))?;
+            let compressed = enc
+                .finish()
+                .map_err(|e| Error::InvalidData(format!("gzip finish error: {e}")))?;
+            Program::deserialize_program(&compressed)
+                .map_err(|e| Error::InvalidData(format!("ACIR deserialize error: {e}")))
+        }
     }
 
     /// Build the initial witness map from field elements.
