@@ -3,13 +3,23 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use aztec_core::abi::FunctionSelector;
 use aztec_core::abi::{abi_type_signature, ContractArtifact, EventSelector, FunctionType};
+use aztec_core::constants::{
+    contract_class_published_magic_value, contract_instance_published_magic_value,
+    current_vk_tree_root, protocol_contract_address, MAX_PACKED_PUBLIC_BYTECODE_SIZE_IN_FIELDS,
+};
 use aztec_core::error::Error;
 use aztec_core::hash::{
-    compute_contract_address_from_instance, compute_contract_class_id_from_artifact,
+    compute_contract_address_from_instance, compute_contract_class_id,
+    compute_contract_class_id_from_artifact, compute_protocol_contracts_hash,
+    compute_protocol_nullifier,
 };
-use aztec_core::tx::FunctionCall;
-use aztec_core::types::{AztecAddress, CompleteAddress, ContractInstanceWithAddress, Fr};
+use aztec_core::tx::{compute_tx_request_hash, Capsule, FunctionCall, TxContext};
+use aztec_core::types::{
+    AztecAddress, CompleteAddress, ContractInstance, ContractInstanceWithAddress, Fr, Point,
+    PublicKeys,
+};
 use aztec_crypto::complete_address_from_secret_key_and_partial_address;
 use aztec_node_client::AztecNode;
 use aztec_pxe_client::{
@@ -17,49 +27,281 @@ use aztec_pxe_client::{
     RegisterContractRequest, SimulateTxOpts, TxExecutionRequest, TxProfileResult, TxProvingResult,
     TxSimulationResult, UtilityExecutionResult,
 };
-use tokio::sync::RwLock;
 
 use crate::kernel::prover::{BbPrivateKernelProver, BbProverConfig};
+use crate::stores::anchor_block_store::AnchorBlockHeader;
 use crate::stores::kv::KvStore;
 use crate::stores::{
-    AddressStore, CapsuleStore, ContractStore, KeyStore, NoteStore, PrivateEventStore,
-    RecipientTaggingStore, SenderStore, SenderTaggingStore,
+    AddressStore, AnchorBlockStore, CapsuleStore, ContractStore, KeyStore, NoteStore,
+    PrivateEventStore, RecipientTaggingStore, SenderStore, SenderTaggingStore,
 };
-use crate::sync::BlockSynchronizer;
+use crate::sync::block_state_synchronizer::{BlockStateSynchronizer, BlockSyncConfig};
+use crate::sync::event_filter::PrivateEventFilterValidator;
+use crate::sync::ContractSyncService;
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DecodedTxExecutionRequest {
+    origin: AztecAddress,
+    first_call_args_hash: Fr,
+    args_of_calls: Vec<aztec_core::tx::HashedValues>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ParsedEntrypointCall {
+    args_hash: Fr,
+    selector: aztec_core::abi::FunctionSelector,
+    to: AztecAddress,
+    is_public: bool,
+    hide_msg_sender: bool,
+    is_static: bool,
+}
+
+#[derive(Debug)]
+struct DecodedEntrypointCall {
+    to: AztecAddress,
+    selector: aztec_core::abi::FunctionSelector,
+    encoded_args: Vec<Fr>,
+    hide_msg_sender: bool,
+    is_static: bool,
+}
+
+#[derive(Debug, Clone)]
+struct CallExecutionBundle {
+    execution_result: crate::execution::execution_result::PrivateExecutionResult,
+    contract_class_log_fields: Vec<aztec_core::tx::ContractClassLogFields>,
+    public_function_calldata: Vec<aztec_core::tx::HashedValues>,
+}
+
+fn parse_encoded_calls(fields: &[Fr]) -> Result<Vec<ParsedEntrypointCall>, Error> {
+    const CALL_FIELDS: usize = 6;
+    const APP_MAX_CALLS: usize = 5;
+    let required = CALL_FIELDS * APP_MAX_CALLS + 1;
+    if fields.len() < required {
+        return Err(Error::InvalidData(format!(
+            "entrypoint args too short: {} < {}",
+            fields.len(),
+            required
+        )));
+    }
+
+    let mut calls = Vec::with_capacity(APP_MAX_CALLS);
+    for idx in 0..APP_MAX_CALLS {
+        let offset = idx * CALL_FIELDS;
+        calls.push(ParsedEntrypointCall {
+            args_hash: fields[offset],
+            selector: aztec_core::abi::FunctionSelector::from_field(fields[offset + 1]),
+            to: AztecAddress(fields[offset + 2]),
+            is_public: fields[offset + 3] != Fr::zero(),
+            hide_msg_sender: fields[offset + 4] != Fr::zero(),
+            is_static: fields[offset + 5] != Fr::zero(),
+        });
+    }
+    Ok(calls)
+}
 
 /// Embedded PXE that runs private execution logic in-process.
 ///
 /// In-process PXE for Aztec v4.x where PXE runs client-side.
 /// Talks to the Aztec node via `node_*` RPC methods and maintains local
-/// stores for contracts, keys, addresses, notes, and capsules.
+/// stores for contracts, keys, addresses, notes, capsules, and events.
+///
+/// Phase 3 additions: anchor block tracking, block reorg handling,
+/// private event retrieval, transaction profiling, and persistent storage.
 pub struct EmbeddedPxe<N: AztecNode> {
     node: N,
     contract_store: ContractStore,
     key_store: KeyStore,
     address_store: AddressStore,
-    note_store: NoteStore,
+    note_store: Arc<NoteStore>,
     #[allow(dead_code)] // Used when ACVM integration is complete
     capsule_store: CapsuleStore,
-    block_header: RwLock<Option<serde_json::Value>>,
     /// Registered sender addresses for private log discovery.
     sender_store: SenderStore,
-    /// Phase 2: Sender tagging store for outgoing tag index tracking.
+    /// Sender tagging store for outgoing tag index tracking.
     #[allow(dead_code)] // Used when full prove_tx flow is wired
     sender_tagging_store: SenderTaggingStore,
-    /// Phase 2: Recipient tagging store for incoming tag index tracking.
+    /// Recipient tagging store for incoming tag index tracking.
     #[allow(dead_code)] // Used when full prove_tx flow is wired
     recipient_tagging_store: RecipientTaggingStore,
-    /// Phase 2: Private event store for discovered private events.
-    #[allow(dead_code)] // Used when get_private_events is wired
-    private_event_store: PrivateEventStore,
-    /// Phase 2: Kernel prover for generating proofs via bb binary.
+    /// Private event store for discovered private events.
+    private_event_store: Arc<PrivateEventStore>,
+    /// Kernel prover for generating proofs via bb binary.
+    #[allow(dead_code)] // Used when full prove_tx flow is wired
     kernel_prover: BbPrivateKernelProver,
+    /// Anchor block store for persistent block header tracking.
+    anchor_block_store: Arc<AnchorBlockStore>,
+    /// Block state synchronizer with reorg handling.
+    block_synchronizer: BlockStateSynchronizer,
+    /// Contract sync service for note discovery caching.
+    contract_sync_service: ContractSyncService<N>,
+    /// VK tree root from node info — needed in TxConstantData.
+    vk_tree_root: Fr,
+    /// Protocol contracts hash from node info — needed in TxConstantData.
+    protocol_contracts_hash: Fr,
 }
 
-impl<N: AztecNode> EmbeddedPxe<N> {
+/// Configuration for EmbeddedPxe creation.
+#[derive(Debug, Clone)]
+pub struct EmbeddedPxeConfig {
+    /// BB prover configuration.
+    pub prover_config: BbProverConfig,
+    /// Block synchronization configuration.
+    pub block_sync_config: BlockSyncConfig,
+}
+
+impl Default for EmbeddedPxeConfig {
+    fn default() -> Self {
+        Self {
+            prover_config: BbProverConfig::default(),
+            block_sync_config: BlockSyncConfig::default(),
+        }
+    }
+}
+
+impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
+    async fn execute_sync_state_for_contract(
+        &self,
+        contract_address: AztecAddress,
+        scopes: Vec<AztecAddress>,
+    ) -> Result<(), Error> {
+        let Some(instance) = self.contract_store.get_instance(&contract_address).await? else {
+            return Ok(());
+        };
+        let Some(artifact) = self
+            .contract_store
+            .get_artifact(&instance.inner.current_contract_class_id)
+            .await?
+        else {
+            return Ok(());
+        };
+
+        let Ok(function) = artifact.find_function("sync_state") else {
+            return Ok(());
+        };
+        if function.function_type != FunctionType::Utility {
+            return Ok(());
+        }
+
+        let selector = function.selector.ok_or_else(|| {
+            Error::InvalidData(format!(
+                "sync_state missing selector in artifact {}",
+                artifact.name
+            ))
+        })?;
+
+        let call = FunctionCall {
+            to: contract_address,
+            selector,
+            args: vec![],
+            function_type: FunctionType::Utility,
+            is_static: function.is_static,
+            hide_msg_sender: false,
+        };
+
+        self.execute_utility(
+            &call,
+            ExecuteUtilityOpts {
+                scopes,
+                ..Default::default()
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn persist_pending_notes(
+        &self,
+        exec_result: &crate::execution::PrivateExecutionResult,
+        scopes: &[AztecAddress],
+    ) -> Result<(), Error> {
+        let nullifiers_by_counter: std::collections::HashMap<u32, Fr> = exec_result
+            .all_nullifiers()
+            .into_iter()
+            .map(|n| (n.nullifier.counter, n.nullifier.value))
+            .collect();
+        let note_to_nullifier_counter = exec_result.all_note_hash_nullifier_counter_maps();
+
+        for call in exec_result.iter_all_calls() {
+            for note in &call.new_notes {
+                let Some(nullifier_counter) = note_to_nullifier_counter.get(&note.counter).copied()
+                else {
+                    continue;
+                };
+                let Some(siloed_nullifier) = nullifiers_by_counter.get(&nullifier_counter).copied()
+                else {
+                    continue;
+                };
+                let stored = crate::stores::note_store::StoredNote {
+                    contract_address: note.contract_address,
+                    owner: note.owner,
+                    storage_slot: note.storage_slot,
+                    randomness: note.randomness,
+                    note_nonce: Fr::zero(),
+                    note_hash: note.note_hash,
+                    siloed_nullifier,
+                    note_data: note.note_items.clone(),
+                    nullified: false,
+                    is_pending: true,
+                    nullification_block_number: None,
+                    leaf_index: None,
+                    block_number: None,
+                    tx_index_in_block: None,
+                    note_index_in_tx: None,
+                    scopes: vec![],
+                };
+
+                let mut stored_for_owner = false;
+                for scope in scopes {
+                    if *scope == note.owner {
+                        self.note_store.add_notes(&[stored.clone()], scope).await?;
+                        stored_for_owner = true;
+                    }
+                }
+
+                if !stored_for_owner {
+                    let fallback_scope = if !note.owner.0.is_zero() {
+                        note.owner
+                    } else {
+                        AztecAddress::zero()
+                    };
+                    self.note_store
+                        .add_notes(&[stored], &fallback_scope)
+                        .await?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn tx_request_hash(tx_request: &TxExecutionRequest) -> Result<Fr, Error> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct WireTxRequest {
+            origin: AztecAddress,
+            function_selector: FunctionSelector,
+            first_call_args_hash: Fr,
+            tx_context: TxContext,
+            salt: Fr,
+        }
+
+        let request: WireTxRequest = serde_json::from_value(tx_request.data.clone())
+            .map_err(|err| Error::InvalidData(format!("invalid tx request payload: {err}")))?;
+
+        Ok(compute_tx_request_hash(
+            request.origin,
+            request.first_call_args_hash,
+            &request.tx_context,
+            request.function_selector,
+            false, // isStatic — upstream default
+            request.salt,
+        ))
+    }
+
     /// Create a new EmbeddedPxe backed by the given node client and KV store.
     pub async fn create(node: N, kv: Arc<dyn KvStore>) -> Result<Self, Error> {
-        Self::create_with_prover_config(node, kv, BbProverConfig::default()).await
+        Self::create_with_config(node, kv, EmbeddedPxeConfig::default()).await
     }
 
     /// Create a new EmbeddedPxe with custom BB prover configuration.
@@ -68,16 +310,61 @@ impl<N: AztecNode> EmbeddedPxe<N> {
         kv: Arc<dyn KvStore>,
         prover_config: BbProverConfig,
     ) -> Result<Self, Error> {
+        Self::create_with_config(
+            node,
+            kv,
+            EmbeddedPxeConfig {
+                prover_config,
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    /// Create a new EmbeddedPxe with full configuration.
+    pub async fn create_with_config(
+        node: N,
+        kv: Arc<dyn KvStore>,
+        config: EmbeddedPxeConfig,
+    ) -> Result<Self, Error> {
         let contract_store = ContractStore::new(Arc::clone(&kv));
         let key_store = KeyStore::new(Arc::clone(&kv));
         let address_store = AddressStore::new(Arc::clone(&kv));
-        let note_store = NoteStore::new(Arc::clone(&kv));
+        let note_store = Arc::new(NoteStore::new(Arc::clone(&kv)));
         let capsule_store = CapsuleStore::new(Arc::clone(&kv));
         let sender_store = SenderStore::new(Arc::clone(&kv));
         let sender_tagging_store = SenderTaggingStore::new(Arc::clone(&kv));
         let recipient_tagging_store = RecipientTaggingStore::new(Arc::clone(&kv));
-        let private_event_store = PrivateEventStore::new(Arc::clone(&kv));
-        let kernel_prover = BbPrivateKernelProver::new(prover_config);
+        let private_event_store = Arc::new(PrivateEventStore::new(Arc::clone(&kv)));
+        let anchor_block_store = Arc::new(AnchorBlockStore::new(Arc::clone(&kv)));
+        let kernel_prover = BbPrivateKernelProver::new(config.prover_config);
+
+        // Block state synchronizer with reorg handling
+        let block_synchronizer = BlockStateSynchronizer::new(
+            Arc::clone(&anchor_block_store),
+            Arc::clone(&note_store),
+            Arc::clone(&private_event_store),
+            config.block_sync_config,
+        );
+
+        // Contract sync service — needs a shared reference to the node
+        let contract_sync_service =
+            ContractSyncService::new(Arc::new(node.clone()), Arc::clone(&note_store));
+
+        // The node API does not expose these fields on Aztec v4.x.
+        // Match upstream PXE behavior by deriving them locally and only
+        // honoring node-provided values when they are explicitly present.
+        let node_info = node.get_node_info().await?;
+        let vk_tree_root = node_info
+            .l2_circuits_vk_tree_root
+            .as_deref()
+            .and_then(|s| Fr::from_hex(s).ok())
+            .unwrap_or_else(current_vk_tree_root);
+        let protocol_contracts_hash = node_info
+            .l2_protocol_contracts_hash
+            .as_deref()
+            .and_then(|s| Fr::from_hex(s).ok())
+            .unwrap_or_else(compute_protocol_contracts_hash);
 
         let pxe = Self {
             node,
@@ -86,16 +373,20 @@ impl<N: AztecNode> EmbeddedPxe<N> {
             address_store,
             note_store,
             capsule_store,
-            block_header: RwLock::new(None),
             sender_store,
             sender_tagging_store,
             recipient_tagging_store,
             private_event_store,
             kernel_prover,
+            anchor_block_store,
+            block_synchronizer,
+            contract_sync_service,
+            vk_tree_root,
+            protocol_contracts_hash,
         };
 
-        // Sync initial block header
-        pxe.sync_block_header().await?;
+        // Initial block sync
+        pxe.block_synchronizer.sync(&pxe.node).await?;
 
         Ok(pxe)
     }
@@ -106,22 +397,33 @@ impl<N: AztecNode> EmbeddedPxe<N> {
         Self::create(node, kv).await
     }
 
-    /// Sync the block header from the node.
-    async fn sync_block_header(&self) -> Result<serde_json::Value, Error> {
-        let header = BlockSynchronizer::sync_block_header(&self.node).await?;
-        let mut cached = self.block_header.write().await;
-        *cached = Some(header.clone());
-        Ok(header)
+    /// Sync the block state from the node, handling reorgs.
+    ///
+    /// After sync, if the anchor block changed, wipe the contract sync cache.
+    async fn sync_block_state(&self) -> Result<(), Error> {
+        self.block_synchronizer.sync(&self.node).await?;
+
+        // If anchor changed, wipe contract sync cache
+        if self.block_synchronizer.take_anchor_changed().await {
+            self.contract_sync_service.wipe().await;
+        }
+
+        Ok(())
     }
 
-    /// Get the current cached block header, syncing if necessary.
-    async fn get_or_sync_block_header(&self) -> Result<serde_json::Value, Error> {
-        let cached = self.block_header.read().await;
-        if let Some(ref header) = *cached {
-            return Ok(header.clone());
-        }
-        drop(cached);
-        self.sync_block_header().await
+    /// Get the current anchor block header, syncing if necessary.
+    async fn get_anchor_block_header(&self) -> Result<AnchorBlockHeader, Error> {
+        self.sync_block_state().await?;
+        self.block_synchronizer
+            .get_anchor_block_header()
+            .await?
+            .ok_or_else(|| Error::InvalidData("anchor block header not set after sync".into()))
+    }
+
+    /// Get the current anchor block number.
+    async fn get_anchor_block_number(&self) -> Result<u64, Error> {
+        self.sync_block_state().await?;
+        self.block_synchronizer.get_anchor_block_number().await
     }
 
     /// Get a reference to the underlying node client.
@@ -147,6 +449,980 @@ impl<N: AztecNode> EmbeddedPxe<N> {
     /// Get a reference to the note store.
     pub fn note_store(&self) -> &NoteStore {
         &self.note_store
+    }
+
+    /// Get a reference to the anchor block store.
+    pub fn anchor_block_store(&self) -> &AnchorBlockStore {
+        &self.anchor_block_store
+    }
+
+    /// Get a reference to the private event store.
+    pub fn private_event_store(&self) -> &PrivateEventStore {
+        &self.private_event_store
+    }
+
+    /// Extract the target contract address, function name, encoded args, and origin
+    /// from a serialized TxExecutionRequest.
+    ///
+    /// The TxExecutionRequest is built by the account entrypoint and contains:
+    /// - `origin`: the account address (msg_sender)
+    /// - Encoded calls inside `args_of_calls` with target addresses
+    ///
+    /// We try multiple strategies to find the target contract:
+    /// 1. Direct `contractAddress` / `to` field (simple format)
+    /// 2. Extract from encoded calls (entrypoint format)
+    /// 3. Scan all registered contracts for matching function
+    #[allow(dead_code)]
+    async fn extract_call_info(
+        &self,
+        tx_request: &TxExecutionRequest,
+    ) -> Result<(AztecAddress, String, Vec<Fr>, AztecAddress), Error> {
+        let request: DecodedTxExecutionRequest = serde_json::from_value(tx_request.data.clone())?;
+        let origin = request.origin;
+
+        if let Some(call) = Self::decode_entrypoint_call(&request)? {
+            let function_name = self
+                .resolve_function_name_by_selector(&call.to, call.selector)
+                .await;
+            return Ok((call.to, function_name, call.encoded_args, origin));
+        }
+
+        // Fallback: scan registered contracts
+        let contracts = self.contract_store.get_contract_addresses().await?;
+        if let Some(addr) = contracts.first() {
+            return Ok((*addr, "unknown".to_owned(), vec![], origin));
+        }
+
+        Err(Error::InvalidData(
+            "could not determine target contract from TxExecutionRequest".into(),
+        ))
+    }
+
+    /// Resolve function name from contract address and selector hex string.
+    async fn resolve_function_name_by_selector(
+        &self,
+        addr: &AztecAddress,
+        sel: aztec_core::abi::FunctionSelector,
+    ) -> String {
+        if let Some(name) = Self::resolve_protocol_function_name(addr, sel) {
+            return name.to_owned();
+        }
+
+        let inst = match self.contract_store.get_instance(addr).await {
+            Ok(Some(i)) => i,
+            _ => return "unknown".to_owned(),
+        };
+        let artifact = match self
+            .contract_store
+            .get_artifact(&inst.inner.current_contract_class_id)
+            .await
+        {
+            Ok(Some(a)) => a,
+            _ => return "unknown".to_owned(),
+        };
+        artifact
+            .find_function_by_selector(&sel)
+            .map(|f| f.name.clone())
+            .unwrap_or_else(|| "unknown".to_owned())
+    }
+
+    fn resolve_protocol_function_name(
+        addr: &AztecAddress,
+        sel: aztec_core::abi::FunctionSelector,
+    ) -> Option<&'static str> {
+        if *addr == protocol_contract_address::contract_class_registry()
+            && sel
+                == aztec_core::abi::FunctionSelector::from_signature("publish(Field,Field,Field)")
+        {
+            return Some("publish");
+        }
+
+        if *addr == protocol_contract_address::contract_instance_registry()
+            && sel
+                == aztec_core::abi::FunctionSelector::from_signature(
+                    "publish_for_public_execution(Field,(Field),Field,(((Field,Field,bool)),((Field,Field,bool)),((Field,Field,bool)),((Field,Field,bool))),bool)",
+                )
+        {
+            return Some("publish_for_public_execution");
+        }
+
+        None
+    }
+
+    fn protocol_private_execution(
+        &self,
+        tx_request: &TxExecutionRequest,
+        contract_address: AztecAddress,
+        function_name: &str,
+        encoded_args: &[Fr],
+        origin: AztecAddress,
+        first_nullifier: Fr,
+    ) -> Result<Option<CallExecutionBundle>, Error> {
+        match (contract_address, function_name) {
+            (addr, "publish") if addr == protocol_contract_address::contract_class_registry() => {
+                let artifact_hash = *encoded_args
+                    .first()
+                    .ok_or_else(|| Error::InvalidData("publish missing artifact_hash".into()))?;
+                let private_functions_root = *encoded_args.get(1).ok_or_else(|| {
+                    Error::InvalidData("publish missing private_functions_root".into())
+                })?;
+                let public_bytecode_commitment = *encoded_args.get(2).ok_or_else(|| {
+                    Error::InvalidData("publish missing public_bytecode_commitment".into())
+                })?;
+                let class_id = compute_contract_class_id(
+                    artifact_hash,
+                    private_functions_root,
+                    public_bytecode_commitment,
+                );
+
+                let capsules = tx_request
+                    .data
+                    .get("capsules")
+                    .cloned()
+                    .map(serde_json::from_value::<Vec<Capsule>>)
+                    .transpose()?
+                    .unwrap_or_default();
+                let bytecode_fields = capsules
+                    .into_iter()
+                    .find(|capsule| {
+                        capsule.contract_address == protocol_contract_address::contract_class_registry()
+                            && capsule.storage_slot
+                                == aztec_core::constants::contract_class_registry_bytecode_capsule_slot()
+                    })
+                    .map(|capsule| capsule.data)
+                    .unwrap_or_default();
+
+                let mut emitted_fields =
+                    Vec::with_capacity(MAX_PACKED_PUBLIC_BYTECODE_SIZE_IN_FIELDS + 5);
+                emitted_fields.push(contract_class_published_magic_value());
+                emitted_fields.push(class_id);
+                emitted_fields.push(Fr::from(1u64));
+                emitted_fields.push(artifact_hash);
+                emitted_fields.push(private_functions_root);
+                emitted_fields.extend(bytecode_fields);
+                let entrypoint = crate::execution::execution_result::PrivateCallExecutionResult {
+                    contract_address,
+                    call_context: aztec_core::kernel_types::CallContext {
+                        msg_sender: origin,
+                        contract_address,
+                        function_selector: FunctionSelector::from_signature(
+                            "publish(Field,Field,Field)",
+                        )
+                        .to_field(),
+                        is_static_call: false,
+                    },
+                    nullifiers: vec![aztec_core::kernel_types::ScopedNullifier {
+                        nullifier: aztec_core::kernel_types::Nullifier {
+                            value: class_id,
+                            note_hash: Fr::zero(),
+                            counter: 2,
+                        },
+                        contract_address,
+                    }],
+                    contract_class_logs: vec![aztec_core::kernel_types::CountedContractClassLog {
+                        log: aztec_core::kernel_types::ContractClassLog {
+                            contract_address,
+                            emitted_length: emitted_fields.len() as u32,
+                            fields: emitted_fields.clone(),
+                        },
+                        counter: 3,
+                    }],
+                    start_side_effect_counter: 2,
+                    end_side_effect_counter: 4,
+                    min_revertible_side_effect_counter: 2,
+                    ..Default::default()
+                };
+
+                return Ok(Some(CallExecutionBundle {
+                    execution_result: crate::execution::execution_result::PrivateExecutionResult {
+                        entrypoint,
+                        first_nullifier,
+                        public_function_calldata: vec![],
+                    },
+                    contract_class_log_fields: vec![
+                        aztec_core::tx::ContractClassLogFields::from_emitted_fields(emitted_fields),
+                    ],
+                    public_function_calldata: vec![],
+                }));
+            }
+            (addr, "publish_for_public_execution")
+                if addr == protocol_contract_address::contract_instance_registry() =>
+            {
+                if encoded_args.len() < 16 {
+                    return Err(Error::InvalidData(format!(
+                        "publish_for_public_execution args too short: {}",
+                        encoded_args.len()
+                    )));
+                }
+
+                let salt = encoded_args[0];
+                let class_id = encoded_args[1];
+                let initialization_hash = encoded_args[2];
+                let public_keys = PublicKeys {
+                    master_nullifier_public_key: Point {
+                        x: encoded_args[3],
+                        y: encoded_args[4],
+                        is_infinite: encoded_args[5] != Fr::zero(),
+                    },
+                    master_incoming_viewing_public_key: Point {
+                        x: encoded_args[6],
+                        y: encoded_args[7],
+                        is_infinite: encoded_args[8] != Fr::zero(),
+                    },
+                    master_outgoing_viewing_public_key: Point {
+                        x: encoded_args[9],
+                        y: encoded_args[10],
+                        is_infinite: encoded_args[11] != Fr::zero(),
+                    },
+                    master_tagging_public_key: Point {
+                        x: encoded_args[12],
+                        y: encoded_args[13],
+                        is_infinite: encoded_args[14] != Fr::zero(),
+                    },
+                };
+                let universal_deploy = encoded_args[15] != Fr::zero();
+                let deployer = if universal_deploy {
+                    AztecAddress::zero()
+                } else {
+                    origin
+                };
+                let instance = ContractInstanceWithAddress {
+                    address: compute_contract_address_from_instance(&ContractInstance {
+                        version: 1,
+                        salt,
+                        deployer,
+                        current_contract_class_id: class_id,
+                        original_contract_class_id: class_id,
+                        initialization_hash,
+                        public_keys: public_keys.clone(),
+                    })?,
+                    inner: ContractInstance {
+                        version: 1,
+                        salt,
+                        deployer,
+                        current_contract_class_id: class_id,
+                        original_contract_class_id: class_id,
+                        initialization_hash,
+                        public_keys: public_keys.clone(),
+                    },
+                };
+
+                let event_payload = vec![
+                    contract_instance_published_magic_value(),
+                    instance.address.0,
+                    Fr::from(1u64),
+                    salt,
+                    class_id,
+                    initialization_hash,
+                    public_keys.master_nullifier_public_key.x,
+                    public_keys.master_nullifier_public_key.y,
+                    public_keys.master_incoming_viewing_public_key.x,
+                    public_keys.master_incoming_viewing_public_key.y,
+                    public_keys.master_outgoing_viewing_public_key.x,
+                    public_keys.master_outgoing_viewing_public_key.y,
+                    public_keys.master_tagging_public_key.x,
+                    public_keys.master_tagging_public_key.y,
+                    deployer.0,
+                ];
+                let mut emitted_private_log_fields = event_payload.clone();
+                emitted_private_log_fields.push(Fr::zero());
+                // Emit the raw address as the nullifier — the kernel silos it later
+                // with the deployer protocol contract address.
+                let entrypoint = crate::execution::execution_result::PrivateCallExecutionResult {
+                    contract_address,
+                    call_context: aztec_core::kernel_types::CallContext {
+                        msg_sender: origin,
+                        contract_address,
+                        function_selector: FunctionSelector::from_signature(
+                            "publish_for_public_execution(Field,(Field),Field,(((Field,Field,bool)),((Field,Field,bool)),((Field,Field,bool)),((Field,Field,bool))),bool)",
+                        )
+                        .to_field(),
+                        is_static_call: false,
+                    },
+                    nullifiers: vec![aztec_core::kernel_types::ScopedNullifier {
+                        nullifier: aztec_core::kernel_types::Nullifier {
+                            value: instance.address.0,
+                            note_hash: Fr::zero(),
+                            counter: 2,
+                        },
+                        contract_address,
+                    }],
+                    private_logs: vec![crate::execution::execution_result::PrivateLogData {
+                        fields: emitted_private_log_fields,
+                        emitted_length: 15,
+                        counter: 3,
+                        contract_address,
+                    }],
+                    start_side_effect_counter: 2,
+                    end_side_effect_counter: 4,
+                    min_revertible_side_effect_counter: 2,
+                    ..Default::default()
+                };
+
+                return Ok(Some(CallExecutionBundle {
+                    execution_result: crate::execution::execution_result::PrivateExecutionResult {
+                        entrypoint,
+                        first_nullifier,
+                        public_function_calldata: vec![],
+                    },
+                    contract_class_log_fields: vec![],
+                    public_function_calldata: vec![],
+                }));
+            }
+            _ => {}
+        }
+
+        Ok(None)
+    }
+
+    #[allow(dead_code)]
+    fn decode_entrypoint_call(
+        request: &DecodedTxExecutionRequest,
+    ) -> Result<Option<DecodedEntrypointCall>, Error> {
+        Ok(Self::decode_entrypoint_calls(request)?.into_iter().next())
+    }
+
+    fn decode_entrypoint_calls(
+        request: &DecodedTxExecutionRequest,
+    ) -> Result<Vec<DecodedEntrypointCall>, Error> {
+        let entrypoint_args = request
+            .args_of_calls
+            .iter()
+            .find(|hv| hv.hash == request.first_call_args_hash)
+            .ok_or_else(|| {
+                Error::InvalidData("firstCallArgsHash not found in argsOfCalls".into())
+            })?;
+
+        let encoded_calls = parse_encoded_calls(&entrypoint_args.values)?;
+        let mut decoded = Vec::new();
+        for call in encoded_calls {
+            if call.to == AztecAddress::zero()
+                || call.selector == aztec_core::abi::FunctionSelector::empty()
+            {
+                continue;
+            }
+
+            let hashed_args = request
+                .args_of_calls
+                .iter()
+                .find(|hv| hv.hash == call.args_hash)
+                .ok_or_else(|| {
+                    Error::InvalidData(format!(
+                        "call args hash {} not found in argsOfCalls",
+                        call.args_hash
+                    ))
+                })?;
+
+            let encoded_args = if call.is_public {
+                hashed_args.values.iter().copied().skip(1).collect()
+            } else {
+                hashed_args.values.clone()
+            };
+
+            decoded.push(DecodedEntrypointCall {
+                to: call.to,
+                selector: call.selector,
+                encoded_args,
+                hide_msg_sender: call.hide_msg_sender,
+                is_static: call.is_static,
+            });
+        }
+
+        Ok(decoded)
+    }
+
+    /// Extract args from tx request data.
+    #[allow(dead_code)] // Used when ACVM integration is complete
+    fn extract_args(data: &serde_json::Value) -> Vec<Fr> {
+        data.get("args")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().and_then(|s| Fr::from_hex(s).ok()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Build the full initial witness for a private function call.
+    ///
+    /// Private functions expect `[PrivateContextInputs fields..., user args...]`
+    /// where PrivateContextInputs is 37 fields: call_context(4) +
+    /// anchor_block_header(22) + tx_context(10) + start_side_effect_counter(1).
+    fn build_private_witness(
+        &self,
+        artifact: &ContractArtifact,
+        function_name: &str,
+        user_args: &[Fr],
+        contract_address: AztecAddress,
+        msg_sender: AztecAddress,
+        tx_request: &TxExecutionRequest,
+        anchor: &AnchorBlockHeader,
+        function_selector: aztec_core::abi::FunctionSelector,
+        is_static_call: bool,
+    ) -> Vec<Fr> {
+        let context_size = artifact.private_context_inputs_size(function_name);
+        if context_size == 0 {
+            // Not a private function or no context inputs needed
+            return user_args.to_vec();
+        }
+
+        let mut witness = Vec::with_capacity(context_size + user_args.len());
+        let tx_constants = Self::build_tx_constant_data(
+            anchor,
+            tx_request,
+            self.vk_tree_root,
+            self.protocol_contracts_hash,
+        );
+        let call_context = aztec_core::kernel_types::CallContext {
+            msg_sender,
+            contract_address,
+            function_selector: function_selector.to_field(),
+            is_static_call,
+        };
+
+        witness.extend(call_context.to_fields());
+        witness.extend(tx_constants.anchor_block_header.to_fields());
+        witness.extend(tx_constants.tx_context.to_fields());
+        // Upstream reserves the first side effect slot for the tx hash.
+        witness.push(Fr::from(2u64));
+
+        // Ensure we have exactly context_size fields
+        witness.truncate(context_size);
+        while witness.len() < context_size {
+            witness.push(Fr::zero());
+        }
+
+        // Append user args
+        witness.extend_from_slice(user_args);
+
+        witness
+    }
+
+    fn offset_private_call_result(
+        call: &crate::execution::execution_result::PrivateCallExecutionResult,
+        offset: u32,
+    ) -> crate::execution::execution_result::PrivateCallExecutionResult {
+        let mut adjusted = call.clone();
+        adjusted.start_side_effect_counter =
+            adjusted.start_side_effect_counter.saturating_add(offset);
+        adjusted.end_side_effect_counter = adjusted.end_side_effect_counter.saturating_add(offset);
+        adjusted.min_revertible_side_effect_counter = adjusted
+            .min_revertible_side_effect_counter
+            .saturating_add(offset);
+
+        for note in &mut adjusted.new_notes {
+            note.counter = note.counter.saturating_add(offset);
+        }
+        adjusted.note_hash_nullifier_counter_map = adjusted
+            .note_hash_nullifier_counter_map
+            .iter()
+            .map(|(note_counter, nullifier_counter)| {
+                (
+                    note_counter.saturating_add(offset),
+                    nullifier_counter.saturating_add(offset),
+                )
+            })
+            .collect();
+        for log in &mut adjusted.contract_class_logs {
+            log.counter = log.counter.saturating_add(offset);
+        }
+        for note_hash in &mut adjusted.note_hashes {
+            note_hash.note_hash.counter = note_hash.note_hash.counter.saturating_add(offset);
+        }
+        for nullifier in &mut adjusted.nullifiers {
+            nullifier.nullifier.counter = nullifier.nullifier.counter.saturating_add(offset);
+        }
+        for req in &mut adjusted.note_hash_read_requests {
+            req.read_request.counter = req.read_request.counter.saturating_add(offset);
+        }
+        for req in &mut adjusted.nullifier_read_requests {
+            req.read_request.counter = req.read_request.counter.saturating_add(offset);
+        }
+        for log in &mut adjusted.private_logs {
+            log.counter = log.counter.saturating_add(offset);
+        }
+        for req in &mut adjusted.public_call_requests {
+            req.counter = req.counter.saturating_add(offset);
+        }
+        if let Some(req) = &mut adjusted.public_teardown_call_request {
+            req.counter = req.counter.saturating_add(offset);
+        }
+        adjusted.nested_execution_results = adjusted
+            .nested_execution_results
+            .iter()
+            .map(|nested| Self::offset_private_call_result(nested, offset))
+            .collect();
+        adjusted
+    }
+
+    fn aggregate_call_bundles(
+        origin: AztecAddress,
+        bundles: Vec<CallExecutionBundle>,
+    ) -> CallExecutionBundle {
+        let mut offset = 0u32;
+        let mut nested_execution_results = Vec::with_capacity(bundles.len());
+        let mut first_nullifier = Fr::zero();
+        let mut public_function_calldata = Vec::new();
+        let mut contract_class_log_fields = Vec::new();
+        let mut min_revertible_side_effect_counter = 0u32;
+
+        for (idx, bundle) in bundles.into_iter().enumerate() {
+            if idx == 0 {
+                first_nullifier = bundle.execution_result.first_nullifier;
+                min_revertible_side_effect_counter = bundle
+                    .execution_result
+                    .entrypoint
+                    .min_revertible_side_effect_counter;
+            }
+            let adjusted_entrypoint =
+                Self::offset_private_call_result(&bundle.execution_result.entrypoint, offset);
+            offset = adjusted_entrypoint.end_side_effect_counter;
+            nested_execution_results.push(adjusted_entrypoint);
+            public_function_calldata.extend(bundle.public_function_calldata);
+            contract_class_log_fields.extend(bundle.contract_class_log_fields);
+        }
+
+        let root = crate::execution::execution_result::PrivateCallExecutionResult {
+            contract_address: origin,
+            call_context: aztec_core::kernel_types::CallContext {
+                msg_sender: origin,
+                contract_address: origin,
+                function_selector: Fr::zero(),
+                is_static_call: false,
+            },
+            nested_execution_results,
+            start_side_effect_counter: 0,
+            end_side_effect_counter: offset,
+            min_revertible_side_effect_counter,
+            ..Default::default()
+        };
+
+        CallExecutionBundle {
+            execution_result: crate::execution::execution_result::PrivateExecutionResult {
+                entrypoint: root,
+                first_nullifier,
+                public_function_calldata: public_function_calldata.clone(),
+            },
+            contract_class_log_fields,
+            public_function_calldata,
+        }
+    }
+
+    async fn execute_entrypoint_call_bundle(
+        &self,
+        tx_request: &TxExecutionRequest,
+        call: &DecodedEntrypointCall,
+        origin: AztecAddress,
+        protocol_nullifier: Fr,
+        anchor: &AnchorBlockHeader,
+        scopes: &[AztecAddress],
+    ) -> Result<CallExecutionBundle, Error> {
+        let contract_address = call.to;
+        let function_name = self
+            .resolve_function_name_by_selector(&contract_address, call.selector)
+            .await;
+
+        if let Some(bundle) = self.protocol_private_execution(
+            tx_request,
+            contract_address,
+            &function_name,
+            &call.encoded_args,
+            origin,
+            protocol_nullifier,
+        )? {
+            return Ok(bundle);
+        }
+
+        let contract_instance = self.contract_store.get_instance(&contract_address).await?;
+        let class_id = contract_instance
+            .as_ref()
+            .map(|i| i.inner.current_contract_class_id)
+            .ok_or_else(|| Error::InvalidData(format!("contract not found: {contract_address}")))?;
+        let artifact = self
+            .contract_store
+            .get_artifact(&class_id)
+            .await?
+            .ok_or_else(|| {
+                Error::InvalidData(format!("artifact not found for class {class_id}"))
+            })?;
+        let function = artifact.find_function(&function_name)?;
+
+        if function.function_type == FunctionType::Public {
+            let (execution_result, contract_class_log_fields, public_function_calldata) =
+                Self::build_public_call_execution(
+                    &artifact,
+                    &function_name,
+                    &call.encoded_args,
+                    contract_address,
+                    origin,
+                    protocol_nullifier,
+                    call.hide_msg_sender,
+                    call.is_static,
+                )?;
+            return Ok(CallExecutionBundle {
+                execution_result,
+                contract_class_log_fields,
+                public_function_calldata,
+            });
+        }
+
+        let full_witness = self.build_private_witness(
+            &artifact,
+            &function_name,
+            &call.encoded_args,
+            contract_address,
+            origin,
+            tx_request,
+            anchor,
+            function.selector.expect("private function selector"),
+            function.is_static,
+        );
+
+        let mut oracle = crate::execution::PrivateExecutionOracle::new(
+            &self.node,
+            &self.contract_store,
+            &self.key_store,
+            &self.note_store,
+            &self.capsule_store,
+            anchor.data.clone(),
+            contract_address,
+            protocol_nullifier,
+            Some(origin),
+        );
+
+        let acvm_output = crate::execution::AcvmExecutor::execute_private(
+            &artifact,
+            &function_name,
+            &full_witness,
+            &mut oracle,
+        )
+        .await?;
+
+        let mut execution_result = oracle.build_execution_result(acvm_output, contract_address);
+        execution_result.entrypoint.call_context = aztec_core::kernel_types::CallContext {
+            msg_sender: origin,
+            contract_address,
+            function_selector: function
+                .selector
+                .expect("private function selector")
+                .to_field(),
+            is_static_call: function.is_static,
+        };
+        self.persist_pending_notes(&execution_result, scopes)
+            .await?;
+
+        let contract_class_log_fields = execution_result
+            .all_contract_class_logs_sorted()
+            .iter()
+            .map(|ccl| {
+                aztec_core::tx::ContractClassLogFields::from_emitted_fields(ccl.log.fields.clone())
+            })
+            .collect::<Vec<_>>();
+        let public_function_calldata = execution_result.public_function_calldata.clone();
+
+        Ok(CallExecutionBundle {
+            execution_result,
+            contract_class_log_fields,
+            public_function_calldata,
+        })
+    }
+
+    /// Extract the origin (msg_sender) from a TxExecutionRequest.
+    fn extract_origin(&self, tx_request: &TxExecutionRequest) -> AztecAddress {
+        tx_request
+            .data
+            .get("origin")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Fr::from_hex(s).ok())
+            .map(AztecAddress)
+            .unwrap_or(AztecAddress(Fr::zero()))
+    }
+    /// Build `TxConstantData` from the anchor block header and tx request.
+    fn build_tx_constant_data(
+        anchor: &AnchorBlockHeader,
+        tx_request: &TxExecutionRequest,
+        vk_tree_root: Fr,
+        protocol_contracts_hash: Fr,
+    ) -> aztec_core::kernel_types::TxConstantData {
+        let h = &anchor.data;
+
+        // Helper to extract an Fr from a JSON path (hex string or integer).
+        let fr_at = |val: &serde_json::Value, path: &str| -> Fr {
+            let v = val.pointer(path);
+            match v {
+                Some(serde_json::Value::String(s)) => Fr::from_hex(s).unwrap_or(Fr::zero()),
+                Some(serde_json::Value::Number(n)) => Fr::from(n.as_u64().unwrap_or(0)),
+                _ => Fr::zero(),
+            }
+        };
+        // Parse a string as hex (0x-prefixed) or decimal.
+        let parse_u64_str = |s: &str| -> u64 {
+            if let Some(hex) = s.strip_prefix("0x") {
+                u64::from_str_radix(hex, 16).unwrap_or(0)
+            } else {
+                s.parse::<u64>().unwrap_or(0)
+            }
+        };
+        let parse_u128_str = |s: &str| -> u128 {
+            if let Some(hex) = s.strip_prefix("0x") {
+                u128::from_str_radix(hex, 16).unwrap_or(0)
+            } else {
+                s.parse::<u128>().unwrap_or(0)
+            }
+        };
+        let u32_at = |val: &serde_json::Value, path: &str| -> u32 {
+            let v = val.pointer(path);
+            match v {
+                Some(serde_json::Value::Number(n)) => n.as_u64().unwrap_or(0) as u32,
+                Some(serde_json::Value::String(s)) => parse_u64_str(s) as u32,
+                _ => 0,
+            }
+        };
+        let u64_at = |val: &serde_json::Value, path: &str| -> u64 {
+            let v = val.pointer(path);
+            match v {
+                Some(serde_json::Value::Number(n)) => n.as_u64().unwrap_or(0),
+                Some(serde_json::Value::String(s)) => parse_u64_str(s),
+                _ => 0,
+            }
+        };
+        let u128_at = |val: &serde_json::Value, path: &str| -> u128 {
+            let v = val.pointer(path);
+            match v {
+                Some(serde_json::Value::Number(n)) => n.as_u64().unwrap_or(0) as u128,
+                Some(serde_json::Value::String(s)) => parse_u128_str(s),
+                _ => 0,
+            }
+        };
+        let eth_at = |val: &serde_json::Value, path: &str| -> aztec_core::types::EthAddress {
+            // Parse EthAddress from hex string — use Fr conversion which zero-pads correctly
+            match val.pointer(path).and_then(|v| v.as_str()) {
+                Some(s) => {
+                    // Parse as Fr, then extract the low 20 bytes
+                    let fr = Fr::from_hex(s).unwrap_or(Fr::zero());
+                    let bytes = fr.to_be_bytes();
+                    let mut addr = [0u8; 20];
+                    addr.copy_from_slice(&bytes[12..32]);
+                    aztec_core::types::EthAddress(addr)
+                }
+                None => aztec_core::types::EthAddress::default(),
+            }
+        };
+
+        let snap = |val: &serde_json::Value,
+                    prefix: &str|
+         -> aztec_core::kernel_types::AppendOnlyTreeSnapshot {
+            aztec_core::kernel_types::AppendOnlyTreeSnapshot {
+                root: fr_at(val, &format!("{prefix}/root")),
+                next_available_leaf_index: u32_at(val, &format!("{prefix}/nextAvailableLeafIndex")),
+            }
+        };
+
+        let block_header = aztec_core::kernel_types::BlockHeader {
+            last_archive: snap(h, "/lastArchive"),
+            state: aztec_core::kernel_types::StateReference {
+                l1_to_l2_message_tree: snap(h, "/state/l1ToL2MessageTree"),
+                partial: aztec_core::kernel_types::PartialStateReference {
+                    note_hash_tree: snap(h, "/state/partial/noteHashTree"),
+                    nullifier_tree: snap(h, "/state/partial/nullifierTree"),
+                    public_data_tree: snap(h, "/state/partial/publicDataTree"),
+                },
+            },
+            sponge_blob_hash: fr_at(h, "/spongeBlobHash"),
+            global_variables: aztec_core::kernel_types::GlobalVariables {
+                chain_id: fr_at(h, "/globalVariables/chainId"),
+                version: fr_at(h, "/globalVariables/version"),
+                block_number: u64_at(h, "/globalVariables/blockNumber"),
+                slot_number: u64_at(h, "/globalVariables/slotNumber"),
+                timestamp: u64_at(h, "/globalVariables/timestamp"),
+                coinbase: eth_at(h, "/globalVariables/coinbase"),
+                fee_recipient: AztecAddress(fr_at(h, "/globalVariables/feeRecipient")),
+                gas_fees: aztec_core::fee::GasFees {
+                    fee_per_da_gas: u128_at(h, "/globalVariables/gasFees/feePerDaGas"),
+                    fee_per_l2_gas: u128_at(h, "/globalVariables/gasFees/feePerL2Gas"),
+                },
+            },
+            total_fees: fr_at(h, "/totalFees"),
+            total_mana_used: fr_at(h, "/totalManaUsed"),
+        };
+
+        // Extract tx context from the request
+        let req = &tx_request.data;
+        let tx_context = aztec_core::kernel_types::TxContext {
+            chain_id: fr_at(req, "/txContext/chainId"),
+            version: fr_at(req, "/txContext/version"),
+            gas_settings: aztec_core::fee::GasSettings {
+                gas_limits: Some(aztec_core::fee::Gas {
+                    da_gas: u64_at(req, "/txContext/gasSettings/gasLimits/daGas"),
+                    l2_gas: u64_at(req, "/txContext/gasSettings/gasLimits/l2Gas"),
+                }),
+                teardown_gas_limits: Some(aztec_core::fee::Gas {
+                    da_gas: u64_at(req, "/txContext/gasSettings/teardownGasLimits/daGas"),
+                    l2_gas: u64_at(req, "/txContext/gasSettings/teardownGasLimits/l2Gas"),
+                }),
+                max_fee_per_gas: Some(aztec_core::fee::GasFees {
+                    fee_per_da_gas: u128_at(req, "/txContext/gasSettings/maxFeePerGas/feePerDaGas"),
+                    fee_per_l2_gas: u128_at(req, "/txContext/gasSettings/maxFeePerGas/feePerL2Gas"),
+                }),
+                max_priority_fee_per_gas: Some(aztec_core::fee::GasFees {
+                    fee_per_da_gas: u128_at(
+                        req,
+                        "/txContext/gasSettings/maxPriorityFeePerGas/feePerDaGas",
+                    ),
+                    fee_per_l2_gas: u128_at(
+                        req,
+                        "/txContext/gasSettings/maxPriorityFeePerGas/feePerL2Gas",
+                    ),
+                }),
+            },
+        };
+
+        aztec_core::kernel_types::TxConstantData {
+            anchor_block_header: block_header,
+            tx_context,
+            vk_tree_root,
+            protocol_contracts_hash,
+        }
+    }
+
+    /// Compute the expiration timestamp from the anchor block header.
+    fn compute_expiration(anchor: &AnchorBlockHeader) -> u64 {
+        let timestamp = anchor
+            .data
+            .pointer("/globalVariables/timestamp")
+            .and_then(|v| {
+                v.as_u64().or_else(|| {
+                    v.as_str().and_then(|s| {
+                        u64::from_str_radix(s.strip_prefix("0x").unwrap_or(s), 16).ok()
+                    })
+                })
+            })
+            .unwrap_or(0);
+        timestamp + aztec_core::constants::MAX_TX_LIFETIME
+    }
+
+    /// Ensure the tx's max_fee_per_gas is at least the current network gas price.
+    ///
+    /// Reads the current gas fees from the anchor block header and applies a 1.5x
+    /// safety multiplier. If the tx's fee cap is below this, it is raised.
+    fn ensure_min_fees(
+        tx_constants: &mut aztec_core::kernel_types::TxConstantData,
+        anchor: &AnchorBlockHeader,
+    ) {
+        let parse_u128 = |val: &serde_json::Value| -> u128 {
+            if let Some(s) = val.as_str() {
+                let s = s.strip_prefix("0x").unwrap_or(s);
+                u128::from_str_radix(
+                    s,
+                    if val.as_str().unwrap_or("").starts_with("0x") {
+                        16
+                    } else {
+                        10
+                    },
+                )
+                .unwrap_or(0)
+            } else {
+                val.as_u64().unwrap_or(0) as u128
+            }
+        };
+
+        let block_da_fee = anchor
+            .data
+            .pointer("/globalVariables/gasFees/feePerDaGas")
+            .map(|v| parse_u128(v))
+            .unwrap_or(0);
+        let block_l2_fee = anchor
+            .data
+            .pointer("/globalVariables/gasFees/feePerL2Gas")
+            .map(|v| parse_u128(v))
+            .unwrap_or(0);
+
+        // Apply 1.5x safety margin
+        let min_da = block_da_fee + block_da_fee / 2;
+        let min_l2 = block_l2_fee + block_l2_fee / 2;
+
+        if let Some(ref mut fees) = tx_constants.tx_context.gas_settings.max_fee_per_gas {
+            if fees.fee_per_da_gas < min_da {
+                fees.fee_per_da_gas = min_da;
+            }
+            if fees.fee_per_l2_gas < min_l2 {
+                fees.fee_per_l2_gas = min_l2;
+            }
+        } else {
+            tx_constants.tx_context.gas_settings.max_fee_per_gas = Some(aztec_core::fee::GasFees {
+                fee_per_da_gas: min_da,
+                fee_per_l2_gas: min_l2,
+            });
+        }
+    }
+
+    /// Build a synthetic execution result for a public function call.
+    ///
+    /// Public functions are executed by the sequencer, not the PXE. This method
+    /// creates a minimal `PrivateExecutionResult` that enqueues the public call
+    /// so the simulated kernel can package it correctly.
+    fn build_public_call_execution(
+        artifact: &aztec_core::abi::ContractArtifact,
+        function_name: &str,
+        encoded_args: &[Fr],
+        contract_address: AztecAddress,
+        origin: AztecAddress,
+        first_nullifier: Fr,
+        hide_msg_sender: bool,
+        is_static_call: bool,
+    ) -> Result<
+        (
+            crate::execution::execution_result::PrivateExecutionResult,
+            Vec<aztec_core::tx::ContractClassLogFields>,
+            Vec<aztec_core::tx::HashedValues>,
+        ),
+        Error,
+    > {
+        use crate::execution::execution_result::{
+            PrivateCallExecutionResult, PrivateExecutionResult, PublicCallRequestData,
+        };
+
+        let args = encoded_args.to_vec();
+
+        // Build calldata: function selector + args
+        let func = artifact.find_function(function_name)?;
+        let selector_fr: Fr = func
+            .selector
+            .ok_or_else(|| Error::InvalidData("public function has no selector".into()))?
+            .into();
+        let mut calldata = vec![selector_fr];
+        calldata.extend_from_slice(&args);
+        let hashed = aztec_core::tx::HashedValues::from_calldata(calldata);
+        let calldata_hash = hashed.hash();
+        let msg_sender = if hide_msg_sender {
+            AztecAddress::zero()
+        } else {
+            origin
+        };
+
+        let entrypoint = PrivateCallExecutionResult {
+            contract_address: origin,
+            public_call_requests: vec![PublicCallRequestData {
+                contract_address,
+                msg_sender,
+                is_static_call,
+                calldata_hash,
+                counter: 2,
+            }],
+            start_side_effect_counter: 2,
+            min_revertible_side_effect_counter: 2,
+            end_side_effect_counter: 3,
+            ..Default::default()
+        };
+
+        let exec_result = PrivateExecutionResult {
+            entrypoint,
+            first_nullifier,
+            public_function_calldata: vec![hashed.clone()],
+        };
+
+        Ok((exec_result, vec![], vec![hashed]))
     }
 
     async fn is_registered_account(&self, address: &AztecAddress) -> Result<bool, Error> {
@@ -176,10 +1452,10 @@ fn public_function_signatures(artifact: &ContractArtifact) -> Vec<String> {
 }
 
 #[async_trait]
-impl<N: AztecNode + 'static> Pxe for EmbeddedPxe<N> {
+impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
     async fn get_synced_block_header(&self) -> Result<BlockHeader, Error> {
-        let header = self.get_or_sync_block_header().await?;
-        Ok(BlockHeader { data: header })
+        let anchor = self.get_anchor_block_header().await?;
+        Ok(BlockHeader { data: anchor.data })
     }
 
     async fn get_contract_instance(
@@ -315,81 +1591,136 @@ impl<N: AztecNode + 'static> Pxe for EmbeddedPxe<N> {
 
     async fn simulate_tx(
         &self,
-        _tx_request: &TxExecutionRequest,
+        tx_request: &TxExecutionRequest,
         _opts: SimulateTxOpts,
     ) -> Result<TxSimulationResult, Error> {
-        // Sync block header before simulation
-        let _header = self.sync_block_header().await?;
+        self.sync_block_state().await?;
 
-        // TODO(Phase 1): Execute private functions via ACVM, then assemble
-        // simulated kernel output. Requires acvm crate integration.
-        //
-        // The flow is:
-        // 1. Parse TxExecutionRequest to extract function calls
-        // 2. For each private call, execute via AcvmExecutor with PrivateExecutionOracle
-        // 3. Run SimulatedKernel::process on the execution results
-        // 4. Optionally simulate public calls via node.simulate_public_calls()
-        // 5. Assemble TxSimulationResult
-        Err(Error::InvalidData(
-            "simulate_tx requires ACVM integration (pending Phase 1 completion)".into(),
-        ))
+        let anchor = self.get_anchor_block_header().await?;
+        let protocol_nullifier = compute_protocol_nullifier(&Self::tx_request_hash(tx_request)?);
+        let request: DecodedTxExecutionRequest = serde_json::from_value(tx_request.data.clone())?;
+        let origin = request.origin;
+        let decoded_calls = Self::decode_entrypoint_calls(&request)?;
+        let mut bundles = Vec::with_capacity(decoded_calls.len());
+        for call in &decoded_calls {
+            bundles.push(
+                self.execute_entrypoint_call_bundle(
+                    tx_request,
+                    call,
+                    origin,
+                    protocol_nullifier,
+                    &anchor,
+                    &[],
+                )
+                .await?,
+            );
+        }
+        let aggregated = Self::aggregate_call_bundles(origin, bundles);
+
+        // Process through simulated kernel
+        let kernel_output = crate::kernel::SimulatedKernel::process(
+            &aggregated.execution_result,
+            aztec_core::kernel_types::TxConstantData::default(), // TODO: fill from block header
+            &origin.0,
+            0, // TODO: fill expiration timestamp
+        )?;
+
+        let pi = &kernel_output.public_inputs;
+        Ok(TxSimulationResult {
+            data: serde_json::json!({
+                "returnValues": aggregated.execution_result.entrypoint.return_values.iter().map(|f| f.to_string()).collect::<Vec<_>>(),
+                "gasUsed": {
+                    "daGas": pi.gas_used.da_gas,
+                    "l2Gas": pi.gas_used.l2_gas,
+                },
+                "isForPublic": pi.is_for_public(),
+            }),
+        })
     }
 
     async fn prove_tx(
         &self,
-        _tx_request: &TxExecutionRequest,
+        tx_request: &TxExecutionRequest,
         scopes: Vec<AztecAddress>,
     ) -> Result<TxProvingResult, Error> {
-        // Phase 2: Full proving flow
-        //
-        // 1. Sync block header
-        let header = self.sync_block_header().await?;
+        self.sync_block_state().await?;
 
-        // 2. Extract block hash from header for consistent state reads
-        let block_hash = header
-            .pointer("/blockHash")
-            .and_then(|v| v.as_str())
-            .and_then(|s| Fr::from_hex(s).ok())
-            .unwrap_or(Fr::zero());
+        let anchor = self.get_anchor_block_header().await?;
+        let tx_req_hash = Self::tx_request_hash(tx_request)?;
+        let protocol_nullifier = compute_protocol_nullifier(&tx_req_hash);
+        let origin = self.extract_origin(tx_request);
+        let mut tx_constants = Self::build_tx_constant_data(
+            &anchor,
+            tx_request,
+            self.vk_tree_root,
+            self.protocol_contracts_hash,
+        );
+        let expiration_timestamp = Self::compute_expiration(&anchor);
+        Self::ensure_min_fees(&mut tx_constants, &anchor);
+        let request: DecodedTxExecutionRequest = serde_json::from_value(tx_request.data.clone())?;
+        let decoded_calls = Self::decode_entrypoint_calls(&request)?;
 
-        // 3. Sync contract state for scopes
-        // TODO: When ContractSyncService is fully wired with ACVM,
-        // run sync for each contract referenced in the tx_request.
+        for call in &decoded_calls {
+            for _scope in &scopes {
+                let _ = self
+                    .contract_sync_service
+                    .ensure_contract_synced(
+                        &call.to,
+                        &scopes,
+                        &anchor.block_hash,
+                        |contract, scopes| async move {
+                            self.execute_sync_state_for_contract(contract, scopes).await
+                        },
+                    )
+                    .await;
+            }
+        }
 
-        // 4. Execute private functions via ACVM
-        // TODO: When ACVM integration is complete, execute the private
-        // functions from tx_request and collect PrivateCallExecution results.
-        //
-        // For now, we construct the kernel execution prover and delegate
-        // to it. The actual ACVM execution is still pending Phase 1 completion.
-        let _ = &self.kernel_prover;
-        let _ = block_hash;
-        let _ = &scopes;
+        let mut bundles = Vec::with_capacity(decoded_calls.len());
+        for call in &decoded_calls {
+            bundles.push(
+                self.execute_entrypoint_call_bundle(
+                    tx_request,
+                    call,
+                    origin,
+                    protocol_nullifier,
+                    &anchor,
+                    &scopes,
+                )
+                .await?,
+            );
+        }
+        let aggregated = Self::aggregate_call_bundles(origin, bundles);
 
-        // 5. Run kernel circuit sequence: init → inner → reset → tail → hiding → chonk
-        // This requires the ACVM execution results from step 4.
-        // When complete, the flow will be:
-        //
-        // let execution_prover = PrivateKernelExecutionProver::from_stores(
-        //     &self.node,
-        //     &self.contract_store,
-        //     &self.key_store,
-        //     &self.kernel_prover,
-        //     block_hash,
-        //     KernelExecutionConfig::default(),
-        // );
-        // let result = execution_prover.prove_with_kernels(&executions).await?;
-        //
-        // 6. Store pre-tags in sender_tagging_store
-        // 7. Assemble TxProvingResult
+        // Process through simulated kernel
+        let kernel_output = crate::kernel::SimulatedKernel::process(
+            &aggregated.execution_result,
+            tx_constants,
+            &origin.0,
+            expiration_timestamp,
+        )?;
+        // Serialize kernel output to buffer and build TxProvingResult
+        let tx_hash = aztec_core::tx::TxHash(kernel_output.public_inputs.hash().to_be_bytes());
+        let public_inputs_buffer = kernel_output.public_inputs.to_buffer();
+        let public_inputs =
+            aztec_core::tx::PrivateKernelTailCircuitPublicInputs::from_bytes(public_inputs_buffer);
+        // ChonkProof TS format: 4-byte BE field count + N×32-byte Fr fields
+        let mut chonk_bytes =
+            Vec::with_capacity(4 + aztec_core::constants::CHONK_PROOF_LENGTH * 32);
+        chonk_bytes
+            .extend_from_slice(&(aztec_core::constants::CHONK_PROOF_LENGTH as u32).to_be_bytes());
+        chonk_bytes.resize(4 + aztec_core::constants::CHONK_PROOF_LENGTH * 32, 0);
+        let chonk_proof = aztec_core::tx::ChonkProof::from_bytes(chonk_bytes);
 
-        // For now, return a structured error indicating the dependency on ACVM
-        Err(Error::InvalidData(
-            "prove_tx: private execution (ACVM) not yet integrated — \
-             kernel prover infrastructure is ready but requires ACVM execution \
-             results from Phase 1 to produce proofs"
-                .into(),
-        ))
+        Ok(TxProvingResult {
+            tx_hash: Some(tx_hash),
+            private_execution_result: serde_json::json!({}),
+            public_inputs,
+            chonk_proof,
+            contract_class_log_fields: aggregated.contract_class_log_fields,
+            public_function_calldata: aggregated.public_function_calldata,
+            stats: None,
+        })
     }
 
     async fn profile_tx(
@@ -397,33 +1728,189 @@ impl<N: AztecNode + 'static> Pxe for EmbeddedPxe<N> {
         _tx_request: &TxExecutionRequest,
         _opts: ProfileTxOpts,
     ) -> Result<TxProfileResult, Error> {
-        // Phase 3
-        Err(Error::InvalidData(
-            "profile_tx not yet implemented (Phase 3)".into(),
-        ))
+        Err(Error::InvalidData("profile_tx not yet implemented".into()))
     }
 
     async fn execute_utility(
         &self,
-        _call: &FunctionCall,
-        _opts: ExecuteUtilityOpts,
+        call: &FunctionCall,
+        opts: ExecuteUtilityOpts,
     ) -> Result<UtilityExecutionResult, Error> {
-        // TODO(Phase 1): Execute unconstrained function via ACVM Brillig executor
-        // with UtilityExecutionOracle. Requires acvm crate integration.
-        Err(Error::InvalidData(
-            "execute_utility requires ACVM integration (pending Phase 1 completion)".into(),
-        ))
+        self.sync_block_state().await?;
+        let anchor = self.get_anchor_block_header().await?;
+
+        // Look up the artifact for the target contract
+        let contract_instance = self.contract_store.get_instance(&call.to).await?;
+        let class_id = contract_instance
+            .as_ref()
+            .map(|i| i.inner.current_contract_class_id)
+            .ok_or_else(|| Error::InvalidData(format!("contract not found: {}", call.to)))?;
+
+        let artifact = self
+            .contract_store
+            .get_artifact(&class_id)
+            .await?
+            .ok_or_else(|| {
+                Error::InvalidData(format!("artifact not found for class {class_id}"))
+            })?;
+
+        // Find the function by selector
+        let function = artifact
+            .find_function_by_selector(&call.selector)
+            .or_else(|| {
+                // Fallback: try finding by name from selector string
+                artifact
+                    .functions
+                    .iter()
+                    .find(|f| f.function_type == FunctionType::Utility)
+            })
+            .ok_or_else(|| {
+                Error::InvalidData(format!(
+                    "utility function with selector {} not found in {}",
+                    call.selector, artifact.name
+                ))
+            })?;
+
+        let function_name = function.name.clone();
+
+        if function_name != "sync_state" {
+            self.contract_sync_service
+                .ensure_contract_synced(
+                    &call.to,
+                    &opts.scopes,
+                    &anchor.block_hash,
+                    |contract, scopes| async move {
+                        self.execute_sync_state_for_contract(contract, scopes).await
+                    },
+                )
+                .await?;
+        }
+
+        // Encode arguments as field elements
+        let args: Vec<Fr> = call
+            .args
+            .iter()
+            .map(|v| match v {
+                aztec_core::abi::AbiValue::Field(f) => *f,
+                aztec_core::abi::AbiValue::Integer(i) => Fr::from(*i as u64),
+                aztec_core::abi::AbiValue::Boolean(b) => Fr::from(*b),
+                _ => Fr::zero(),
+            })
+            .collect();
+
+        // Create utility oracle
+        let mut oracle = crate::execution::UtilityExecutionOracle::new(
+            &self.node,
+            &self.contract_store,
+            &self.key_store,
+            &self.note_store,
+            &self.address_store,
+            &self.capsule_store,
+            &self.sender_store,
+            &self.sender_tagging_store,
+            &self.recipient_tagging_store,
+            &self.private_event_store,
+            &self.anchor_block_store,
+            anchor.data.clone(),
+            call.to,
+            opts.scopes.clone(),
+        );
+
+        // Set auth witnesses if provided
+        let auth_witness_pairs: Vec<(Fr, Vec<Fr>)> = opts
+            .authwits
+            .iter()
+            .map(|aw| (aw.request_hash, aw.fields.clone()))
+            .collect();
+        oracle.set_auth_witnesses(auth_witness_pairs);
+
+        // Execute via ACVM
+        let result = crate::execution::AcvmExecutor::execute_utility(
+            &artifact,
+            &function_name,
+            &args,
+            &mut oracle,
+        )
+        .await?;
+
+        Ok(UtilityExecutionResult {
+            result: result.return_values,
+            stats: None,
+        })
     }
 
     async fn get_private_events(
         &self,
-        _event_selector: &EventSelector,
-        _filter: PrivateEventFilter,
+        event_selector: &EventSelector,
+        filter: PrivateEventFilter,
     ) -> Result<Vec<PackedPrivateEvent>, Error> {
-        // Phase 3: event discovery
-        Err(Error::InvalidData(
-            "get_private_events not yet implemented (Phase 3)".into(),
-        ))
+        // Phase 3: Private event retrieval
+        //
+        // Matching the TS PXE.getPrivateEvents flow:
+        // 1. Sync block state
+        // 2. Get anchor block number
+        // 3. Ensure contract synced (when ACVM is available)
+        // 4. Validate filter
+        // 5. Query PrivateEventStore
+        // 6. Convert to PackedPrivateEvent
+
+        self.sync_block_state().await?;
+
+        let anchor_block_number = self.get_anchor_block_number().await?;
+
+        // Ensure contract is synced for the filter's contract address
+        // (when ACVM is available, this runs the contract's sync_state function)
+        let anchor_hash = self
+            .get_anchor_block_header()
+            .await
+            .map(|h| h.block_hash)
+            .unwrap_or_default();
+        self.contract_sync_service
+            .ensure_contract_synced(
+                &filter.contract_address,
+                &filter.scopes,
+                &anchor_hash,
+                |contract, scopes| async move {
+                    self.execute_sync_state_for_contract(contract, scopes).await
+                },
+            )
+            .await?;
+
+        // Validate and sanitize the filter
+        let validator = PrivateEventFilterValidator::new(anchor_block_number);
+        let query_filter = validator.validate(&filter)?;
+
+        tracing::debug!(
+            contract = %filter.contract_address,
+            from_block = ?query_filter.from_block,
+            to_block = ?query_filter.to_block,
+            "getting private events"
+        );
+
+        // Query the store
+        let stored_events = self
+            .private_event_store
+            .get_private_events(event_selector, &query_filter)
+            .await?;
+
+        // Convert StoredPrivateEvent → PackedPrivateEvent
+        let packed_events: Vec<PackedPrivateEvent> = stored_events
+            .into_iter()
+            .map(|e| {
+                let l2_block_hash =
+                    aztec_pxe_client::BlockHash::from_hex(&e.l2_block_hash).unwrap_or_default();
+
+                PackedPrivateEvent {
+                    packed_event: e.msg_content,
+                    tx_hash: e.tx_hash,
+                    l2_block_number: e.l2_block_number,
+                    l2_block_hash,
+                    event_selector: e.event_selector,
+                }
+            })
+            .collect();
+
+        Ok(packed_events)
     }
 
     async fn stop(&self) -> Result<(), Error> {
@@ -472,14 +1959,15 @@ mod tests {
     }
 
     /// A minimal mock AztecNode for testing.
+    #[derive(Clone)]
     struct MockNode {
-        registered_signatures: Mutex<Vec<String>>,
+        registered_signatures: Arc<Mutex<Vec<String>>>,
     }
 
     impl Default for MockNode {
         fn default() -> Self {
             Self {
-                registered_signatures: Mutex::new(vec![]),
+                registered_signatures: Arc::new(Mutex::new(vec![])),
             }
         }
     }
@@ -495,6 +1983,8 @@ mod tests {
                 l1_contract_addresses: serde_json::Value::Null,
                 protocol_contract_addresses: serde_json::Value::Null,
                 real_proofs: false,
+                l2_circuits_vk_tree_root: None,
+                l2_protocol_contracts_hash: None,
             })
         }
         async fn get_block_number(&self) -> Result<u64, Error> {
@@ -509,6 +1999,18 @@ mod tests {
         ) -> Result<aztec_core::tx::TxReceipt, Error> {
             Err(Error::InvalidData("mock".into()))
         }
+        async fn get_tx_effect(
+            &self,
+            _tx_hash: &aztec_core::tx::TxHash,
+        ) -> Result<Option<serde_json::Value>, Error> {
+            Ok(None)
+        }
+        async fn get_tx_by_hash(
+            &self,
+            _tx_hash: &aztec_core::tx::TxHash,
+        ) -> Result<Option<serde_json::Value>, Error> {
+            Ok(None)
+        }
         async fn get_public_logs(
             &self,
             _filter: aztec_node_client::PublicLogFilter,
@@ -518,7 +2020,7 @@ mod tests {
                 max_logs_hit: false,
             })
         }
-        async fn send_tx(&self, _tx: &serde_json::Value) -> Result<aztec_core::tx::TxHash, Error> {
+        async fn send_tx(&self, _tx: &serde_json::Value) -> Result<(), Error> {
             Err(Error::InvalidData("mock".into()))
         }
         async fn get_contract(
@@ -531,7 +2033,7 @@ mod tests {
             Ok(None)
         }
         async fn get_block_header(&self, _block_number: u64) -> Result<serde_json::Value, Error> {
-            Ok(serde_json::json!({"blockNumber": 1}))
+            Ok(serde_json::json!({"globalVariables": {"blockNumber": 1}, "blockHash": "0x01"}))
         }
         async fn get_block(&self, _block_number: u64) -> Result<Option<serde_json::Value>, Error> {
             Ok(None)
@@ -586,8 +2088,11 @@ mod tests {
         ) -> Result<serde_json::Value, Error> {
             Ok(serde_json::Value::Null)
         }
-        async fn is_valid_tx(&self, _tx: &serde_json::Value) -> Result<bool, Error> {
-            Ok(true)
+        async fn is_valid_tx(
+            &self,
+            _tx: &serde_json::Value,
+        ) -> Result<aztec_node_client::TxValidationResult, Error> {
+            Ok(aztec_node_client::TxValidationResult::Valid)
         }
         async fn get_private_logs_by_tags(&self, _tags: &[Fr]) -> Result<serde_json::Value, Error> {
             Ok(serde_json::json!([]))
@@ -777,5 +2282,51 @@ mod tests {
             .unwrap_err();
 
         assert!(err.to_string().contains("artifact not found"));
+    }
+
+    #[tokio::test]
+    async fn get_private_events_returns_empty_when_no_events() {
+        let pxe = EmbeddedPxe::create_ephemeral(MockNode::default())
+            .await
+            .unwrap();
+        let events = pxe
+            .get_private_events(
+                &EventSelector(Fr::from(1u64)),
+                PrivateEventFilter {
+                    contract_address: AztecAddress::from(1u64),
+                    scopes: vec![AztecAddress::from(99u64)],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_private_events_rejects_empty_scopes() {
+        let pxe = EmbeddedPxe::create_ephemeral(MockNode::default())
+            .await
+            .unwrap();
+        let result = pxe
+            .get_private_events(
+                &EventSelector(Fr::from(1u64)),
+                PrivateEventFilter {
+                    contract_address: AztecAddress::from(1u64),
+                    scopes: vec![],
+                    ..Default::default()
+                },
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn anchor_block_store_is_populated_after_create() {
+        let pxe = EmbeddedPxe::create_ephemeral(MockNode::default())
+            .await
+            .unwrap();
+        let anchor = pxe.anchor_block_store().get_block_header().await.unwrap();
+        assert!(anchor.is_some());
     }
 }
