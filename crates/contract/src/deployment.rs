@@ -500,10 +500,18 @@ impl<W: Wallet> DeployMethod<'_, W> {
                     FunctionSelector::from_name_and_parameters(&func.name, &func.parameters)
                 });
 
+                // Pre-encode constructor args using ABI type info so that
+                // downstream abi_values_to_fields (which lacks type info)
+                // produces correctly padded fields — e.g. str<31> parameters
+                // are zero-padded to 31 field elements.
+                let encoded_fields = aztec_core::abi::encode_arguments(func, &self.args)?;
+                let pre_encoded: Vec<AbiValue> =
+                    encoded_fields.iter().map(|f| AbiValue::Field(*f)).collect();
+
                 let call = FunctionCall {
                     to: instance.address,
                     selector,
-                    args: self.args.clone(),
+                    args: pre_encoded,
                     function_type: func.function_type.clone(),
                     is_static: false,
                     hide_msg_sender: false,
