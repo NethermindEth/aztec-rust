@@ -977,6 +977,14 @@ impl<'a, N: AztecNode> UtilityExecutionOracle<'a, N> {
         };
 
         let mut senders = self.sender_store.get_all().await?;
+        // Also include all addresses in the address store as potential
+        // senders — registered accounts are skipped by register_sender()
+        // but can still be senders for tag computation.
+        for addr in self.address_store.get_all().await? {
+            if !senders.contains(&addr.address) {
+                senders.push(addr.address);
+            }
+        }
         if !senders.contains(recipient) {
             senders.push(*recipient);
         }
