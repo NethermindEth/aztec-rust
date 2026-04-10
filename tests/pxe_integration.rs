@@ -183,7 +183,10 @@ async fn registers_a_class_and_adds_a_contract_for_it() {
         .get_contract_instance(&instance.address)
         .await
         .expect("get instance");
-    assert_eq!(retrieved.unwrap().address, instance.address);
+    assert_eq!(
+        retrieved.expect("instance should exist").address,
+        instance.address
+    );
 }
 
 async fn await_register_class_and_verify(
@@ -199,7 +202,10 @@ async fn await_register_class_and_verify(
         .await
         .expect("get artifact");
     assert!(retrieved.is_some());
-    assert_eq!(retrieved.unwrap().name, artifact.name);
+    assert_eq!(
+        retrieved.expect("artifact should exist").name,
+        artifact.name
+    );
 }
 
 /// TS: it('refuses to register a class with a mismatched address')
@@ -226,7 +232,7 @@ async fn refuses_to_register_a_class_with_a_mismatched_address() {
 
     assert!(result.is_err());
     assert!(
-        format!("{}", result.unwrap_err()).contains("does not match"),
+        format!("{}", result.expect_err("should fail")).contains("does not match"),
         "error should mention address mismatch"
     );
 }
@@ -261,7 +267,7 @@ async fn refuses_to_register_a_contract_with_a_class_that_has_not_been_registere
 
     assert!(result.is_err());
     assert!(
-        format!("{}", result.unwrap_err()).contains("artifact not found"),
+        format!("{}", result.expect_err("should fail")).contains("artifact not found"),
         "error should mention missing artifact"
     );
 }
@@ -297,7 +303,7 @@ async fn refuses_to_register_a_contract_with_an_artifact_with_mismatching_class_
 
     assert!(result.is_err());
     assert!(
-        format!("{}", result.unwrap_err()).contains("does not match"),
+        format!("{}", result.expect_err("should fail")).contains("does not match"),
         "error should mention class id mismatch"
     );
 }
@@ -310,7 +316,7 @@ async fn refuses_to_register_a_contract_with_an_artifact_with_mismatching_class_
 // For finer grained tests check out stores/private_event_store tests.
 // ===========================================================================
 
-/// Helper: store an event directly into the PrivateEventStore.
+/// Helper: store an event directly into the `PrivateEventStore`.
 /// Matches the TS `storeEvent` helper.
 async fn store_event(
     event_store: &PrivateEventStore,
@@ -324,7 +330,8 @@ async fn store_event(
         Fr::from(*event_counter * 100 + 1),
         Fr::from(*event_counter * 100 + 2),
     ];
-    let tx_hash = TxHash::from_hex(&format!("0x{:064x}", 0xaa00 + *event_counter)).unwrap();
+    let tx_hash =
+        TxHash::from_hex(&format!("0x{:064x}", 0xaa00 + *event_counter)).expect("valid hex");
 
     let event = StoredPrivateEvent {
         event_selector,
@@ -335,7 +342,7 @@ async fn store_event(
         scopes: vec![],
         tx_hash,
         l2_block_number: block_number,
-        l2_block_hash: format!("0x{:064x}", block_number),
+        l2_block_hash: format!("0x{block_number:064x}"),
         tx_index_in_block: Some(0),
         event_index_in_tx: Some(*event_counter),
     };

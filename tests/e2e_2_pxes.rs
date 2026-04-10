@@ -9,7 +9,13 @@
 //! AZTEC_NODE_URL=http://localhost:8080 cargo test --test e2e_2_pxes -- --ignored
 //! ```
 
-#![allow(clippy::expect_used, clippy::print_stderr, dead_code, unused_variables)]
+#![allow(
+    clippy::expect_used,
+    clippy::print_stderr,
+    clippy::similar_names,
+    dead_code,
+    unused_variables
+)]
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
@@ -92,9 +98,10 @@ fn serial_guard() -> MutexGuard<'static, ()> {
     E2E_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .unwrap_or_else(|err| err.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+#[allow(clippy::cast_possible_truncation)]
 fn next_unique_salt() -> u64 {
     static NEXT_SALT: OnceLock<AtomicU64> = OnceLock::new();
     let seed = SystemTime::now()
@@ -187,12 +194,8 @@ async fn setup_wallet(account: ImportedTestAccount) -> Option<(TestWallet, Aztec
 }
 
 async fn setup_two_wallets() -> Option<((TestWallet, AztecAddress), (TestWallet, AztecAddress))> {
-    let Some((wallet_a, account_a_address)) = setup_wallet(TEST_ACCOUNT_0).await else {
-        return None;
-    };
-    let Some((wallet_b, account_b_address)) = setup_wallet(TEST_ACCOUNT_1).await else {
-        return None;
-    };
+    let (wallet_a, account_a_address) = setup_wallet(TEST_ACCOUNT_0).await?;
+    let (wallet_b, account_b_address) = setup_wallet(TEST_ACCOUNT_1).await?;
 
     wallet_a
         .pxe()
@@ -256,8 +259,8 @@ async fn deploy_token(
         artifact.clone(),
         vec![
             AbiValue::Field(Fr::from(admin)),
-            AbiValue::String("TestToken".to_string()),
-            AbiValue::String("TT".to_string()),
+            AbiValue::String("TestToken".to_owned()),
+            AbiValue::String("TT".to_owned()),
             AbiValue::Integer(18),
         ],
         None,
@@ -288,7 +291,7 @@ async fn deploy_token(
             "mint_to_private",
             vec![
                 AbiValue::Field(Fr::from(admin)),
-                AbiValue::Integer(initial_balance as i128),
+                AbiValue::Integer(i128::from(initial_balance)),
             ],
             admin,
         )
@@ -373,7 +376,7 @@ async fn mint_tokens_to_private(
         "mint_to_private",
         vec![
             AbiValue::Field(Fr::from(to)),
-            AbiValue::Integer(amount as i128),
+            AbiValue::Integer(i128::from(amount)),
         ],
         from,
     )
@@ -417,8 +420,7 @@ async fn expect_token_balance(
         .and_then(|arr| arr.first())
         .and_then(|v| v.as_str())
         .and_then(|s| Fr::from_hex(s).ok())
-        .map(|f| f.to_usize() as u64)
-        .unwrap_or(0);
+        .map_or(0, |f| f.to_usize() as u64);
 
     assert_eq!(
         balance, expected,
@@ -480,7 +482,7 @@ async fn transfers_funds_from_user_a_to_b_via_pxe_a_followed_by_transfer_from_b_
         "transfer",
         vec![
             AbiValue::Field(Fr::from(account_b_address)),
-            AbiValue::Integer(transfer_amount1 as i128),
+            AbiValue::Integer(i128::from(transfer_amount1)),
         ],
         account_a_address,
     )
@@ -512,7 +514,7 @@ async fn transfers_funds_from_user_a_to_b_via_pxe_a_followed_by_transfer_from_b_
         "transfer",
         vec![
             AbiValue::Field(Fr::from(account_a_address)),
-            AbiValue::Integer(transfer_amount2 as i128),
+            AbiValue::Integer(i128::from(transfer_amount2)),
         ],
         account_b_address,
     )
@@ -692,7 +694,7 @@ async fn permits_sending_funds_to_a_user_before_they_have_registered_the_contrac
         "transfer",
         vec![
             AbiValue::Field(Fr::from(account_b_address)),
-            AbiValue::Integer(transfer_amount1 as i128),
+            AbiValue::Integer(i128::from(transfer_amount1)),
         ],
         account_a_address,
     )
@@ -722,6 +724,7 @@ async fn permits_sending_funds_to_a_user_before_they_have_registered_the_contrac
 ///        have registered the contract')
 #[tokio::test]
 #[ignore = "requires live node via AZTEC_NODE_URL"]
+#[allow(clippy::too_many_lines)]
 async fn permits_sending_funds_to_a_user_and_spending_them_before_they_have_registered_the_contract(
 ) {
     let Some(((wallet_a, account_a_address), (wallet_b, account_b_address))) =
@@ -803,7 +806,7 @@ async fn permits_sending_funds_to_a_user_and_spending_them_before_they_have_regi
         "transfer",
         vec![
             AbiValue::Field(Fr::from(shared_account_address)),
-            AbiValue::Integer(transfer_amount1 as i128),
+            AbiValue::Integer(i128::from(transfer_amount1)),
         ],
         account_a_address,
     )
@@ -820,7 +823,7 @@ async fn permits_sending_funds_to_a_user_and_spending_them_before_they_have_regi
         "transfer",
         vec![
             AbiValue::Field(Fr::from(account_b_address)),
-            AbiValue::Integer(transfer_amount2 as i128),
+            AbiValue::Integer(i128::from(transfer_amount2)),
         ],
         shared_account_address,
     )

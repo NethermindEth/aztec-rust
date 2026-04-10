@@ -2,7 +2,7 @@
 //! `end-to-end/src/e2e_scope_isolation.test.ts`.
 //!
 //! All tests require ACVM integration (Phase 1) because they deploy a
-//! ScopeTest contract and execute private/utility functions that read
+//! `ScopeTest` contract and execute private/utility functions that read
 //! notes and access keys within scope boundaries.
 //!
 //! Run with:
@@ -10,7 +10,7 @@
 //! AZTEC_NODE_URL=http://localhost:8080 cargo test --test e2e_scope_isolation -- --ignored
 //! ```
 
-#![allow(clippy::expect_used, clippy::print_stderr, dead_code)]
+#![allow(clippy::expect_used, clippy::print_stderr, clippy::todo, dead_code)]
 
 // NOTE: Upstream uses ScopeTestContract from @aztec/noir-test-contracts.js/ScopeTest.
 // When compiled Noir artifacts for ScopeTest are available, the setup helpers
@@ -36,8 +36,8 @@ const BOB_NOTE_VALUE: u64 = 100;
 
 /// TS: it('owner can read own notes')
 ///
-/// Simulates contract.methods.read_note(alice) from alice's scope.
-/// Expects result == ALICE_NOTE_VALUE.
+/// Simulates `contract.methods.read_note(alice)` from alice's scope.
+/// Expects result == `ALICE_NOTE_VALUE`.
 #[tokio::test]
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn external_private_owner_can_read_own_notes() {
@@ -48,7 +48,7 @@ async fn external_private_owner_can_read_own_notes() {
 
 /// TS: it('cannot read notes belonging to a different account')
 ///
-/// Simulates contract.methods.read_note(alice) from bob's scope.
+/// Simulates `contract.methods.read_note(alice)` from bob's scope.
 /// Expects rejection: "Failed to get a note".
 #[tokio::test]
 #[ignore = "requires live node via AZTEC_NODE_URL"]
@@ -60,7 +60,7 @@ async fn external_private_cannot_read_notes_belonging_to_a_different_account() {
 
 /// TS: it('cannot access nullifier hiding key of a different account')
 ///
-/// Simulates contract.methods.get_nhk(charlie) from bob's scope.
+/// Simulates `contract.methods.get_nhk(charlie)` from bob's scope.
 /// Expects rejection: "Key validation request denied".
 #[tokio::test]
 #[ignore = "requires live node via AZTEC_NODE_URL"]
@@ -72,8 +72,8 @@ async fn external_private_cannot_access_nullifier_hiding_key_of_a_different_acco
 
 /// TS: it('each account can access their isolated state on a shared wallet')
 ///
-/// alice reads her note → ALICE_NOTE_VALUE
-/// bob reads his note → BOB_NOTE_VALUE
+/// alice reads her note → `ALICE_NOTE_VALUE`
+/// bob reads his note → `BOB_NOTE_VALUE`
 /// Both use the same wallet but different scopes.
 #[tokio::test]
 #[ignore = "requires live node via AZTEC_NODE_URL"]
@@ -89,8 +89,8 @@ async fn external_private_each_account_can_access_their_isolated_state_on_a_shar
 
 /// TS: it('owner can read own notes')
 ///
-/// Simulates contract.methods.read_note_utility(alice) from alice's scope.
-/// Expects result == ALICE_NOTE_VALUE.
+/// Simulates `contract.methods.read_note_utility(alice)` from alice's scope.
+/// Expects result == `ALICE_NOTE_VALUE`.
 #[tokio::test]
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn external_utility_owner_can_read_own_notes() {
@@ -101,7 +101,7 @@ async fn external_utility_owner_can_read_own_notes() {
 
 /// TS: it('cannot read notes belonging to a different account')
 ///
-/// Simulates contract.methods.read_note_utility(alice) from bob's scope.
+/// Simulates `contract.methods.read_note_utility(alice)` from bob's scope.
 /// Expects rejection: "Failed to get a note".
 #[tokio::test]
 #[ignore = "requires live node via AZTEC_NODE_URL"]
@@ -113,7 +113,7 @@ async fn external_utility_cannot_read_notes_belonging_to_a_different_account() {
 
 /// TS: it('cannot access nullifier hiding key of a different account')
 ///
-/// Simulates contract.methods.get_nhk_utility(charlie) from bob's scope.
+/// Simulates `contract.methods.get_nhk_utility(charlie)` from bob's scope.
 /// Expects rejection: "Key validation request denied".
 #[tokio::test]
 #[ignore = "requires live node via AZTEC_NODE_URL"]
@@ -125,8 +125,8 @@ async fn external_utility_cannot_access_nullifier_hiding_key_of_a_different_acco
 
 /// TS: it('each account can access their isolated state on a shared wallet')
 ///
-/// alice reads via utility → ALICE_NOTE_VALUE
-/// bob reads via utility → BOB_NOTE_VALUE
+/// alice reads via utility → `ALICE_NOTE_VALUE`
+/// bob reads via utility → `BOB_NOTE_VALUE`
 #[tokio::test]
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn external_utility_each_account_can_access_their_isolated_state_on_a_shared_wallet() {

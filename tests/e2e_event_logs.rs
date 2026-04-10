@@ -2,14 +2,20 @@
 //! `end-to-end/src/e2e_event_logs.test.ts`.
 //!
 //! All tests require ACVM integration (Phase 1) because they deploy a
-//! TestLog contract and execute functions that emit encrypted/unencrypted events.
+//! `TestLog` contract and execute functions that emit encrypted/unencrypted events.
 //!
 //! Run with:
 //! ```bash
 //! AZTEC_NODE_URL=http://localhost:8080 cargo test --test e2e_event_logs -- --ignored
 //! ```
 
-#![allow(clippy::expect_used, clippy::print_stderr, dead_code, unused_imports)]
+#![allow(
+    clippy::expect_used,
+    clippy::print_stderr,
+    clippy::todo,
+    dead_code,
+    unused_imports
+)]
 
 // NOTE: Upstream uses TestLogContract from @aztec/noir-test-contracts.js/TestLog.
 // When compiled Noir artifacts for TestLog are available, the setup helpers
@@ -24,10 +30,10 @@
 
 /// TS: it('emits multiple events as private logs and decodes them')
 ///
-/// Deploys TestLogContract, calls emit_encrypted_events 5 times with random
+/// Deploys `TestLogContract`, calls `emit_encrypted_events` 5 times with random
 /// preimages, then retrieves private events and verifies:
-/// - 10 ExampleEvent0s (2 per tx * 5 txs)
-/// - 5 ExampleEvent1s (1 per tx * 5 txs)
+/// - 10 `ExampleEvent0s` (2 per tx * 5 txs)
+/// - 5 `ExampleEvent1s` (1 per tx * 5 txs)
 /// - Event fields match the preimages
 #[tokio::test]
 #[ignore = "requires live node via AZTEC_NODE_URL"]
@@ -41,8 +47,8 @@ async fn emits_multiple_events_as_private_logs_and_decodes_them() {
 
 /// TS: it('emits multiple unencrypted events as public logs and decodes them')
 ///
-/// Calls emit_unencrypted_events 5 times, retrieves public events via
-/// getPublicEvents, and verifies 5 ExampleEvent0s + 5 ExampleEvent1s.
+/// Calls `emit_unencrypted_events` 5 times, retrieves public events via
+/// getPublicEvents, and verifies 5 `ExampleEvent0s` + 5 `ExampleEvent1s`.
 #[tokio::test]
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn emits_multiple_unencrypted_events_as_public_logs_and_decodes_them() {
@@ -55,7 +61,7 @@ async fn emits_multiple_unencrypted_events_as_public_logs_and_decodes_them() {
 
 /// TS: it('decodes public events with nested structs')
 ///
-/// Calls emit_nested_event with random fields (a, b, c, extra), retrieves
+/// Calls `emit_nested_event` with random fields (a, b, c, extra), retrieves
 /// the public event, and verifies nested struct fields.
 #[tokio::test]
 #[ignore = "requires live node via AZTEC_NODE_URL"]
@@ -70,9 +76,9 @@ async fn decodes_public_events_with_nested_structs() {
 ///
 /// Verifies that tags remain unique:
 /// 1. Across nested calls within the same contract (proper propagation of
-///    ExecutionTaggingIndexCache between calls)
+///    `ExecutionTaggingIndexCache` between calls)
 /// 2. Across separate transactions that interact with the same function
-///    (proper persistence of cache in TaggingDataProvider after proving)
+///    (proper persistence of cache in `TaggingDataProvider` after proving)
 #[tokio::test]
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn produces_unique_tags_for_encrypted_logs_across_nested_calls_and_different_transactions() {

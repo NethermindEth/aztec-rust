@@ -13,7 +13,7 @@
 //! AZTEC_NODE_URL=http://localhost:8080 cargo test --test e2e_pruned_blocks -- --ignored
 //! ```
 
-#![allow(clippy::expect_used, clippy::print_stderr, dead_code)]
+#![allow(clippy::expect_used, clippy::print_stderr, clippy::todo, dead_code)]
 
 const MINT_AMOUNT: u64 = 1000;
 
@@ -37,15 +37,15 @@ const _ARCHIVER_POLLING_INTERVAL_MS: u64 = 300;
 /// TS: it('can discover and use notes created in both pruned and available blocks')
 ///
 /// This is the only test in this suite. The flow:
-/// 1. Mint half of MINT_AMOUNT to sender (creates first note in block N)
+/// 1. Mint half of `MINT_AMOUNT` to sender (creates first note in block N)
 /// 2. Verify first note's leaf index is findable via historical query
-/// 3. Mine enough blocks (WORLD_STATE_CHECKPOINT_HISTORY + 3) to push
+/// 3. Mine enough blocks (`WORLD_STATE_CHECKPOINT_HISTORY` + 3) to push
 ///    block N out of the node's available history
 /// 4. Verify historical query for block N now fails ("Unable to find leaf")
-/// 5. Mint second half of MINT_AMOUNT to sender (creates second note)
-/// 6. Transfer full MINT_AMOUNT from sender to recipient
+/// 5. Mint second half of `MINT_AMOUNT` to sender (creates second note)
+/// 6. Transfer full `MINT_AMOUNT` from sender to recipient
 ///    (requires discovering and proving BOTH the old and new notes)
-/// 7. Verify recipient balance == MINT_AMOUNT
+/// 7. Verify recipient balance == `MINT_AMOUNT`
 /// 8. Verify sender balance == 0
 #[tokio::test]
 #[ignore = "requires live node via AZTEC_NODE_URL"]
