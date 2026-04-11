@@ -275,6 +275,143 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
         merged
     }
 
+    fn try_handle_protocol_nested_private_call(
+        &mut self,
+        target_address: AztecAddress,
+        selector: aztec_core::abi::FunctionSelector,
+        encoded_args: &[Fr],
+        circuit_side_effect_counter: u32,
+        is_static: bool,
+    ) -> Result<Option<Vec<Vec<Fr>>>, Error> {
+        if is_static {
+            return Ok(None);
+        }
+
+        let publish_instance_selector = aztec_core::abi::FunctionSelector::from_signature(
+            "publish_for_public_execution(Field,(Field),Field,(((Field,Field,bool)),((Field,Field,bool)),((Field,Field,bool)),((Field,Field,bool))),bool)",
+        );
+
+        if target_address
+            != aztec_core::constants::protocol_contract_address::contract_instance_registry()
+            || selector != publish_instance_selector
+        {
+            return Ok(None);
+        }
+
+        if encoded_args.len() < 16 {
+            return Err(Error::InvalidData(format!(
+                "nested publish_for_public_execution args too short: {}",
+                encoded_args.len()
+            )));
+        }
+
+        let salt = encoded_args[0];
+        let class_id = encoded_args[1];
+        let initialization_hash = encoded_args[2];
+        let public_keys = aztec_core::types::PublicKeys {
+            master_nullifier_public_key: aztec_core::types::Point {
+                x: encoded_args[3],
+                y: encoded_args[4],
+                is_infinite: encoded_args[5] != Fr::zero(),
+            },
+            master_incoming_viewing_public_key: aztec_core::types::Point {
+                x: encoded_args[6],
+                y: encoded_args[7],
+                is_infinite: encoded_args[8] != Fr::zero(),
+            },
+            master_outgoing_viewing_public_key: aztec_core::types::Point {
+                x: encoded_args[9],
+                y: encoded_args[10],
+                is_infinite: encoded_args[11] != Fr::zero(),
+            },
+            master_tagging_public_key: aztec_core::types::Point {
+                x: encoded_args[12],
+                y: encoded_args[13],
+                is_infinite: encoded_args[14] != Fr::zero(),
+            },
+        };
+        let universal_deploy = encoded_args[15] != Fr::zero();
+        let origin = self.sender_for_tags.unwrap_or(self.contract_address);
+        let deployer = if universal_deploy {
+            AztecAddress::zero()
+        } else {
+            origin
+        };
+
+        let inner = ContractInstance {
+            version: 1,
+            salt,
+            deployer,
+            current_contract_class_id: class_id,
+            original_contract_class_id: class_id,
+            initialization_hash,
+            public_keys: public_keys.clone(),
+        };
+        let instance_address = aztec_core::hash::compute_contract_address_from_instance(&inner)?;
+
+        let event_payload = vec![
+            aztec_core::constants::contract_instance_published_magic_value(),
+            instance_address.0,
+            Fr::from(1u64),
+            salt,
+            class_id,
+            initialization_hash,
+            public_keys.master_nullifier_public_key.x,
+            public_keys.master_nullifier_public_key.y,
+            public_keys.master_incoming_viewing_public_key.x,
+            public_keys.master_incoming_viewing_public_key.y,
+            public_keys.master_outgoing_viewing_public_key.x,
+            public_keys.master_outgoing_viewing_public_key.y,
+            public_keys.master_tagging_public_key.x,
+            public_keys.master_tagging_public_key.y,
+            deployer.0,
+        ];
+        let mut emitted_private_log_fields = event_payload;
+        emitted_private_log_fields.push(Fr::zero());
+
+        let nullifier_counter = circuit_side_effect_counter;
+        let private_log_counter = nullifier_counter.saturating_add(1);
+        let end_side_effect_counter = private_log_counter.saturating_add(1);
+
+        self.nullifiers.push(ScopedNullifier {
+            nullifier: Nullifier {
+                value: instance_address.0,
+                note_hash: Fr::zero(),
+                counter: nullifier_counter,
+            },
+            contract_address: target_address,
+        });
+        self.private_logs.push(PrivateLogData {
+            fields: emitted_private_log_fields,
+            emitted_length: 15,
+            note_hash_counter: 0,
+            counter: private_log_counter,
+            contract_address: target_address,
+        });
+        self.side_effect_counter = self.side_effect_counter.max(end_side_effect_counter);
+
+        let returns_hash = aztec_core::hash::compute_var_args_hash(&[]);
+        self.execution_cache.entry(returns_hash).or_default();
+        self.nested_results.push(PrivateCallExecutionResult {
+            contract_address: target_address,
+            call_context: CallContext {
+                msg_sender: self.contract_address,
+                contract_address: target_address,
+                function_selector: selector.to_field(),
+                is_static_call: false,
+            },
+            start_side_effect_counter: nullifier_counter,
+            end_side_effect_counter,
+            min_revertible_side_effect_counter: nullifier_counter,
+            ..Default::default()
+        });
+
+        Ok(Some(vec![vec![
+            Fr::from(u64::from(end_side_effect_counter)),
+            returns_hash,
+        ]]))
+    }
+
     /// Map Noir NoteStatus enum values: ACTIVE = 1, ACTIVE_OR_NULLIFIED = 2.
     fn note_status_from_field(value: Fr) -> Result<NoteStatus, Error> {
         match value.to_usize() as u64 {
@@ -1498,6 +1635,25 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             .map(|f| *f != Fr::zero())
             .unwrap_or(false);
 
+        // Find the function selector and retrieve cached args up-front so
+        // protocol contracts can be handled without requiring local artifacts.
+        let selector = aztec_core::abi::FunctionSelector::from_field(selector_field);
+        let cached_args = self
+            .execution_cache
+            .get(&args_hash)
+            .cloned()
+            .unwrap_or_default();
+
+        if let Some(result) = self.try_handle_protocol_nested_private_call(
+            target_address,
+            selector,
+            &cached_args,
+            circuit_side_effect_counter,
+            is_static,
+        )? {
+            return Ok(result);
+        }
+
         // Look up the target contract's artifact.
         let instance = self
             .contract_store
@@ -1517,7 +1673,6 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             })?;
 
         // Find the function by selector.
-        let selector = aztec_core::abi::FunctionSelector::from_field(selector_field);
         let function = artifact
             .find_function_by_selector(&selector)
             .ok_or_else(|| {
@@ -1532,12 +1687,6 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
         }
 
         // Retrieve arguments from the execution cache using the args hash.
-        let cached_args = self
-            .execution_cache
-            .get(&args_hash)
-            .cloned()
-            .unwrap_or_default();
-
         // Build the initial witness: PrivateContextInputs + user args.
         // The context inputs include call_context, block header, tx_context, etc.
         // For nested calls, msg_sender is the calling contract's address.
