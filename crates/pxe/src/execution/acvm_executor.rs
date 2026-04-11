@@ -58,6 +58,47 @@ pub trait OracleCallback: Send {
 pub struct AcvmExecutor;
 
 impl AcvmExecutor {
+    fn error_types_contains_message(
+        error_types: Option<&serde_json::Value>,
+        expected: &str,
+    ) -> bool {
+        error_types
+            .and_then(|value| value.as_object())
+            .map(|entries| {
+                entries
+                    .values()
+                    .any(|entry| entry.get("string").and_then(|v| v.as_str()) == Some(expected))
+            })
+            .unwrap_or(false)
+    }
+
+    fn fallback_private_error_message(
+        last_oracle: &str,
+        resolved: &str,
+        error_types: Option<&serde_json::Value>,
+    ) -> Option<String> {
+        if resolved != "Cannot satisfy constraint" {
+            return None;
+        }
+
+        let invalid_nonce =
+            "Invalid authwit nonce. When 'from' and 'msg_sender' are the same, 'authwit_nonce' must be zero";
+        if last_oracle == "privateIsNullifierPending"
+            && Self::error_types_contains_message(error_types, invalid_nonce)
+        {
+            return Some(invalid_nonce.to_owned());
+        }
+
+        let balance_too_low = "Balance too low";
+        if last_oracle == "privateNotifyNullifiedNote"
+            && Self::error_types_contains_message(error_types, balance_too_low)
+        {
+            return Some(balance_too_low.to_owned());
+        }
+
+        None
+    }
+
     /// Decode base64-encoded bytecode and deserialize into an ACIR Program.
     ///
     /// The ACIR library always expects gzip-compressed data. Some contract
@@ -307,6 +348,12 @@ impl AcvmExecutor {
                 }
                 ACVMStatus::Failure(ref err) => {
                     let resolved = Self::resolve_error(err, function.error_types.as_ref());
+                    let resolved = Self::fallback_private_error_message(
+                        &last_private_fc,
+                        &resolved,
+                        function.error_types.as_ref(),
+                    )
+                    .unwrap_or(resolved);
                     return Err(Error::InvalidData(format!(
                         "private function '{}' execution failed (last oracle: {last_private_fc}): {resolved}",
                         function_name

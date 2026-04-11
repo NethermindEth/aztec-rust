@@ -1327,8 +1327,9 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
                 return Ok(vec![witness.clone()]);
             }
         }
-        // Return a zero-filled witness when not found (Noir expects [Field; 64]).
-        Ok(vec![vec![Fr::zero(); 64]])
+        Err(Error::InvalidData(format!(
+            "Unknown auth witness for message hash {message_hash}"
+        )))
     }
 
     fn enqueue_public_function_call(

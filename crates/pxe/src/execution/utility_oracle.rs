@@ -1328,7 +1328,9 @@ impl<'a, N: AztecNode> UtilityExecutionOracle<'a, N> {
                 return Ok(vec![witness.clone()]);
             }
         }
-        Ok(vec![vec![]])
+        Err(Error::InvalidData(format!(
+            "Unknown auth witness for message hash {message_hash}"
+        )))
     }
 
     fn ensure_contract_db_access(&self, contract_address: &AztecAddress) -> Result<(), Error> {

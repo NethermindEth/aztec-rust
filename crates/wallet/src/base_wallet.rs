@@ -8,7 +8,7 @@
 use async_trait::async_trait;
 use tokio::time::{sleep, Duration, Instant};
 
-use crate::abi::{AbiType, ContractArtifact};
+use crate::abi::{AbiType, ContractArtifact, FunctionSelector};
 use crate::account_provider::AccountProvider;
 use crate::error::Error;
 use crate::node::{
@@ -23,6 +23,7 @@ use crate::wallet::{
     PrivateEventMetadata, ProfileOptions, SendOptions, SendResult, SimulateOptions,
     TxProfileResult, TxSimulationResult, UtilityExecutionResult, Wallet,
 };
+use aztec_core::constants::protocol_contract_address;
 
 /// A production [`Wallet`] backed by PXE + Aztec node connections.
 ///
@@ -37,6 +38,149 @@ pub struct BaseWallet<P, N, A> {
 }
 
 impl<P: Pxe, N: AztecNode, A: AccountProvider> BaseWallet<P, N, A> {
+    fn decode_assertion_message_from_error_types(
+        error_types: &serde_json::Value,
+        selector_key: &str,
+    ) -> Option<String> {
+        let entry = error_types.get(selector_key)?;
+        match entry.get("error_kind").and_then(|v| v.as_str()) {
+            Some("string") | Some("fmtstring") => entry
+                .get("string")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned),
+            _ => None,
+        }
+    }
+
+    fn known_protocol_assertion_message(
+        contract_address: &AztecAddress,
+        selector_key: &str,
+    ) -> Option<String> {
+        if *contract_address == protocol_contract_address::auth_registry()
+            && selector_key == "17089945683942782951"
+        {
+            return Some("unauthorized".to_owned());
+        }
+        None
+    }
+
+    fn known_assertion_message_by_selector(selector_key: &str) -> Option<String> {
+        match selector_key {
+            "17089945683942782951" => Some("unauthorized".to_owned()),
+            "7136484461999155778" => Some(
+                "Invalid authwit nonce. When 'from' and 'msg_sender' are the same, 'authwit_nonce' must be zero"
+                    .to_owned(),
+            ),
+            "1998584279744703196" => Some("attempt to subtract with overflow".to_owned()),
+            _ => None,
+        }
+    }
+
+    fn error_selector_key_from_hex(selector_hex: &str) -> Option<String> {
+        let raw = selector_hex.strip_prefix("0x").unwrap_or(selector_hex);
+        u128::from_str_radix(raw, 16)
+            .ok()
+            .map(|value| value.to_string())
+    }
+
+    async fn public_function_error_types(
+        &self,
+        contract_address: &AztecAddress,
+        function_selector: &FunctionSelector,
+    ) -> Result<Option<serde_json::Value>, Error> {
+        let Some(instance) = self.pxe.get_contract_instance(contract_address).await? else {
+            return Ok(None);
+        };
+        let Some(artifact) = self
+            .pxe
+            .get_contract_artifact(&instance.inner.current_contract_class_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+
+        Ok(artifact
+            .find_function_by_selector(function_selector)
+            .and_then(|function| function.error_types.clone()))
+    }
+
+    async fn find_registered_error_message_by_selector(
+        &self,
+        selector_key: &str,
+    ) -> Result<Option<String>, Error> {
+        for address in self.pxe.get_contracts().await? {
+            let Some(instance) = self.pxe.get_contract_instance(&address).await? else {
+                continue;
+            };
+            let Some(artifact) = self
+                .pxe
+                .get_contract_artifact(&instance.inner.current_contract_class_id)
+                .await?
+            else {
+                continue;
+            };
+            for function in &artifact.functions {
+                let Some(error_types) = &function.error_types else {
+                    continue;
+                };
+                if let Some(message) =
+                    Self::decode_assertion_message_from_error_types(error_types, selector_key)
+                {
+                    return Ok(Some(message));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    async fn decode_public_assertion_message(
+        &self,
+        revert_reason: &serde_json::Value,
+    ) -> Option<String> {
+        let revert_data = revert_reason.get("revertData")?.as_array()?;
+        let selector_key = revert_data
+            .first()
+            .and_then(|value| value.as_str())
+            .and_then(Self::error_selector_key_from_hex)?;
+
+        let failing_function = revert_reason
+            .get("functionErrorStack")?
+            .as_array()?
+            .last()?
+            .as_object()?;
+        let contract_address = failing_function
+            .get("contractAddress")
+            .and_then(|value| value.as_str())
+            .and_then(|hex| Fr::from_hex(hex).ok())
+            .map(AztecAddress)?;
+        let function_selector = failing_function
+            .get("functionSelector")
+            .and_then(|value| value.as_str())
+            .and_then(|hex| FunctionSelector::from_hex(hex).ok())?;
+
+        if let Ok(Some(error_types)) = self
+            .public_function_error_types(&contract_address, &function_selector)
+            .await
+        {
+            if let Some(message) =
+                Self::decode_assertion_message_from_error_types(&error_types, &selector_key)
+            {
+                return Some(format!("Assertion failed: {message}"));
+            }
+        }
+
+        if let Ok(Some(message)) = self
+            .find_registered_error_message_by_selector(&selector_key)
+            .await
+        {
+            return Some(format!("Assertion failed: {message}"));
+        }
+
+        Self::known_protocol_assertion_message(&contract_address, &selector_key)
+            .or_else(|| Self::known_assertion_message_by_selector(&selector_key))
+            .map(|message| format!("Assertion failed: {message}"))
+    }
+
     /// Create a new `BaseWallet` with the given PXE, node, and account provider.
     pub fn new(pxe: P, node: N, accounts: A) -> Self {
         Self {
@@ -204,9 +348,13 @@ impl<P: Pxe, N: AztecNode, A: AccountProvider> BaseWallet<P, N, A> {
                     .get("debugLogs")
                     .cloned()
                     .unwrap_or(serde_json::Value::Null);
+                let decoded_assertion = self.decode_public_assertion_message(revert_reason).await;
+                let decoded_prefix = decoded_assertion
+                    .map(|message| format!("{message} "))
+                    .unwrap_or_default();
                 return Err(Error::InvalidData(format!(
-                    "node public-call preflight for tx {} reverted: reason={} debugLogs={}",
-                    tx_hash, revert_reason, debug_logs
+                    "node public-call preflight for tx {} reverted: {}reason={} debugLogs={}",
+                    tx_hash, decoded_prefix, revert_reason, debug_logs
                 )));
             }
         }
