@@ -52,6 +52,9 @@ pub struct TxExecutionRequest {
     pub capsules: Vec<Capsule>,
     /// Salt used to randomize the tx request hash.
     pub salt: Fr,
+    /// Optional fee payer override (defaults to origin if absent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_payer: Option<AztecAddress>,
 }
 
 /// Specification for the initialization function of an account contract.
@@ -705,6 +708,7 @@ mod tests {
                 auth_witnesses: exec.auth_witnesses,
                 capsules: exec.capsules,
                 salt: Fr::from(7u64),
+                fee_payer: exec.fee_payer,
             })
         }
 
@@ -960,6 +964,7 @@ mod tests {
             }],
             capsules: vec![],
             salt: Fr::from(9u64),
+            fee_payer: None,
         };
         let json = serde_json::to_string(&req).expect("serialize TxExecutionRequest");
         let decoded: TxExecutionRequest =

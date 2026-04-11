@@ -64,6 +64,7 @@ impl DefaultMultiCallEntrypoint {
             auth_witnesses: exec.auth_witnesses,
             capsules: exec.capsules,
             salt: Fr::random(),
+            fee_payer: exec.fee_payer.filter(|fp| *fp != self.address),
         })
     }
 

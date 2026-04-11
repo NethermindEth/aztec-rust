@@ -46,6 +46,8 @@ struct DecodedTxExecutionRequest {
     origin: AztecAddress,
     first_call_args_hash: Fr,
     args_of_calls: Vec<aztec_core::tx::HashedValues>,
+    #[serde(default)]
+    fee_payer: Option<AztecAddress>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2103,6 +2105,7 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
         let expiration_timestamp = Self::compute_expiration(&anchor);
         Self::ensure_min_fees(&mut tx_constants, &anchor);
         let request: DecodedTxExecutionRequest = serde_json::from_value(tx_request.data.clone())?;
+        let fee_payer = request.fee_payer.unwrap_or(origin);
         let decoded_calls = Self::decode_entrypoint_calls(&request)?;
 
         for call in &decoded_calls {
@@ -2145,7 +2148,7 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
         let kernel_output = crate::kernel::SimulatedKernel::process(
             &aggregated.execution_result,
             tx_constants,
-            &origin.0,
+            &fee_payer.0,
             expiration_timestamp,
         )?;
         // Serialize kernel output to buffer and build TxProvingResult

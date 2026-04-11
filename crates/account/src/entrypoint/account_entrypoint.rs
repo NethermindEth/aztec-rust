@@ -99,6 +99,8 @@ impl DefaultAccountEntrypoint {
         let mut auth_witnesses = exec.auth_witnesses;
         auth_witnesses.push(call_data.payload_auth_witness);
 
+        let fee_payer = exec.fee_payer.filter(|fp| *fp != self.address);
+
         Ok(TxExecutionRequest {
             origin: self.address,
             function_selector: call_data.function_selector,
@@ -112,6 +114,7 @@ impl DefaultAccountEntrypoint {
             auth_witnesses,
             capsules: exec.capsules,
             salt: Fr::random(),
+            fee_payer,
         })
     }
 

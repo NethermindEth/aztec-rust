@@ -185,6 +185,26 @@ impl SchnorrAccountContract {
         }
     }
 
+    /// Create a new Schnorr account contract with an explicit signing key.
+    ///
+    /// Unlike [`new`](Self::new), this does **not** derive the signing key
+    /// from the secret key. This is the Rust equivalent of the TS
+    /// `new SchnorrAccountContract(signingKey)` + `getSchnorrAccountContractAddress(secret, salt, signingKey)`.
+    ///
+    /// Use this when multiple accounts share the same encryption key (secret)
+    /// but have different signing keys.
+    pub fn new_with_signing_key(
+        secret_key: Fr,
+        signing_key: aztec_core::types::GrumpkinScalar,
+    ) -> Self {
+        let signing_public_key = derive_public_key_from_secret_key(&signing_key);
+        Self {
+            secret_key,
+            signing_key,
+            signing_public_key,
+        }
+    }
+
     /// Returns the Schnorr signing public key.
     pub fn signing_public_key(&self) -> &Point {
         &self.signing_public_key

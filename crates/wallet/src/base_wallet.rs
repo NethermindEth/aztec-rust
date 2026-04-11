@@ -438,10 +438,11 @@ impl<P: Pxe, N: AztecNode, A: AccountProvider> Wallet for BaseWallet<P, N, A> {
         let exec = Self::merge_execution_payload(exec, &opts.auth_witnesses, &opts.capsules);
         let chain_info = self.get_chain_info().await?;
         let gas_settings = opts.gas_settings.clone().unwrap_or_default();
+        let fee_payer = exec.fee_payer;
 
         let tx_request = self
             .accounts
-            .create_tx_execution_request(&opts.from, exec, gas_settings, &chain_info, None)
+            .create_tx_execution_request(&opts.from, exec, gas_settings, &chain_info, fee_payer)
             .await?;
 
         let scopes = Self::build_scopes(&opts.from, &opts.additional_scopes);
