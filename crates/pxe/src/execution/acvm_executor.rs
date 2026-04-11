@@ -90,7 +90,7 @@ impl AcvmExecutor {
         }
 
         let balance_too_low = "Balance too low";
-        if last_oracle == "privateNotifyNullifiedNote"
+        if (last_oracle == "privateNotifyNullifiedNote" || last_oracle == "utilityGetNotes")
             && Self::error_types_contains_message(error_types, balance_too_low)
         {
             return Some(balance_too_low.to_owned());
