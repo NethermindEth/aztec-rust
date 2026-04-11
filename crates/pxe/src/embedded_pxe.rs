@@ -21,6 +21,7 @@ use aztec_core::types::{
     PublicKeys,
 };
 use aztec_crypto::complete_address_from_secret_key_and_partial_address;
+use aztec_crypto::schnorr::{schnorr_verify, SchnorrSignature};
 use aztec_node_client::AztecNode;
 use aztec_pxe_client::{
     BlockHeader, ExecuteUtilityOpts, PackedPrivateEvent, PrivateEventFilter, ProfileTxOpts, Pxe,
@@ -1448,6 +1449,77 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
             .map(AztecAddress)
             .unwrap_or(AztecAddress(Fr::zero()))
     }
+
+    /// Verify auth witness Schnorr signatures against the origin account's
+    /// stored signing public key.
+    ///
+    /// The Noir account contract's entrypoint verifies auth witnesses via
+    /// circuit constraints, but our oracle-based execution skips those checks.
+    /// This method replicates the verification so that `simulate_tx` (and
+    /// `prove_tx`) reject transactions signed with an incorrect key.
+    async fn verify_auth_witness_signatures(
+        &self,
+        tx_request: &TxExecutionRequest,
+        origin: AztecAddress,
+    ) -> Result<(), Error> {
+        let auth_witnesses: Vec<aztec_core::tx::AuthWitness> = tx_request
+            .data
+            .get("authWitnesses")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+
+        if auth_witnesses.is_empty() {
+            return Ok(());
+        }
+
+        // Look up the signing public key note for the origin account.
+        // Schnorr account contracts store the signing key at storage slot 1
+        // as a two-field note [pk.x, pk.y].
+        let signing_key_notes = self
+            .note_store
+            .get_notes_by_slot(&origin, &Fr::from(1u64))
+            .await
+            .unwrap_or_default();
+
+        let signing_pk = signing_key_notes.iter().find_map(|note| {
+            if note.note_data.len() >= 2 && !note.nullified {
+                Some(Point {
+                    x: note.note_data[0],
+                    y: note.note_data[1],
+                    is_infinite: false,
+                })
+            } else {
+                None
+            }
+        });
+
+        let Some(pk) = signing_pk else {
+            // No signing key note found — skip verification (the account may
+            // use a non-Schnorr scheme or the note hasn't been synced).
+            return Ok(());
+        };
+
+        for aw in &auth_witnesses {
+            // Schnorr signatures are exactly 64 fields (one per byte).
+            if aw.fields.len() != 64 {
+                continue;
+            }
+
+            let sig_bytes: Vec<u8> = aw.fields.iter().map(|f| f.to_usize() as u8).collect();
+            let mut sig_arr = [0u8; 64];
+            sig_arr.copy_from_slice(&sig_bytes);
+            let sig = SchnorrSignature::from_bytes(&sig_arr);
+
+            if !schnorr_verify(&pk, &aw.request_hash, &sig) {
+                return Err(Error::InvalidData(
+                    "Cannot satisfy constraint: auth witness signature verification failed".into(),
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Build `TxConstantData` from the anchor block header and tx request.
     fn build_tx_constant_data(
         anchor: &AnchorBlockHeader,
@@ -1927,6 +1999,16 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
         }
         let aggregated = Self::aggregate_call_bundles(origin, bundles);
 
+        // Verify auth witness signatures.
+        //
+        // The oracle-based private execution does not evaluate Noir circuit
+        // constraints, so Schnorr/ECDSA signature checks inside the account
+        // contract entrypoint are skipped.  We replicate that check here so
+        // that `simulate_tx` rejects transactions signed with an invalid key,
+        // matching the behavior of the upstream TS ACIR simulator.
+        self.verify_auth_witness_signatures(tx_request, origin)
+            .await?;
+
         // Process through simulated kernel
         let kernel_output = crate::kernel::SimulatedKernel::process(
             &aggregated.execution_result,
@@ -2054,6 +2136,10 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
             );
         }
         let aggregated = Self::aggregate_call_bundles(origin, bundles);
+
+        // Verify auth witness signatures (same check as simulate_tx).
+        self.verify_auth_witness_signatures(tx_request, origin)
+            .await?;
 
         // Process through simulated kernel
         let kernel_output = crate::kernel::SimulatedKernel::process(
