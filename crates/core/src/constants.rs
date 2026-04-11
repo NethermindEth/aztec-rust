@@ -149,8 +149,8 @@ pub mod domain_separator {
 
     /// Domain separator for signature payload hashing (entrypoint encoding).
     ///
-    /// TS: `DomainSeparator.SIGNATURE_PAYLOAD = 2279843839`
-    pub const SIGNATURE_PAYLOAD: u32 = 2_279_843_839;
+    /// TS: `DomainSeparator.SIGNATURE_PAYLOAD = 463525807`
+    pub const SIGNATURE_PAYLOAD: u32 = 463_525_807;
 
     /// Domain separator for siloing note hashes with a contract address.
     ///
@@ -391,6 +391,7 @@ mod tests {
         assert_eq!(domain_separator::OVSK_M, 4_272_201_051);
         assert_eq!(domain_separator::TSK_M, 1_546_190_975);
         assert_eq!(domain_separator::SECRET_HASH, 4_199_652_938);
+        assert_eq!(domain_separator::SIGNATURE_PAYLOAD, 463_525_807);
     }
 
     #[test]

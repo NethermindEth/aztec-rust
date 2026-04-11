@@ -24,6 +24,19 @@ use crate::account::{
 use crate::entrypoint::{DefaultAccountEntrypoint, DefaultAccountEntrypointOptions};
 use crate::wallet::{ChainInfo as WalletChainInfo, MessageHashOrIntent};
 
+fn resolve_message_hash(intent: &MessageHashOrIntent, chain_info: &WalletChainInfo) -> Fr {
+    match intent {
+        MessageHashOrIntent::Hash { hash } => *hash,
+        MessageHashOrIntent::Intent { .. } | MessageHashOrIntent::InnerHash { .. } => {
+            let core_chain_info = ChainInfo {
+                chain_id: chain_info.chain_id,
+                version: chain_info.version,
+            };
+            compute_auth_wit_message_hash(intent, &core_chain_info)
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // SchnorrAuthorizationProvider
 // ---------------------------------------------------------------------------
@@ -40,11 +53,7 @@ impl AuthorizationProvider for SchnorrAuthorizationProvider {
         intent: MessageHashOrIntent,
         chain_info: &WalletChainInfo,
     ) -> Result<AuthWitness, Error> {
-        let core_chain_info = ChainInfo {
-            chain_id: chain_info.chain_id,
-            version: chain_info.version,
-        };
-        let message_hash = compute_auth_wit_message_hash(&intent, &core_chain_info);
+        let message_hash = resolve_message_hash(&intent, chain_info);
         let signature = schnorr_sign(&self.signing_key, &message_hash);
 
         Ok(AuthWitness {
@@ -72,11 +81,7 @@ impl AuthorizationProvider for SchnorrAccount {
         intent: MessageHashOrIntent,
         chain_info: &WalletChainInfo,
     ) -> Result<AuthWitness, Error> {
-        let core_chain_info = ChainInfo {
-            chain_id: chain_info.chain_id,
-            version: chain_info.version,
-        };
-        let message_hash = compute_auth_wit_message_hash(&intent, &core_chain_info);
+        let message_hash = resolve_message_hash(&intent, chain_info);
         let signature = schnorr_sign(&self.signing_key, &message_hash);
 
         Ok(AuthWitness {
@@ -306,6 +311,9 @@ mod tests {
     use super::*;
     use crate::account::AccountManager;
     use crate::wallet::MockWallet;
+    use aztec_core::abi::{FunctionSelector, FunctionType};
+    use aztec_core::tx::FunctionCall;
+    use aztec_core::types::AztecAddress;
 
     fn sample_chain_info() -> WalletChainInfo {
         WalletChainInfo {
@@ -391,6 +399,39 @@ mod tests {
         // Verify against the public key
         let pk = contract.signing_public_key();
         assert!(aztec_crypto::schnorr::schnorr_verify(pk, &message, &sig));
+    }
+
+    #[tokio::test]
+    async fn intent_variant_is_hashed_before_signing() {
+        let secret = Fr::from(4242u64);
+        let contract = SchnorrAccountContract::new(secret);
+        let provider = contract.auth_witness_provider(CompleteAddress::default());
+        let chain_info = sample_chain_info();
+        let intent = MessageHashOrIntent::Intent {
+            caller: AztecAddress::from(1u64),
+            call: FunctionCall {
+                to: AztecAddress::from(2u64),
+                selector: FunctionSelector::from_hex("0x11223344").expect("valid selector"),
+                args: vec![AbiValue::Field(Fr::from(7u64))],
+                function_type: FunctionType::Private,
+                is_static: false,
+                hide_msg_sender: false,
+            },
+        };
+
+        let wit = provider
+            .create_auth_wit(intent.clone(), &chain_info)
+            .await
+            .expect("create auth wit");
+
+        let expected = compute_auth_wit_message_hash(
+            &intent,
+            &ChainInfo {
+                chain_id: chain_info.chain_id,
+                version: chain_info.version,
+            },
+        );
+        assert_eq!(wit.request_hash, expected);
     }
 
     #[tokio::test]
