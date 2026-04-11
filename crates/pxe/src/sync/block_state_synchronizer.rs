@@ -36,9 +36,7 @@ pub struct BlockSyncConfig {
 impl Default for BlockSyncConfig {
     fn default() -> Self {
         Self {
-            // Use the proven tip for anchor state by default so tx preflight
-            // only references block headers the node can validate against.
-            sync_chain_tip: SyncChainTip::Proven,
+            sync_chain_tip: SyncChainTip::Proposed,
         }
     }
 }

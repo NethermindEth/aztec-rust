@@ -253,6 +253,28 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
 }
 
 impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
+    fn merge_nested_private_logs(
+        nested_logs: Vec<PrivateLogData>,
+        circuit_logs: Vec<PrivateLogData>,
+    ) -> Vec<PrivateLogData> {
+        if circuit_logs.is_empty() {
+            return nested_logs;
+        }
+
+        let mut merged = nested_logs;
+        for circuit_log in circuit_logs {
+            if let Some(existing) = merged
+                .iter_mut()
+                .find(|log| log.counter == circuit_log.counter)
+            {
+                *existing = circuit_log;
+            } else {
+                merged.push(circuit_log);
+            }
+        }
+        merged
+    }
+
     /// Map Noir NoteStatus enum values: ACTIVE = 1, ACTIVE_OR_NULLIFIED = 2.
     fn note_status_from_field(value: Fr) -> Result<NoteStatus, Error> {
         match value.to_usize() as u64 {
@@ -1731,13 +1753,12 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
                 .into_iter()
                 .skip(inherited_nullifiers),
         );
-        // Prefer circuit-extracted private logs (which have the correct
-        // note_hash_counter) over oracle-emitted logs (which have 0).
-        if !circuit_logs.is_empty() {
-            self.private_logs.extend(circuit_logs);
-        } else {
-            self.private_logs.extend(nested_oracle.private_logs);
-        }
+        // Preserve the nested subtree's full log set and replace entries when
+        // the witness provides a more accurate version for the same counter.
+        self.private_logs.extend(Self::merge_nested_private_logs(
+            nested_oracle.private_logs,
+            circuit_logs,
+        ));
         self.contract_class_logs
             .extend(nested_oracle.contract_class_logs);
         self.new_notes.extend(

@@ -225,6 +225,32 @@ impl<P: Pxe, N: AztecNode, A: AccountProvider> BaseWallet<P, N, A> {
             _ => false,
         }
     }
+
+    fn is_anchor_header_validation_lag(result: &TxValidationResult) -> bool {
+        match result {
+            TxValidationResult::Invalid { reason } => reason
+                .iter()
+                .any(|msg| msg.contains("Block header not found")),
+            _ => false,
+        }
+    }
+
+    async fn validate_tx_when_anchor_available(
+        &self,
+        tx_json: &serde_json::Value,
+    ) -> Result<TxValidationResult, Error> {
+        let deadline = Instant::now() + Duration::from_secs(120);
+        loop {
+            let result = self.node.is_valid_tx(tx_json).await?;
+            if !Self::is_anchor_header_validation_lag(&result) {
+                return Ok(result);
+            }
+            if Instant::now() >= deadline {
+                return Ok(result);
+            }
+            sleep(Duration::from_millis(500)).await;
+        }
+    }
 }
 
 #[async_trait]
@@ -538,7 +564,7 @@ impl<P: Pxe, N: AztecNode, A: AccountProvider> Wallet for BaseWallet<P, N, A> {
             (tx_hash, tx_json)
         };
 
-        match self.node.is_valid_tx(&tx_json).await? {
+        match self.validate_tx_when_anchor_available(&tx_json).await? {
             TxValidationResult::Valid => {}
             TxValidationResult::Invalid { reason } => {
                 return Err(Error::InvalidData(format!(

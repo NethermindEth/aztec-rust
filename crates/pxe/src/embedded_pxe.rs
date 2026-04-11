@@ -2340,9 +2340,7 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
                     .map_err(Error::from)?,
             )
         } else {
-            serde_json::json!({
-                "returnValues": private_return_values,
-            })
+            serde_json::to_value(private_return_values).map_err(Error::from)?
         };
 
         Ok(TxSimulationResult {
