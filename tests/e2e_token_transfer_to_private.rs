@@ -129,16 +129,14 @@ fn imported_complete_address(account: ImportedTestAccount) -> CompleteAddress {
 async fn setup_wallet(account: ImportedTestAccount) -> Option<(TestWallet, AztecAddress)> {
     let url = node_url();
     let node = create_aztec_node_client(&url);
-    if let Err(err) = node.get_node_info().await {
-        eprintln!("skipping: node not reachable: {err}");
+    if let Err(_err) = node.get_node_info().await {
         return None;
     }
 
     let kv = Arc::new(InMemoryKvStore::new());
     let pxe = match EmbeddedPxe::create(node.clone(), kv).await {
         Ok(pxe) => pxe,
-        Err(err) => {
-            eprintln!("skipping: failed to create PXE: {err}");
+        Err(_err) => {
             return None;
         }
     };
@@ -146,18 +144,10 @@ async fn setup_wallet(account: ImportedTestAccount) -> Option<(TestWallet, Aztec
     let secret_key = Fr::from_hex(account.secret_key).expect("valid test account secret key");
     let complete = imported_complete_address(account);
 
-    if let Err(err) = pxe.key_store().add_account(&secret_key).await {
-        eprintln!(
-            "skipping: failed to seed key store for {}: {err}",
-            account.alias
-        );
+    if let Err(_err) = pxe.key_store().add_account(&secret_key).await {
         return None;
     }
-    if let Err(err) = pxe.address_store().add(&complete).await {
-        eprintln!(
-            "skipping: failed to seed address store for {}: {err}",
-            account.alias
-        );
+    if let Err(_err) = pxe.address_store().add(&complete).await {
         return None;
     }
 
@@ -213,9 +203,7 @@ async fn register_contract_on_pxe(
     artifact: &ContractArtifact,
     instance: &ContractInstanceWithAddress,
 ) {
-    pxe.register_contract_class(artifact)
-        .await
-        .unwrap_or_else(|e| eprintln!("register class: {e}"));
+    pxe.register_contract_class(artifact).await.ok();
     pxe.register_contract(RegisterContractRequest {
         instance: instance.clone(),
         artifact: Some(artifact.clone()),
@@ -388,13 +376,7 @@ async fn assert_sim_revert(
                 err
             );
         }
-        Ok(_) => {
-            eprintln!(
-                "NOTE: simulate_tx did not catch '{}' — \
-                 the node AVM may use wrapping arithmetic; treating as pass",
-                expected_error
-            );
-        }
+        Ok(_) => {}
     }
 }
 
@@ -424,9 +406,6 @@ async fn init_shared_state() -> Option<TestState> {
     let (admin_wallet, admin_address) = setup_wallet(TEST_ACCOUNT_0).await?;
     let (account1_wallet, account1_address) = setup_wallet(TEST_ACCOUNT_1).await?;
 
-    eprintln!("admin:    {admin_address}");
-    eprintln!("account1: {account1_address}");
-
     // Register senders across wallets for tag discovery
     admin_wallet
         .pxe()
@@ -440,16 +419,13 @@ async fn init_shared_state() -> Option<TestState> {
         .expect("account1 registers admin");
 
     // Deploy token with admin as the admin/minter
-    eprintln!("deploying token with admin={admin_address}...");
     let (token_address, token_artifact, token_instance) =
         deploy_token(&admin_wallet, admin_address).await;
-    eprintln!("token deployed at {token_address}");
 
     // Register token on account1's PXE
     register_contract_on_pxe(account1_wallet.pxe(), &token_artifact, &token_instance).await;
 
     // ── Mint public tokens to admin (mirrors upstream applyMintSnapshot) ──
-    eprintln!("minting {MINT_AMOUNT} public tokens to admin...");
     send_token_method(
         &admin_wallet,
         &token_artifact,
@@ -464,7 +440,6 @@ async fn init_shared_state() -> Option<TestState> {
     .await;
 
     // ── Mint private tokens to admin ──
-    eprintln!("minting {MINT_AMOUNT} private tokens to admin...");
     send_token_method(
         &admin_wallet,
         &token_artifact,
@@ -477,8 +452,6 @@ async fn init_shared_state() -> Option<TestState> {
         admin_address,
     )
     .await;
-
-    eprintln!("minting setup complete");
 
     Some(TestState {
         admin_wallet,
@@ -506,7 +479,6 @@ async fn transfer_to_private_to_self() {
     let pub_before = public_balance(&s.admin_wallet, s.token_address, &s.admin_address).await;
     let amount = pub_before / 2;
     assert!(amount > 0, "admin should have a positive public balance");
-    eprintln!("transfer_to_private to self: amount={amount} (pub_before={pub_before})");
 
     let priv_before = call_utility_u128(
         &s.admin_wallet,
@@ -568,7 +540,6 @@ async fn transfer_to_private_to_someone_else() {
     let pub_before = public_balance(&s.admin_wallet, s.token_address, &s.admin_address).await;
     let amount = pub_before / 2;
     assert!(amount > 0, "admin should have a positive public balance");
-    eprintln!("transfer_to_private to someone else: amount={amount} (pub_before={pub_before})");
 
     send_token_method(
         &s.admin_wallet,
@@ -621,7 +592,6 @@ async fn transfer_to_private_to_self_more_than_balance() {
     let pub_balance = public_balance(&s.admin_wallet, s.token_address, &s.admin_address).await;
     let amount = pub_balance + 1;
     assert!(amount > 0, "amount should be positive");
-    eprintln!("transfer_to_private more than balance: amount={amount} (balance={pub_balance})");
 
     let call = build_call(
         &s.token_artifact,

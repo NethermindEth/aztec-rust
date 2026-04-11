@@ -187,16 +187,14 @@ async fn create_wallet(
 ) -> Option<(TestWallet, AztecAddress)> {
     let url = node_url();
     let node = create_aztec_node_client(&url);
-    if let Err(err) = node.get_node_info().await {
-        eprintln!("skipping: node not reachable: {err}");
+    if let Err(_err) = node.get_node_info().await {
         return None;
     }
 
     let kv = Arc::new(InMemoryKvStore::new());
     let pxe = match EmbeddedPxe::create(node.clone(), kv).await {
         Ok(pxe) => pxe,
-        Err(err) => {
-            eprintln!("skipping: failed to create PXE: {err}");
+        Err(_err) => {
             return None;
         }
     };
@@ -350,9 +348,7 @@ async fn register_contract_on_pxe(
     artifact: &ContractArtifact,
     instance: &ContractInstanceWithAddress,
 ) {
-    pxe.register_contract_class(artifact)
-        .await
-        .unwrap_or_else(|e| eprintln!("register class: {e}"));
+    pxe.register_contract_class(artifact).await.ok();
     pxe.register_contract(RegisterContractRequest {
         instance: instance.clone(),
         artifact: Some(artifact.clone()),
@@ -497,11 +493,7 @@ async fn init_shared_state() -> Option<TestState> {
     let (account1_wallet, account1_address) =
         create_wallet(TEST_ACCOUNT_1, &[TEST_ACCOUNT_0]).await?;
 
-    eprintln!("admin:    {admin_address}");
-    eprintln!("account1: {account1_address}");
-
     // Deploy token contract
-    eprintln!("deploying Token from admin...");
     let (token_address, token_artifact, token_instance) = deploy_contract(
         &admin_wallet,
         load_compiled_token_artifact(),
@@ -514,10 +506,8 @@ async fn init_shared_state() -> Option<TestState> {
         admin_address,
     )
     .await;
-    eprintln!("Token deployed at {token_address}");
 
     // Deploy GenericProxy contract
-    eprintln!("deploying GenericProxy from admin...");
     let (proxy_address, proxy_artifact, proxy_instance) = deploy_contract(
         &admin_wallet,
         load_generic_proxy_artifact(),
@@ -525,10 +515,8 @@ async fn init_shared_state() -> Option<TestState> {
         admin_address,
     )
     .await;
-    eprintln!("GenericProxy deployed at {proxy_address}");
 
     // Deploy InvalidAccountContract
-    eprintln!("deploying InvalidAccount from admin...");
     let (bad_account_address, bad_account_artifact, bad_account_instance) = deploy_contract(
         &admin_wallet,
         load_invalid_account_artifact(),
@@ -536,7 +524,6 @@ async fn init_shared_state() -> Option<TestState> {
         admin_address,
     )
     .await;
-    eprintln!("InvalidAccount deployed at {bad_account_address}");
 
     // Register contracts on account1's PXE
     register_contract_on_pxe(account1_wallet.pxe(), &token_artifact, &token_instance).await;
@@ -549,7 +536,6 @@ async fn init_shared_state() -> Option<TestState> {
     .await;
 
     // Mint private tokens to admin (mirrors upstream applyMintSnapshot)
-    eprintln!("minting {MINT_AMOUNT} private tokens to admin...");
     send_token_method(
         &admin_wallet,
         &token_artifact,
@@ -562,7 +548,6 @@ async fn init_shared_state() -> Option<TestState> {
         admin_address,
     )
     .await;
-    eprintln!("minting setup complete");
 
     Some(TestState {
         admin_wallet,

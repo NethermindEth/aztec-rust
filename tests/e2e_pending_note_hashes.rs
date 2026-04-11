@@ -161,16 +161,14 @@ async fn register_account_for_authwit(
 async fn create_wallet(primary: ImportedTestAccount) -> Option<(TestWallet, AztecAddress)> {
     let url = node_url();
     let node = create_aztec_node_client(&url);
-    if let Err(err) = node.get_node_info().await {
-        eprintln!("skipping: node not reachable: {err}");
+    if let Err(_err) = node.get_node_info().await {
         return None;
     }
 
     let kv = Arc::new(InMemoryKvStore::new());
     let pxe = match EmbeddedPxe::create(node.clone(), kv).await {
         Ok(pxe) => pxe,
-        Err(err) => {
-            eprintln!("skipping: failed to create PXE: {err}");
+        Err(_err) => {
             return None;
         }
     };
@@ -395,7 +393,6 @@ async fn deploy_contract(
     owner: AztecAddress,
 ) -> (AztecAddress, ContractArtifact) {
     let artifact = load_pending_note_hashes_artifact();
-    eprintln!("deploying PendingNoteHashesContract...");
     let deploy = Contract::deploy(wallet, artifact.clone(), vec![], None).expect("deploy setup");
     let deploy_result = deploy
         .send(
@@ -411,7 +408,6 @@ async fn deploy_contract(
         .await
         .expect("deploy PendingNoteHashesContract");
     let contract_address = deploy_result.instance.address;
-    eprintln!("PendingNoteHashesContract deployed at {contract_address}");
     (contract_address, artifact)
 }
 
@@ -457,7 +453,6 @@ async fn function_can_get_notes_it_just_inserted() {
     let (contract_address, artifact) = deploy_contract(&wallet, owner).await;
 
     let sender = owner;
-    eprintln!("calling test_insert_then_get_then_nullify_flat...");
     send_method(
         &wallet,
         &artifact,
@@ -471,7 +466,6 @@ async fn function_can_get_notes_it_just_inserted() {
         ],
     )
     .await;
-    eprintln!("test_insert_then_get_then_nullify_flat succeeded");
 }
 
 /// TS: Squash! Aztec.nr function can "create" and "nullify" note in the same TX
@@ -490,8 +484,6 @@ async fn squash_create_and_nullify_in_same_tx() {
     let sender = owner;
     let insert_selector = get_selector(&artifact, "insert_note");
     let nullify_selector = get_selector(&artifact, "get_then_nullify_note");
-
-    eprintln!("calling test_insert_then_get_then_nullify_all_in_nested_calls...");
     send_method(
         &wallet,
         &artifact,
@@ -507,8 +499,6 @@ async fn squash_create_and_nullify_in_same_tx() {
         ],
     )
     .await;
-
-    eprintln!("calling get_note_zero_balance...");
     send_method(
         &wallet,
         &artifact,
@@ -522,7 +512,6 @@ async fn squash_create_and_nullify_in_same_tx() {
     expect_note_hashes_squashed_except(&node, 0).await;
     expect_nullifiers_squashed_except(&node, 0).await;
     expect_note_logs_squashed_except(&node, 0).await;
-    eprintln!("squash_create_and_nullify_in_same_tx passed");
 }
 
 /// TS: Squash! ... with 2 note logs
@@ -541,8 +530,6 @@ async fn squash_create_and_nullify_in_same_tx_with_2_note_logs() {
     let sender = owner;
     let insert_selector = get_selector(&artifact, "insert_note_extra_emit");
     let nullify_selector = get_selector(&artifact, "get_then_nullify_note");
-
-    eprintln!("calling test_insert_then_get_then_nullify_all_in_nested_calls (extra emit)...");
     send_method(
         &wallet,
         &artifact,
@@ -562,7 +549,6 @@ async fn squash_create_and_nullify_in_same_tx_with_2_note_logs() {
     expect_note_hashes_squashed_except(&node, 0).await;
     expect_nullifiers_squashed_except(&node, 0).await;
     expect_note_logs_squashed_except(&node, 0).await;
-    eprintln!("squash_create_and_nullify_in_same_tx_with_2_note_logs passed");
 }
 
 /// TS: Squash! ... create 2 notes and nullify both in the same TX
@@ -581,8 +567,6 @@ async fn squash_create_2_notes_and_nullify_both_in_same_tx() {
     let sender = owner;
     let insert_selector = get_selector(&artifact, "insert_note");
     let nullify_selector = get_selector(&artifact, "get_then_nullify_note");
-
-    eprintln!("calling test_insert2_then_get2_then_nullify2_all_in_nested_calls...");
     send_method(
         &wallet,
         &artifact,
@@ -602,7 +586,6 @@ async fn squash_create_2_notes_and_nullify_both_in_same_tx() {
     expect_note_hashes_squashed_except(&node, 0).await;
     expect_nullifiers_squashed_except(&node, 0).await;
     expect_note_logs_squashed_except(&node, 0).await;
-    eprintln!("squash_create_2_notes_and_nullify_both_in_same_tx passed");
 }
 
 /// TS: Squash! ... create 2 notes and nullify 1 in the same TX
@@ -621,8 +604,6 @@ async fn squash_create_2_notes_and_nullify_1_in_same_tx() {
     let sender = owner;
     let insert_selector = get_selector(&artifact, "insert_note");
     let nullify_selector = get_selector(&artifact, "get_then_nullify_note");
-
-    eprintln!("calling test_insert2_then_get2_then_nullify1_all_in_nested_calls...");
     send_method(
         &wallet,
         &artifact,
@@ -642,7 +623,6 @@ async fn squash_create_2_notes_and_nullify_1_in_same_tx() {
     expect_note_hashes_squashed_except(&node, 1).await;
     expect_nullifiers_squashed_except(&node, 0).await;
     expect_note_logs_squashed_except(&node, 1).await;
-    eprintln!("squash_create_2_notes_and_nullify_1_in_same_tx passed");
 }
 
 /// TS: Squash! ... create 2 notes with the same note hash and nullify 1 in the same TX
@@ -661,8 +641,6 @@ async fn squash_create_2_notes_same_hash_nullify_1_in_same_tx() {
     let sender = owner;
     let insert_selector = get_selector(&artifact, "insert_note_static_randomness");
     let nullify_selector = get_selector(&artifact, "get_then_nullify_note");
-
-    eprintln!("calling test_insert2_then_get2_then_nullify1 (static randomness)...");
     send_method(
         &wallet,
         &artifact,
@@ -682,7 +660,6 @@ async fn squash_create_2_notes_same_hash_nullify_1_in_same_tx() {
     expect_note_hashes_squashed_except(&node, 1).await;
     expect_nullifiers_squashed_except(&node, 0).await;
     expect_note_logs_squashed_except(&node, 1).await;
-    eprintln!("squash_create_2_notes_same_hash_nullify_1_in_same_tx passed");
 }
 
 /// TS: Squash! ... nullify a pending note and a persistent in the same TX
@@ -701,7 +678,6 @@ async fn squash_nullify_pending_and_persistent_in_same_tx() {
     let sender = owner;
 
     // TX1: create a persistent note
-    eprintln!("TX1: inserting persistent note...");
     send_method(
         &wallet,
         &artifact,
@@ -724,8 +700,6 @@ async fn squash_nullify_pending_and_persistent_in_same_tx() {
     // TX2: create another note, and nullify it AND the persistent note
     let insert_selector = get_selector(&artifact, "insert_note");
     let nullify_selector = get_selector(&artifact, "get_then_nullify_note");
-
-    eprintln!("TX2: insert 1, get 2, nullify 2...");
     send_method(
         &wallet,
         &artifact,
@@ -743,7 +717,6 @@ async fn squash_nullify_pending_and_persistent_in_same_tx() {
     .await;
 
     // TX3: verify zero balance
-    eprintln!("TX3: verifying zero balance...");
     send_method(
         &wallet,
         &artifact,
@@ -758,7 +731,6 @@ async fn squash_nullify_pending_and_persistent_in_same_tx() {
     expect_note_hashes_squashed_except(&node, 0).await;
     expect_nullifiers_squashed_except(&node, 1).await;
     expect_note_logs_squashed_except(&node, 0).await;
-    eprintln!("squash_nullify_pending_and_persistent_in_same_tx passed");
 }
 
 /// TS: `get_notes` function filters a nullified note created in a previous transaction
@@ -777,7 +749,6 @@ async fn get_notes_filters_nullified_note_from_previous_tx() {
     let sender = owner;
 
     // TX1: create a note
-    eprintln!("TX1: inserting note...");
     send_method(
         &wallet,
         &artifact,
@@ -799,8 +770,6 @@ async fn get_notes_filters_nullified_note_from_previous_tx() {
     // TX2: use dummy as insert (no-op), then get and nullify the persistent note
     let dummy_selector = get_selector(&artifact, "dummy");
     let nullify_selector = get_selector(&artifact, "get_then_nullify_note");
-
-    eprintln!("TX2: nullify persistent note via nested calls...");
     send_method(
         &wallet,
         &artifact,
@@ -819,7 +788,6 @@ async fn get_notes_filters_nullified_note_from_previous_tx() {
 
     // There is a single new nullifier (for the persistent note)
     expect_nullifiers_squashed_except(&node, 1).await;
-    eprintln!("get_notes_filters_nullified_note_from_previous_tx passed");
 }
 
 /// TS: Should handle overflowing the kernel data structures in nested calls
@@ -840,11 +808,6 @@ async fn handle_overflowing_kernel_data_in_nested_calls() {
     let min_to_need_reset =
         std::cmp::min(MAX_NOTE_HASHES_PER_TX, MAX_NOTE_HASH_READ_REQUESTS_PER_TX) + 1;
     let recursions = min_to_need_reset.div_ceil(notes_per_iteration);
-
-    eprintln!(
-        "calling test_recursively_create_notes with {recursions} recursions \
-         (notes_per_iter={notes_per_iteration}, min_to_need_reset={min_to_need_reset})..."
-    );
     send_method(
         &wallet,
         &artifact,
@@ -854,5 +817,4 @@ async fn handle_overflowing_kernel_data_in_nested_calls() {
         vec![abi_address(owner), AbiValue::Integer(recursions as i128)],
     )
     .await;
-    eprintln!("handle_overflowing_kernel_data_in_nested_calls passed");
 }

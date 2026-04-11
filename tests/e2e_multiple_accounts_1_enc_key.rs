@@ -412,7 +412,6 @@ async fn expect_token_balance(
         expected,
         "unexpected private balance for {owner}: got {balance}, expected {expected}"
     );
-    eprintln!("  balance of {owner}: {balance} (expected {expected}) OK");
 }
 
 // ---------------------------------------------------------------------------
@@ -431,16 +430,14 @@ async fn spends_notes_from_multiple_accounts_same_enc_key() {
     // --- 1. Connect to node, create single PXE ---
     let url = node_url();
     let node = create_aztec_node_client(&url);
-    if let Err(err) = node.get_node_info().await {
-        eprintln!("skipping: node not reachable: {err}");
+    if let Err(_err) = node.get_node_info().await {
         return;
     }
 
     let kv = Arc::new(InMemoryKvStore::new());
     let pxe = match EmbeddedPxe::create(node.clone(), kv).await {
         Ok(pxe) => pxe,
-        Err(err) => {
-            eprintln!("skipping: failed to create PXE: {err}");
+        Err(_err) => {
             return;
         }
     };
@@ -520,18 +517,15 @@ async fn spends_notes_from_multiple_accounts_same_enc_key() {
         .await
         .expect("seed admin signing key note");
 
-    eprintln!("admin wallet ready: {admin_address}");
-
     // --- 3. Generate shared secret and 3 account configs ---
     let secret = Fr::random();
     let num_accounts = 3;
     let mut accounts: Vec<AccountConfig> = Vec::new();
 
-    for i in 0..num_accounts {
+    for _i in 0..num_accounts {
         let signing_key = GrumpkinScalar::random();
         let salt = Fr::from(next_unique_salt());
         let config = compute_account_config(secret, signing_key, salt, &compiled_account);
-        eprintln!("account[{i}]: {}", config.address);
         accounts.push(config);
     }
 
@@ -549,9 +543,7 @@ async fn spends_notes_from_multiple_accounts_same_enc_key() {
 
     // Register senders for tag discovery.
     for acct in &accounts {
-        if let Err(e) = pxe.register_sender(&acct.address).await {
-            eprintln!("register sender: {e}");
-        }
+        if let Err(_e) = pxe.register_sender(&acct.address).await {}
     }
 
     // --- 5. Build wallet with admin + 3 accounts ---
@@ -573,11 +565,9 @@ async fn spends_notes_from_multiple_accounts_same_enc_key() {
         );
     }
     let wallet = BaseWallet::new(pxe, node, provider);
-    eprintln!("wallet ready (admin + 3 accounts)");
 
     // --- 6. Deploy 3 account contracts ---
     for (i, acct) in accounts.iter().enumerate() {
-        eprintln!("deploying account contract {i}...");
         let contract = SchnorrAccountContract::new_with_signing_key(acct.secret, acct.signing_key);
         let signing_pk = contract.signing_public_key();
 
@@ -610,7 +600,6 @@ async fn spends_notes_from_multiple_accounts_same_enc_key() {
             result.instance.address, acct.address,
             "deployed address mismatch for account {i}"
         );
-        eprintln!("  account[{i}] deployed at {}", acct.address);
 
         // Seed signing key note for the new account.
         let note = aztec_rs::embedded_pxe::stores::note_store::StoredNote {
@@ -641,7 +630,6 @@ async fn spends_notes_from_multiple_accounts_same_enc_key() {
 
     // --- 7. Deploy token contract ---
     let initial_balance: u128 = 987;
-    eprintln!("deploying token contract...");
     let token_artifact = load_compiled_token_artifact();
     let deploy = Contract::deploy(
         &wallet,
@@ -669,10 +657,8 @@ async fn spends_notes_from_multiple_accounts_same_enc_key() {
         .await
         .expect("deploy Token");
     let token_address = token_result.instance.address;
-    eprintln!("Token deployed at {token_address}");
 
     // --- 8. Mint to account[0] ---
-    eprintln!("minting {initial_balance} to account[0]...");
     send_token_method(
         &wallet,
         &token_artifact,
@@ -686,11 +672,9 @@ async fn spends_notes_from_multiple_accounts_same_enc_key() {
         admin_address,
     )
     .await;
-    eprintln!("minting complete");
 
     // --- 9. Verify initial balances ---
     let acct_addrs: Vec<AztecAddress> = accounts.iter().map(|a| a.address).collect();
-    eprintln!("verifying initial balances...");
     expect_token_balance(
         &wallet,
         &token_artifact,
@@ -704,7 +688,6 @@ async fn spends_notes_from_multiple_accounts_same_enc_key() {
 
     // --- 10. Transfer 0 -> 1 ---
     let transfer_amount_1: u128 = 654;
-    eprintln!("\ntransfer {transfer_amount_1} from account[0] to account[1]...");
     send_token_method(
         &wallet,
         &token_artifact,
@@ -722,7 +705,6 @@ async fn spends_notes_from_multiple_accounts_same_enc_key() {
     let expected_0 = initial_balance - transfer_amount_1;
     let expected_1 = transfer_amount_1;
     let expected_2: u128 = 0;
-    eprintln!("verifying balances after transfer 1...");
     expect_token_balance(
         &wallet,
         &token_artifact,
@@ -750,7 +732,6 @@ async fn spends_notes_from_multiple_accounts_same_enc_key() {
 
     // --- 11. Transfer 0 -> 2 ---
     let transfer_amount_2: u128 = 123;
-    eprintln!("\ntransfer {transfer_amount_2} from account[0] to account[2]...");
     send_token_method(
         &wallet,
         &token_artifact,
@@ -767,7 +748,6 @@ async fn spends_notes_from_multiple_accounts_same_enc_key() {
 
     let expected_0 = expected_0 - transfer_amount_2;
     let expected_2 = transfer_amount_2;
-    eprintln!("verifying balances after transfer 2...");
     expect_token_balance(
         &wallet,
         &token_artifact,
@@ -795,7 +775,6 @@ async fn spends_notes_from_multiple_accounts_same_enc_key() {
 
     // --- 12. Transfer 1 -> 2 ---
     let transfer_amount_3: u128 = 210;
-    eprintln!("\ntransfer {transfer_amount_3} from account[1] to account[2]...");
     send_token_method(
         &wallet,
         &token_artifact,
@@ -812,7 +791,6 @@ async fn spends_notes_from_multiple_accounts_same_enc_key() {
 
     let expected_1 = expected_1 - transfer_amount_3;
     let expected_2 = expected_2 + transfer_amount_3;
-    eprintln!("verifying balances after transfer 3...");
     expect_token_balance(
         &wallet,
         &token_artifact,
@@ -837,6 +815,4 @@ async fn spends_notes_from_multiple_accounts_same_enc_key() {
         expected_2,
     )
     .await;
-
-    eprintln!("\nall transfers and balances verified successfully!");
 }

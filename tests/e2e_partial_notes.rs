@@ -115,16 +115,14 @@ async fn create_wallet(
 ) -> Option<(TestWallet, AztecAddress)> {
     let url = node_url();
     let node = create_aztec_node_client(&url);
-    if let Err(err) = node.get_node_info().await {
-        eprintln!("skipping: node not reachable: {err}");
+    if let Err(_err) = node.get_node_info().await {
         return None;
     }
 
     let kv = Arc::new(InMemoryKvStore::new());
     let pxe = match EmbeddedPxe::create(node.clone(), kv).await {
         Ok(pxe) => pxe,
-        Err(err) => {
-            eprintln!("skipping: failed to create PXE: {err}");
+        Err(_err) => {
             return None;
         }
     };

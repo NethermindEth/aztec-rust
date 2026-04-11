@@ -113,16 +113,14 @@ fn imported_complete_address(account: ImportedTestAccount) -> CompleteAddress {
 async fn setup_wallet(account: ImportedTestAccount) -> Option<(TestWallet, AztecAddress)> {
     let url = node_url();
     let node = create_aztec_node_client(&url);
-    if let Err(err) = node.get_node_info().await {
-        eprintln!("skipping: node not reachable: {err}");
+    if let Err(_err) = node.get_node_info().await {
         return None;
     }
 
     let kv = Arc::new(InMemoryKvStore::new());
     let pxe = match EmbeddedPxe::create(node.clone(), kv).await {
         Ok(pxe) => pxe,
-        Err(err) => {
-            eprintln!("skipping: failed to create PXE: {err}");
+        Err(_err) => {
             return None;
         }
     };
@@ -130,18 +128,10 @@ async fn setup_wallet(account: ImportedTestAccount) -> Option<(TestWallet, Aztec
     let secret_key = Fr::from_hex(account.secret_key).expect("valid test account secret key");
     let complete = imported_complete_address(account);
 
-    if let Err(err) = pxe.key_store().add_account(&secret_key).await {
-        eprintln!(
-            "skipping: failed to seed key store for {}: {err}",
-            account.alias
-        );
+    if let Err(_err) = pxe.key_store().add_account(&secret_key).await {
         return None;
     }
-    if let Err(err) = pxe.address_store().add(&complete).await {
-        eprintln!(
-            "skipping: failed to seed address store for {}: {err}",
-            account.alias
-        );
+    if let Err(_err) = pxe.address_store().add(&complete).await {
         return None;
     }
 

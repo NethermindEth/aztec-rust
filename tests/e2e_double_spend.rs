@@ -144,16 +144,14 @@ async fn register_account_for_authwit(
 async fn create_wallet(primary: ImportedTestAccount) -> Option<(TestWallet, AztecAddress)> {
     let url = node_url();
     let node = create_aztec_node_client(&url);
-    if let Err(err) = node.get_node_info().await {
-        eprintln!("skipping: node not reachable: {err}");
+    if let Err(_err) = node.get_node_info().await {
         return None;
     }
 
     let kv = Arc::new(InMemoryKvStore::new());
     let pxe = match EmbeddedPxe::create(node.clone(), kv).await {
         Ok(pxe) => pxe,
-        Err(err) => {
-            eprintln!("skipping: failed to create PXE: {err}");
+        Err(_err) => {
             return None;
         }
     };
@@ -244,7 +242,6 @@ async fn emits_public_nullifier_then_tries_same_nullifier() {
     let artifact = load_test_contract_artifact();
 
     // Deploy TestContract
-    eprintln!("deploying TestContract...");
     let deploy = Contract::deploy(&wallet, artifact.clone(), vec![], None).expect("deploy setup");
     let deploy_result = deploy
         .send(
@@ -260,13 +257,11 @@ async fn emits_public_nullifier_then_tries_same_nullifier() {
         .await
         .expect("deploy TestContract");
     let contract_address = deploy_result.instance.address;
-    eprintln!("TestContract deployed at {contract_address}");
 
     // Use a unique nullifier value to avoid collisions across test runs
     let nullifier = Fr::from(1u64);
 
     // TX1: emit a public nullifier — should succeed
-    eprintln!("TX1: emitting public nullifier...");
     let call1 = build_call(
         &artifact,
         contract_address,
@@ -286,10 +281,8 @@ async fn emits_public_nullifier_then_tries_same_nullifier() {
         )
         .await
         .expect("TX1: emit_nullifier_public should succeed");
-    eprintln!("TX1: succeeded");
 
     // TX2-simulate: try emitting the same nullifier — simulation should fail
-    eprintln!("TX2-simulate: simulating duplicate nullifier...");
     let call2 = build_call(
         &artifact,
         contract_address,
@@ -311,7 +304,6 @@ async fn emits_public_nullifier_then_tries_same_nullifier() {
         .expect_err("TX2-simulate: should fail with duplicate nullifier");
 
     let sim_err_str = sim_err.to_string().to_lowercase();
-    eprintln!("TX2-simulate error: {sim_err}");
     assert!(
         sim_err_str.contains("duplicate nullifier")
             || sim_err_str.contains("nullifier already exist")
@@ -322,7 +314,6 @@ async fn emits_public_nullifier_then_tries_same_nullifier() {
     );
 
     // TX2-send: try sending (skipping simulation) — should fail with revert
-    eprintln!("TX2-send: sending duplicate nullifier...");
     let call3 = build_call(
         &artifact,
         contract_address,
@@ -344,7 +335,6 @@ async fn emits_public_nullifier_then_tries_same_nullifier() {
         .expect_err("TX2-send: should fail with app logic reverted");
 
     let send_err_str = send_err.to_string().to_lowercase();
-    eprintln!("TX2-send error: {send_err}");
     assert!(
         send_err_str.contains("reverted")
             || send_err_str.contains("duplicate nullifier")

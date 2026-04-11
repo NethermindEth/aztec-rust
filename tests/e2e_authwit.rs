@@ -189,16 +189,14 @@ async fn create_wallet(
 ) -> Option<(TestWallet, AztecAddress)> {
     let url = node_url();
     let node = create_aztec_node_client(&url);
-    if let Err(err) = node.get_node_info().await {
-        eprintln!("skipping: node not reachable: {err}");
+    if let Err(_err) = node.get_node_info().await {
         return None;
     }
 
     let kv = Arc::new(InMemoryKvStore::new());
     let pxe = match EmbeddedPxe::create(node.clone(), kv).await {
         Ok(pxe) => pxe,
-        Err(err) => {
-            eprintln!("skipping: failed to create PXE: {err}");
+        Err(_err) => {
             return None;
         }
     };
@@ -361,9 +359,7 @@ async fn register_contract_on_pxe(
     artifact: &ContractArtifact,
     instance: &ContractInstanceWithAddress,
 ) {
-    pxe.register_contract_class(artifact)
-        .await
-        .unwrap_or_else(|e| eprintln!("register class: {e}"));
+    pxe.register_contract_class(artifact).await.ok();
     pxe.register_contract(RegisterContractRequest {
         instance: instance.clone(),
         artifact: Some(artifact.clone()),
@@ -400,14 +396,10 @@ async fn init_shared_state() -> Option<TestState> {
     let account2 =
         AztecAddress(Fr::from_hex(TEST_ACCOUNT_1.address).expect("valid account2 address"));
 
-    eprintln!("account1: {account1}");
-    eprintln!("account2: {account2}");
-
     let auth_artifact = load_auth_wit_test_artifact();
     let proxy_artifact = load_generic_proxy_artifact();
 
     // Deploy AuthWitTest contract from account1
-    eprintln!("deploying AuthWitTest from account1...");
     let auth_deploy =
         Contract::deploy(&wallet, auth_artifact.clone(), vec![], None).expect("auth deploy");
     let auth_result = auth_deploy
@@ -424,10 +416,8 @@ async fn init_shared_state() -> Option<TestState> {
         .await
         .expect("deploy AuthWitTest");
     let auth_address = auth_result.instance.address;
-    eprintln!("AuthWitTest deployed at {auth_address}");
 
     // Deploy GenericProxy contract from account1
-    eprintln!("deploying GenericProxy from account1...");
     let proxy_deploy =
         Contract::deploy(&wallet, proxy_artifact.clone(), vec![], None).expect("proxy deploy");
     let proxy_result = proxy_deploy
@@ -444,7 +434,6 @@ async fn init_shared_state() -> Option<TestState> {
         .await
         .expect("deploy GenericProxy");
     let proxy_address = proxy_result.instance.address;
-    eprintln!("GenericProxy deployed at {proxy_address}");
 
     Some(TestState {
         wallet,

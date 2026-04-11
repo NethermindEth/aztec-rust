@@ -149,16 +149,14 @@ async fn register_account_for_authwit(
 async fn create_wallet(primary: ImportedTestAccount) -> Option<(TestWallet, AztecAddress)> {
     let url = node_url();
     let node = create_aztec_node_client(&url);
-    if let Err(err) = node.get_node_info().await {
-        eprintln!("skipping: node not reachable: {err}");
+    if let Err(_err) = node.get_node_info().await {
         return None;
     }
 
     let kv = Arc::new(InMemoryKvStore::new());
     let pxe = match EmbeddedPxe::create(node.clone(), kv).await {
         Ok(pxe) => pxe,
-        Err(err) => {
-            eprintln!("skipping: failed to create PXE: {err}");
+        Err(_err) => {
             return None;
         }
     };
@@ -330,7 +328,6 @@ async fn nhk_app_detects_note_nullification() {
     let artifact = load_test_contract_artifact();
 
     // Deploy TestContract
-    eprintln!("deploying TestContract...");
     let deploy = Contract::deploy(&wallet, artifact.clone(), vec![], None).expect("deploy setup");
     let deploy_result = deploy
         .send(
@@ -346,7 +343,6 @@ async fn nhk_app_detects_note_nullification() {
         .await
         .expect("deploy TestContract");
     let contract_address = deploy_result.instance.address;
-    eprintln!("TestContract deployed at {contract_address}");
 
     // Derive nhk_app from the account secret key
     let secret_key = Fr::from_hex(TEST_ACCOUNT_0.secret_key).expect("valid secret key");
@@ -357,7 +353,6 @@ async fn nhk_app_detects_note_nullification() {
     let note_storage_slot = Fr::from(12u64);
 
     // call_create_note(value, owner, storage_slot, broadcast)
-    eprintln!("creating note...");
     let create_call = build_call(
         &artifact,
         contract_address,
@@ -382,7 +377,6 @@ async fn nhk_app_detects_note_nullification() {
         )
         .await
         .expect("call_create_note should succeed");
-    eprintln!("note created");
 
     // Before destroying: 0 nullified notes detectable via nhk_app
     let count_before = get_num_nullified_notes(wallet.node(), &nhk_app, &contract_address).await;
@@ -392,7 +386,6 @@ async fn nhk_app_detects_note_nullification() {
     );
 
     // call_destroy_note(owner, storage_slot)
-    eprintln!("destroying note...");
     let destroy_call = build_call(
         &artifact,
         contract_address,
@@ -415,7 +408,6 @@ async fn nhk_app_detects_note_nullification() {
         )
         .await
         .expect("call_destroy_note should succeed");
-    eprintln!("note destroyed");
 
     // After destroying: 1 nullified note detectable via nhk_app
     let count_after = get_num_nullified_notes(wallet.node(), &nhk_app, &contract_address).await;
@@ -437,7 +429,6 @@ async fn gets_ovsk_app() {
     let artifact = load_test_contract_artifact();
 
     // Deploy TestContract
-    eprintln!("deploying TestContract...");
     let deploy = Contract::deploy(&wallet, artifact.clone(), vec![], None).expect("deploy setup");
     let deploy_result = deploy
         .send(
@@ -453,7 +444,6 @@ async fn gets_ovsk_app() {
         .await
         .expect("deploy TestContract");
     let contract_address = deploy_result.instance.address;
-    eprintln!("TestContract deployed at {contract_address}");
 
     // Derive ovsk_m and ovpk_m from the account secret key
     let secret_key = Fr::from_hex(TEST_ACCOUNT_0.secret_key).expect("valid secret key");
@@ -465,7 +455,6 @@ async fn gets_ovsk_app() {
     let expected_ovsk_app = compute_ovsk_app(&ovsk_m, &contract_address);
 
     // Simulate get_ovsk_app(ovpk_m_hash) on the test contract
-    eprintln!("simulating get_ovsk_app...");
     let call = build_call(
         &artifact,
         contract_address,
@@ -503,5 +492,4 @@ async fn gets_ovsk_app() {
         ovsk_app, expected_as_fr,
         "ovsk_app from contract does not match local derivation"
     );
-    eprintln!("ovsk_app matches: {ovsk_app}");
 }

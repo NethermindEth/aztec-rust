@@ -123,16 +123,14 @@ fn imported_complete_address(account: ImportedTestAccount) -> CompleteAddress {
 async fn setup_wallet(account: ImportedTestAccount) -> Option<(TestWallet, AztecAddress)> {
     let url = node_url();
     let node = create_aztec_node_client(&url);
-    if let Err(err) = node.get_node_info().await {
-        eprintln!("skipping: node not reachable: {err}");
+    if let Err(_err) = node.get_node_info().await {
         return None;
     }
 
     let kv = Arc::new(InMemoryKvStore::new());
     let pxe = match EmbeddedPxe::create(node.clone(), kv).await {
         Ok(pxe) => pxe,
-        Err(err) => {
-            eprintln!("skipping: failed to create PXE: {err}");
+        Err(_err) => {
             return None;
         }
     };
@@ -140,18 +138,10 @@ async fn setup_wallet(account: ImportedTestAccount) -> Option<(TestWallet, Aztec
     let secret_key = Fr::from_hex(account.secret_key).expect("valid test account secret key");
     let complete = imported_complete_address(account);
 
-    if let Err(err) = pxe.key_store().add_account(&secret_key).await {
-        eprintln!(
-            "skipping: failed to seed key store for {}: {err}",
-            account.alias
-        );
+    if let Err(_err) = pxe.key_store().add_account(&secret_key).await {
         return None;
     }
-    if let Err(err) = pxe.address_store().add(&complete).await {
-        eprintln!(
-            "skipping: failed to seed address store for {}: {err}",
-            account.alias
-        );
+    if let Err(_err) = pxe.address_store().add(&complete).await {
         return None;
     }
 
@@ -222,7 +212,6 @@ async fn deploy_token(
 
     let instance = deploy_result.instance;
     let token_address = instance.address;
-    eprintln!("L2 token contract deployed at {token_address}");
     (token_address, artifact, instance)
 }
 
@@ -332,15 +321,11 @@ async fn set_node_config(config: serde_json::Value) {
             .await
         {
             Ok(()) => {
-                eprintln!("nodeAdmin_setConfig succeeded on {url}");
                 return;
             }
-            Err(err) => {
-                eprintln!("nodeAdmin_setConfig on {url}: {err}");
-            }
+            Err(_err) => {}
         }
     }
-    eprintln!("WARNING: nodeAdmin_setConfig not available on any endpoint, continuing");
 }
 
 // ===========================================================================
@@ -460,8 +445,6 @@ async fn can_discover_and_use_notes_created_in_both_pruned_and_available_blocks(
     // fixed number of blocks. Here we adaptively mine blocks until the historical
     // query for the first mint's block fails, accommodating any checkpoint history.
     set_node_config(serde_json::json!({ "minTxsPerBlock": 0 })).await;
-
-    eprintln!("Mining blocks until block {first_mint_block} is pruned (max {MAX_BLOCKS_TO_MINE})");
     let mut blocks_mined = 0usize;
     loop {
         // Check if the block is already pruned
@@ -471,7 +454,6 @@ async fn can_discover_and_use_notes_created_in_both_pruned_and_available_blocks(
             .await
         {
             Err(err) if err.to_string().contains("Unable to find leaf") => {
-                eprintln!("Confirmed: block {first_mint_block} pruned after {blocks_mined} blocks");
                 break;
             }
             Err(err) => {
@@ -497,9 +479,7 @@ async fn can_discover_and_use_notes_created_in_both_pruned_and_available_blocks(
         )
         .await;
         blocks_mined += 1;
-        if blocks_mined.is_multiple_of(10) {
-            eprintln!("Mined {blocks_mined} blocks…");
-        }
+        if blocks_mined.is_multiple_of(10) {}
     }
 
     // --- Step 5: Mint second half of MINT_AMOUNT to sender ---

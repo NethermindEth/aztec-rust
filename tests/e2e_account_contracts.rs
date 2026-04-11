@@ -166,16 +166,14 @@ async fn create_wallet_with_contract(
 ) -> Option<(TestWallet, AztecAddress, CompleteAddress)> {
     let url = node_url();
     let node = create_aztec_node_client(&url);
-    if let Err(err) = node.get_node_info().await {
-        eprintln!("skipping: node not reachable: {err}");
+    if let Err(_err) = node.get_node_info().await {
         return None;
     }
 
     let kv = Arc::new(InMemoryKvStore::new());
     let pxe = match EmbeddedPxe::create(node.clone(), kv).await {
         Ok(pxe) => pxe,
-        Err(err) => {
-            eprintln!("skipping: failed to create PXE: {err}");
+        Err(_err) => {
             return None;
         }
     };
@@ -273,7 +271,6 @@ async fn deploy_child_contract(
         .expect("deploy ChildContract");
 
     let address = result.instance.address;
-    eprintln!("ChildContract deployed at {address}");
     (address, artifact)
 }
 
@@ -303,15 +300,12 @@ async fn get_schnorr_single_key_state() -> Option<&'static AccountTestState> {
 }
 
 async fn init_schnorr_single_key_state() -> Option<AccountTestState> {
-    eprintln!("--- init: schnorr single-key account ---");
     // SingleKeyAccountContract uses the encryption key as the signing key.
     // We use SchnorrAccountContract here since it's the only one available.
     let secret_key = Fr::from_hex(TEST_ACCOUNT_0.secret_key).expect("valid secret key");
     let account_contract = SchnorrAccountContract::new(secret_key);
     let (wallet, address, complete) =
         create_wallet_with_contract(TEST_ACCOUNT_0, Box::new(account_contract)).await?;
-
-    eprintln!("deploying ChildContract for schnorr single-key...");
     let (child_address, child_artifact) = deploy_child_contract(&wallet, address).await;
 
     Some(AccountTestState {
@@ -335,13 +329,10 @@ async fn get_schnorr_multi_key_state() -> Option<&'static AccountTestState> {
 }
 
 async fn init_schnorr_multi_key_state() -> Option<AccountTestState> {
-    eprintln!("--- init: schnorr multi-key account ---");
     let secret_key = Fr::from_hex(TEST_ACCOUNT_0.secret_key).expect("valid secret key");
     let account_contract = SchnorrAccountContract::new(secret_key);
     let (wallet, address, complete) =
         create_wallet_with_contract(TEST_ACCOUNT_0, Box::new(account_contract)).await?;
-
-    eprintln!("deploying ChildContract for schnorr multi-key...");
     let (child_address, child_artifact) = deploy_child_contract(&wallet, address).await;
 
     Some(AccountTestState {
@@ -365,14 +356,11 @@ async fn get_ecdsa_stored_key_state() -> Option<&'static AccountTestState> {
 }
 
 async fn init_ecdsa_stored_key_state() -> Option<AccountTestState> {
-    eprintln!("--- init: ecdsa stored-key account ---");
     // EcdsaKAccountContract is not available yet; use SchnorrAccountContract.
     let secret_key = Fr::from_hex(TEST_ACCOUNT_0.secret_key).expect("valid secret key");
     let account_contract = SchnorrAccountContract::new(secret_key);
     let (wallet, address, complete) =
         create_wallet_with_contract(TEST_ACCOUNT_0, Box::new(account_contract)).await?;
-
-    eprintln!("deploying ChildContract for ecdsa stored-key...");
     let (child_address, child_artifact) = deploy_child_contract(&wallet, address).await;
 
     Some(AccountTestState {
@@ -392,7 +380,6 @@ async fn init_ecdsa_stored_key_state() -> Option<AccountTestState> {
 ///
 /// Mirrors `child.methods.value(42).send({ from: completeAddress.address })`
 async fn test_calls_private_function(state: &AccountTestState) {
-    eprintln!("calling private function value(42)...");
     let call = build_call(
         &state.child_artifact,
         state.child_address,
@@ -413,7 +400,6 @@ async fn test_calls_private_function(state: &AccountTestState) {
         )
         .await
         .expect("private function call should succeed");
-    eprintln!("private function call succeeded");
 }
 
 /// TS: calls a public function
@@ -423,7 +409,6 @@ async fn test_calls_private_function(state: &AccountTestState) {
 ///   `const storedValue = await aztecNode.getPublicStorageAt('latest', child.address, new Fr(1))`
 ///   `expect(storedValue).toEqual(new Fr(42n))`
 async fn test_calls_public_function(state: &AccountTestState) {
-    eprintln!("calling public function pub_inc_value(42)...");
     let call = build_call(
         &state.child_artifact,
         state.child_address,
@@ -456,7 +441,6 @@ async fn test_calls_public_function(state: &AccountTestState) {
         Fr::from(42u64),
         "pub_inc_value(42) should store 42 at slot 1"
     );
-    eprintln!("public function call succeeded, stored value = {stored_value}");
 }
 
 /// TS: fails to call a function using an invalid signature
@@ -465,8 +449,6 @@ async fn test_calls_public_function(state: &AccountTestState) {
 ///   Create a random account contract, replace the account in the wallet,
 ///   then `expect(child.methods.value(42).simulate(...)).rejects.toThrow('Cannot satisfy constraint')`
 async fn test_fails_invalid_signature(state: &AccountTestState) {
-    eprintln!("testing invalid signature rejection...");
-
     // Create a wallet with a random (wrong) signing key for the same address.
     let random_secret = Fr::from(next_unique_salt());
     let random_contract = SchnorrAccountContract::new(random_secret);
@@ -579,7 +561,6 @@ async fn test_fails_invalid_signature(state: &AccountTestState) {
             || err_str.contains("simulation error"),
         "expected constraint failure, got: {err}"
     );
-    eprintln!("invalid signature correctly rejected: {err}");
 }
 
 // ---------------------------------------------------------------------------

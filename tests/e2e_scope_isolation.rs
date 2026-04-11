@@ -142,16 +142,14 @@ async fn create_wallet(
 ) -> Option<(TestWallet, AztecAddress)> {
     let url = node_url();
     let node = create_aztec_node_client(&url);
-    if let Err(err) = node.get_node_info().await {
-        eprintln!("skipping: node not reachable: {err}");
+    if let Err(_err) = node.get_node_info().await {
         return None;
     }
 
     let kv = Arc::new(InMemoryKvStore::new());
     let pxe = match EmbeddedPxe::create(node.clone(), kv).await {
         Ok(pxe) => pxe,
-        Err(err) => {
-            eprintln!("skipping: failed to create PXE: {err}");
+        Err(_err) => {
             return None;
         }
     };
@@ -299,7 +297,6 @@ async fn init_shared_state() -> Option<TestState> {
     let artifact = load_scope_test_artifact();
 
     // Deploy ScopeTestContract from alice
-    eprintln!("deploying ScopeTestContract from alice...");
     let deploy =
         Contract::deploy(&alice_wallet, artifact.clone(), vec![], None).expect("deploy builder");
     let deploy_result = deploy
@@ -316,7 +313,6 @@ async fn init_shared_state() -> Option<TestState> {
         .await
         .expect("deploy ScopeTestContract");
     let contract_address = deploy_result.instance.address;
-    eprintln!("ScopeTestContract deployed at {contract_address}");
 
     // Register contract on bob's PXE so he can interact with it
     bob_wallet
@@ -334,7 +330,6 @@ async fn init_shared_state() -> Option<TestState> {
         .expect("register contract on bob PXE");
 
     // Alice creates a note for herself
-    eprintln!("alice creating note with value {ALICE_NOTE_VALUE}...");
     let create_alice = build_call(
         &artifact,
         contract_address,
@@ -359,7 +354,6 @@ async fn init_shared_state() -> Option<TestState> {
         .expect("alice create_note");
 
     // Bob creates a note for himself
-    eprintln!("bob creating note with value {BOB_NOTE_VALUE}...");
     let create_bob = build_call(
         &artifact,
         contract_address,
@@ -407,8 +401,6 @@ async fn init_shared_state() -> Option<TestState> {
             },
         )
         .await;
-
-    eprintln!("setup complete: alice={alice}, bob={bob}, charlie={charlie}");
 
     Some(TestState {
         alice_wallet,

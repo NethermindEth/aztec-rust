@@ -163,16 +163,14 @@ async fn register_account_for_authwit(
 async fn create_wallet(primary: ImportedTestAccount) -> Option<(TestWallet, AztecAddress)> {
     let url = node_url();
     let node = create_aztec_node_client(&url);
-    if let Err(err) = node.get_node_info().await {
-        eprintln!("skipping: node not reachable: {err}");
+    if let Err(_err) = node.get_node_info().await {
         return None;
     }
 
     let kv = Arc::new(InMemoryKvStore::new());
     let pxe = match EmbeddedPxe::create(node.clone(), kv).await {
         Ok(pxe) => pxe,
-        Err(err) => {
-            eprintln!("skipping: failed to create PXE: {err}");
+        Err(_err) => {
             return None;
         }
     };
@@ -346,7 +344,6 @@ async fn init_comparator_state() -> Option<ComparatorState> {
     let (wallet, default_account) = create_wallet(TEST_ACCOUNT_0).await?;
 
     let artifact = load_note_getter_artifact();
-    eprintln!("deploying NoteGetterContract...");
     let deploy = Contract::deploy(&wallet, artifact.clone(), vec![], None).expect("deploy setup");
     let deploy_result = deploy
         .send(
@@ -362,7 +359,6 @@ async fn init_comparator_state() -> Option<ComparatorState> {
         .await
         .expect("deploy NoteGetterContract");
     let contract_address = deploy_result.instance.address;
-    eprintln!("NoteGetterContract deployed at {contract_address}");
 
     Some(ComparatorState {
         wallet,
@@ -392,7 +388,6 @@ async fn init_status_filter_state() -> Option<StatusFilterState> {
     let (wallet, default_account) = create_wallet(TEST_ACCOUNT_0).await?;
 
     let artifact = load_test_contract_artifact();
-    eprintln!("deploying TestContract for status filter tests...");
     let deploy = Contract::deploy(&wallet, artifact.clone(), vec![], None).expect("deploy setup");
     let deploy_result = deploy
         .send(
@@ -408,7 +403,6 @@ async fn init_status_filter_state() -> Option<StatusFilterState> {
         .await
         .expect("deploy TestContract");
     let contract_address = deploy_result.instance.address;
-    eprintln!("TestContract deployed at {contract_address}");
 
     Some(StatusFilterState {
         wallet,
@@ -641,7 +635,6 @@ async fn inserts_notes_then_queries_with_all_comparators() {
     };
 
     // Insert notes with values 0-9
-    eprintln!("inserting notes 0-9...");
     for i in 0u64..10 {
         let call = build_call(
             &s.artifact,
@@ -662,11 +655,9 @@ async fn inserts_notes_then_queries_with_all_comparators() {
             )
             .await
             .unwrap_or_else(|e| panic!("insert_note({i}) failed: {e}"));
-        eprintln!("  inserted note {i}");
     }
 
     // Insert a duplicate note with value 5
-    eprintln!("inserting duplicate note 5...");
     let call = build_call(
         &s.artifact,
         s.contract_address,
@@ -688,7 +679,6 @@ async fn inserts_notes_then_queries_with_all_comparators() {
         .expect("insert_note(5) duplicate failed");
 
     // Query with each comparator
-    eprintln!("querying with comparators...");
 
     let query = |comparator: i128| {
         build_call(
@@ -762,13 +752,6 @@ async fn inserts_notes_then_queries_with_all_comparators() {
     lte_vals.sort_unstable();
     gte_vals.sort_unstable();
 
-    eprintln!("EQ:  {eq_vals:?}");
-    eprintln!("NEQ: {neq_vals:?}");
-    eprintln!("LT:  {lt_vals:?}");
-    eprintln!("GT:  {gt_vals:?}");
-    eprintln!("LTE: {lte_vals:?}");
-    eprintln!("GTE: {gte_vals:?}");
-
     assert_eq!(eq_vals, vec![5, 5], "EQ 5");
     assert_eq!(neq_vals, vec![0, 1, 2, 3, 4, 6, 7, 8, 9], "NEQ 5");
     assert_eq!(lt_vals, vec![0, 1, 2, 3, 4], "LT 5");
@@ -792,11 +775,7 @@ async fn active_status_returns_active_notes() {
 
     let storage_slot = 1001;
     let active_or_nullified = false;
-
-    eprintln!("creating note at slot {storage_slot}...");
     send_create_note(s, VALUE, storage_slot).await;
-
-    eprintln!("asserting note is returned...");
     assert_note_is_returned(s, storage_slot, VALUE, active_or_nullified).await;
 }
 
@@ -811,14 +790,8 @@ async fn active_status_does_not_return_nullified_notes() {
 
     let storage_slot = 1002;
     let active_or_nullified = false;
-
-    eprintln!("creating note at slot {storage_slot}...");
     send_create_note(s, VALUE, storage_slot).await;
-
-    eprintln!("destroying note at slot {storage_slot}...");
     send_destroy_note(s, storage_slot).await;
-
-    eprintln!("asserting no return value...");
     assert_no_return_value(s, storage_slot, active_or_nullified).await;
 }
 
@@ -837,11 +810,7 @@ async fn active_and_nullified_returns_active_notes() {
 
     let storage_slot = 1003;
     let active_or_nullified = true;
-
-    eprintln!("creating note at slot {storage_slot}...");
     send_create_note(s, VALUE, storage_slot).await;
-
-    eprintln!("asserting note is returned...");
     assert_note_is_returned(s, storage_slot, VALUE, active_or_nullified).await;
 }
 
@@ -856,14 +825,8 @@ async fn active_and_nullified_returns_nullified_notes() {
 
     let storage_slot = 1004;
     let active_or_nullified = true;
-
-    eprintln!("creating note at slot {storage_slot}...");
     send_create_note(s, VALUE, storage_slot).await;
-
-    eprintln!("destroying note at slot {storage_slot}...");
     send_destroy_note(s, storage_slot).await;
-
-    eprintln!("asserting note is returned (nullified)...");
     assert_note_is_returned(s, storage_slot, VALUE, active_or_nullified).await;
 }
 
@@ -880,17 +843,10 @@ async fn active_and_nullified_returns_both() {
     let active_or_nullified = true;
 
     // Create two notes with different values in the same storage slot
-    eprintln!("creating note with value {VALUE} at slot {storage_slot}...");
     send_create_note(s, VALUE, storage_slot).await;
-
-    eprintln!(
-        "creating note with value {} at slot {storage_slot}...",
-        VALUE + 1
-    );
     send_create_note(s, VALUE + 1, storage_slot).await;
 
     // Destroy one note
-    eprintln!("destroying one note at slot {storage_slot}...");
     send_destroy_note(s, storage_slot).await;
 
     // Fetch multiple notes — both the active and the nullified one
@@ -955,9 +911,6 @@ async fn active_and_nullified_returns_both() {
 
     view_values.sort_unstable();
     get_values.sort_unstable();
-
-    eprintln!("view_notes_many: {view_values:?}");
-    eprintln!("get_notes_many:  {get_values:?}");
 
     // Both methods should return the same result
     assert_eq!(
