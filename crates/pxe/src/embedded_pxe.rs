@@ -2144,6 +2144,22 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
         self.verify_auth_witness_signatures(tx_request, origin)
             .await?;
 
+        // Sort public_function_calldata to match the counter-sorted order
+        // of public call requests (the simulated kernel sorts requests by
+        // counter, so the calldata must follow the same order).
+        let sorted_calldata = {
+            let requests = aggregated.execution_result.all_public_call_requests();
+            let calldata = &aggregated.public_function_calldata;
+            if requests.len() == calldata.len() && !calldata.is_empty() {
+                let mut paired: Vec<_> =
+                    requests.into_iter().zip(calldata.iter().cloned()).collect();
+                paired.sort_by_key(|(req, _)| req.counter);
+                paired.into_iter().map(|(_, cd)| cd).collect()
+            } else {
+                aggregated.public_function_calldata.clone()
+            }
+        };
+
         // Process through simulated kernel
         let kernel_output = crate::kernel::SimulatedKernel::process(
             &aggregated.execution_result,
@@ -2170,7 +2186,7 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
             public_inputs,
             chonk_proof,
             contract_class_log_fields: aggregated.contract_class_log_fields,
-            public_function_calldata: aggregated.public_function_calldata,
+            public_function_calldata: sorted_calldata,
             stats: None,
         })
     }

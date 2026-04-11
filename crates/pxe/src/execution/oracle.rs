@@ -1258,11 +1258,11 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             .get(2)
             .and_then(|v| v.first())
             .ok_or_else(|| Error::InvalidData("missing args hash".into()))?;
-        let _side_effect_counter = args
+        let circuit_side_effect_counter = args
             .get(3)
             .and_then(|v| v.first())
             .map(|f| f.to_usize() as u32)
-            .unwrap_or(0);
+            .unwrap_or(self.side_effect_counter);
         let is_static = args
             .get(4)
             .and_then(|v| v.first())
@@ -1325,8 +1325,10 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             w.push(Fr::from(is_static)); // is_static_call
                                          // Block header + tx_context from parent
             w.extend_from_slice(&self.context_witness_prefix);
-            // Side effect counter
-            w.push(Fr::from(self.side_effect_counter as u64));
+            // Side effect counter — use the circuit-provided counter so
+            // the nested circuit's PrivateContext starts with the correct
+            // global counter (the oracle's own counter may have diverged).
+            w.push(Fr::from(circuit_side_effect_counter as u64));
             // Pad to context_inputs_size
             w.resize(context_inputs_size, Fr::zero());
             w
@@ -1364,8 +1366,9 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
         nested_oracle.execution_cache = self.execution_cache.clone();
         // Share auth witnesses.
         nested_oracle.auth_witnesses = self.auth_witnesses.clone();
-        // Start the nested counter from the parent's current counter.
-        nested_oracle.side_effect_counter = self.side_effect_counter;
+        // Start the nested counter from the circuit-provided counter so
+        // it stays in sync with the Noir PrivateContext's counter.
+        nested_oracle.side_effect_counter = circuit_side_effect_counter;
         // Inherit revertibility threshold so nested calls answer
         // `isSideEffectCounterRevertible` consistently with the parent.
         nested_oracle.min_revertible_side_effect_counter = self.min_revertible_side_effect_counter;
