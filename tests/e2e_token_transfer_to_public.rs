@@ -694,9 +694,7 @@ async fn transfer_to_public_on_behalf_of_other() {
     let amount = priv_before / 2;
     let authwit_nonce = Fr::random();
     assert!(amount > 0, "admin should have a positive private balance");
-    eprintln!(
-        "transfer_to_public on behalf of other: amount={amount} (priv_before={priv_before})"
-    );
+    eprintln!("transfer_to_public on behalf of other: amount={amount} (priv_before={priv_before})");
 
     let account1_pub_before =
         public_balance(&s.admin_wallet, s.token_address, &s.account1_address).await;
@@ -818,9 +816,7 @@ async fn transfer_to_public_on_behalf_of_self_more_than_balance() {
     .await;
     let amount = priv_balance + 1;
     assert!(amount > 0);
-    eprintln!(
-        "transfer_to_public more than balance: amount={amount} (balance={priv_balance})"
-    );
+    eprintln!("transfer_to_public more than balance: amount={amount} (balance={priv_balance})");
 
     let call = build_call(
         &s.token_artifact,
