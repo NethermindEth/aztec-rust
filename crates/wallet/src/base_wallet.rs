@@ -387,7 +387,7 @@ impl<P: Pxe, N: AztecNode, A: AccountProvider> BaseWallet<P, N, A> {
         &self,
         tx_json: &serde_json::Value,
     ) -> Result<TxValidationResult, Error> {
-        let deadline = Instant::now() + Duration::from_secs(120);
+        let deadline = Instant::now() + Duration::from_secs(300);
         loop {
             let result = self.node.is_valid_tx(tx_json).await?;
             if !Self::is_anchor_header_validation_lag(&result) {
