@@ -143,7 +143,7 @@ struct MultiAccountProvider {
 }
 
 impl MultiAccountProvider {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             entries: Vec::new(),
         }
@@ -271,7 +271,7 @@ fn compute_account_config(
     let signing_pk = contract.signing_public_key();
 
     let derived = derive_keys(&secret);
-    let public_keys = derived.public_keys.clone();
+    let public_keys = derived.public_keys;
 
     let instance = aztec_rs::deployment::get_contract_instance_from_instantiation_params(
         compiled_artifact,
@@ -356,10 +356,10 @@ async fn send_token_method(
             },
             SendOptions {
                 from,
-                additional_scopes: if from != fee_payer {
-                    vec![fee_payer]
-                } else {
+                additional_scopes: if from == fee_payer {
                     vec![]
+                } else {
+                    vec![fee_payer]
                 },
                 ..Default::default()
             },

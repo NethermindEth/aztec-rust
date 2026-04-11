@@ -225,12 +225,12 @@ fn build_call(
     artifact: &ContractArtifact,
     contract_address: AztecAddress,
     method_name: &str,
-    args: Vec<AbiValue>,
+    args: &[AbiValue],
 ) -> FunctionCall {
     let func = artifact
         .find_function(method_name)
         .unwrap_or_else(|_| panic!("function '{method_name}' not found in artifact"));
-    let encoded_args = encode_arguments(func, &args)
+    let encoded_args = encode_arguments(func, args)
         .unwrap_or_else(|e| panic!("encode arguments for '{method_name}': {e}"));
     FunctionCall {
         to: contract_address,
@@ -280,12 +280,7 @@ async fn setup_test_case() -> Option<TestCase> {
 }
 
 async fn send_child_method(state: &TestCase, method_name: &str) {
-    let call = build_call(
-        &state.child_artifact,
-        state.child_address,
-        method_name,
-        vec![],
-    );
+    let call = build_call(&state.child_artifact, state.child_address, method_name, &[]);
     state
         .wallet
         .send_tx(
@@ -313,7 +308,7 @@ async fn prove_parent_method(state: &TestCase, method_name: &str) -> ProvenInter
         &state.parent_artifact,
         state.parent_address,
         method_name,
-        vec![
+        &[
             abi_address(state.child_address),
             abi_selector(state.child_pub_set_value_selector),
         ],

@@ -248,8 +248,7 @@ fn parse_fr(value: &serde_json::Value) -> Fr {
             Fr::from_hex(s).unwrap_or_else(|_| panic!("parse Fr from {s}"))
         } else {
             s.parse::<u128>()
-                .map(Fr::from)
-                .unwrap_or_else(|_| panic!("parse Fr from {s}"))
+                .map_or_else(|_| panic!("parse Fr from {s}"), Fr::from)
         };
     }
     if let Some(n) = value.as_u64() {
@@ -356,7 +355,7 @@ fn profile_expiration_timestamp(profile_data: &serde_json::Value) -> u64 {
     profile_data
         .pointer("/data/expirationTimestamp")
         .or_else(|| profile_data.pointer("/expirationTimestamp"))
-        .and_then(|v| v.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .unwrap_or_else(|| {
             panic!("expirationTimestamp not found in profile data: {profile_data:?}")
         })
@@ -499,7 +498,7 @@ async fn public_immutable_private_read_initialized() {
             "match_public_immutable",
             vec![
                 AbiValue::Field(Fr::from(c_val.0)),
-                AbiValue::Integer(c_val.1 as i128),
+                AbiValue::Integer(i128::from(c_val.1)),
             ],
         )
         .expect("build match_public_immutable")
@@ -570,7 +569,7 @@ async fn public_immutable_public_read() {
             "match_public_immutable",
             vec![
                 AbiValue::Field(Fr::from(c_val.0)),
-                AbiValue::Integer(c_val.1 as i128),
+                AbiValue::Integer(i128::from(c_val.1)),
             ],
         )
         .expect("build match_public_immutable")
@@ -1282,7 +1281,7 @@ async fn delayed_public_mutable_sets_expiration_timestamp() {
     auth_contract
         .method(
             "set_authorized_delay",
-            vec![AbiValue::Integer(new_delay as i128)],
+            vec![AbiValue::Integer(i128::from(new_delay))],
         )
         .expect("build set_authorized_delay")
         .send(SendOptions {

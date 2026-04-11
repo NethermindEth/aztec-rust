@@ -320,19 +320,16 @@ async fn assert_sim_revert(
         )
         .await;
 
-    match sim_result {
-        Err(err) => {
-            let err_str = err.to_string();
-            assert!(
-                err_str.contains(expected_error)
-                    || err_str.contains("reverted")
-                    || err_str.contains("Assertion failed"),
-                "expected '{}' or 'reverted', got: {}",
-                expected_error,
-                err
-            );
-        }
-        Ok(_) => {}
+    if let Err(err) = sim_result {
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains(expected_error)
+                || err_str.contains("reverted")
+                || err_str.contains("Assertion failed"),
+            "expected '{}' or 'reverted', got: {}",
+            expected_error,
+            err
+        );
     }
 }
 

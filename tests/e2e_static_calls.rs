@@ -232,9 +232,8 @@ async fn send_call_expect_revert(
 
     loop {
         if start.elapsed() >= timeout {
-            let status = last_status
-                .map(|status| format!("{status:?}"))
-                .unwrap_or_else(|| "unknown".to_owned());
+            let status =
+                last_status.map_or_else(|| "unknown".to_owned(), |status| format!("{status:?}"));
             let error = last_error.unwrap_or_else(|| "unknown reason".to_owned());
             return Err(aztec_rs::Error::Timeout(format!(
                 "tx {} did not produce a terminal execution result within {:?} (last status: {}, last error: {})",
@@ -242,31 +241,28 @@ async fn send_call_expect_revert(
             )));
         }
 
-        match wallet.node().get_tx_receipt(&result.tx_hash).await {
-            Ok(receipt) => {
-                last_status = Some(receipt.status);
-                last_error = receipt.error.clone();
+        if let Ok(receipt) = wallet.node().get_tx_receipt(&result.tx_hash).await {
+            last_status = Some(receipt.status);
+            last_error.clone_from(&receipt.error);
 
-                if receipt.is_dropped() {
+            if receipt.is_dropped() {
+                return Err(aztec_rs::Error::Reverted(format!(
+                    "tx {} was dropped: {}",
+                    result.tx_hash,
+                    receipt.error.as_deref().unwrap_or("unknown reason")
+                )));
+            }
+
+            if receipt.execution_result.is_some() {
+                if receipt.has_execution_reverted() {
                     return Err(aztec_rs::Error::Reverted(format!(
-                        "tx {} was dropped: {}",
+                        "tx {} execution reverted: {}",
                         result.tx_hash,
                         receipt.error.as_deref().unwrap_or("unknown reason")
                     )));
                 }
-
-                if receipt.execution_result.is_some() {
-                    if receipt.has_execution_reverted() {
-                        return Err(aztec_rs::Error::Reverted(format!(
-                            "tx {} execution reverted: {}",
-                            result.tx_hash,
-                            receipt.error.as_deref().unwrap_or("unknown reason")
-                        )));
-                    }
-                    return Ok(());
-                }
+                return Ok(());
             }
-            Err(_) => {}
         }
 
         tokio::time::sleep(interval).await;

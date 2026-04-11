@@ -119,10 +119,7 @@ async fn create_pxe() -> Option<EmbeddedPxe<HttpNodeClient>> {
         return None;
     }
     let kv = Arc::new(InMemoryKvStore::new());
-    match EmbeddedPxe::create(node, kv).await {
-        Ok(pxe) => Some(pxe),
-        Err(_err) => None,
-    }
+    EmbeddedPxe::create(node, kv).await.ok()
 }
 
 /// Mirrors upstream `setup(1)` + `setupPXEAndGetWallet`.

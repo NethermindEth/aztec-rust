@@ -190,12 +190,12 @@ fn build_call(
     artifact: &ContractArtifact,
     contract_address: AztecAddress,
     method_name: &str,
-    args: Vec<AbiValue>,
+    args: &[AbiValue],
 ) -> FunctionCall {
     let func = artifact
         .find_function(method_name)
         .unwrap_or_else(|_| panic!("function '{method_name}' not found in artifact"));
-    let encoded_args = encode_arguments(func, &args)
+    let encoded_args = encode_arguments(func, args)
         .unwrap_or_else(|e| panic!("encode arguments for '{method_name}': {e}"));
     FunctionCall {
         to: contract_address,
@@ -259,7 +259,7 @@ async fn send_parent_method(
         &state.parent_artifact,
         state.parent_address,
         method_name,
-        args,
+        &args,
     );
     state
         .wallet

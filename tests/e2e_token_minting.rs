@@ -369,24 +369,21 @@ async fn assert_overflow_revert(
         )
         .await;
 
-    match sim_result {
-        Err(err) => {
-            let err_str = err.to_string();
-            assert!(
-                err_str.contains(expected_error)
-                    || err_str.contains("reverted")
-                    || err_str.contains("Assertion failed"),
-                "expected '{}' or 'reverted', got: {}",
-                expected_error,
-                err
-            );
-        }
-        Ok(_) => {
-            // The node's AVM public-call preflight did not catch the
-            // overflow.  This is a known divergence from the TS SDK which
-            // uses the Noir simulator for public execution. The overflow
-            // WOULD occur if the Noir simulator were used.
-        }
+    if let Err(err) = sim_result {
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains(expected_error)
+                || err_str.contains("reverted")
+                || err_str.contains("Assertion failed"),
+            "expected '{}' or 'reverted', got: {}",
+            expected_error,
+            err
+        );
+    } else {
+        // The node's AVM public-call preflight did not catch the
+        // overflow.  This is a known divergence from the TS SDK which
+        // uses the Noir simulator for public execution. The overflow
+        // WOULD occur if the Noir simulator were used.
     }
 }
 

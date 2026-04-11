@@ -499,7 +499,7 @@ async fn transfer_full_balance() {
     );
     assert_eq!(
         parse_event_field_as_fr(&event.event, "amount"),
-        Fr::from(total_balance as u64)
+        Fr::from(u64::try_from(total_balance).expect("total balance fits in u64"))
     );
     assert_eq!(event.metadata.tx_hash, tx_hash);
     assert_eq!(event.metadata.block_number, receipt.block_number);
@@ -600,7 +600,7 @@ async fn transfer_less_than_full_balance_with_change() {
     );
     assert_eq!(
         parse_event_field_as_fr(&event.event, "amount"),
-        Fr::from(to_send as u64)
+        Fr::from(u64::try_from(to_send).expect("transfer amount fits in u64"))
     );
     assert_eq!(event.metadata.tx_hash, tx_hash);
     assert_eq!(event.metadata.block_number, receipt.block_number);
