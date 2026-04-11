@@ -407,8 +407,8 @@ mod tests {
     }
 
     fn make_log(selector: Fr, fields: Vec<Fr>, block: u64, index: u64) -> PublicLog {
-        let mut data = vec![selector];
-        data.extend(fields);
+        let mut data = fields;
+        data.push(selector);
         PublicLog {
             contract_address: AztecAddress(Fr::from(1u64)),
             data,
@@ -423,7 +423,7 @@ mod tests {
     #[test]
     fn decode_log_fields_success() {
         let meta = sample_event_metadata();
-        let data = vec![Fr::from(42u64), Fr::from(100u64), Fr::from(200u64)];
+        let data = vec![Fr::from(100u64), Fr::from(200u64), Fr::from(42u64)];
 
         let decoded = decode_log_fields(&data, &meta).expect("decode");
         assert_eq!(decoded.len(), 2);
@@ -435,10 +435,10 @@ mod tests {
     fn decode_log_fields_extra_fields_ignored() {
         let meta = sample_event_metadata();
         let data = vec![
-            Fr::from(42u64),
             Fr::from(100u64),
             Fr::from(200u64),
             Fr::from(300u64), // extra
+            Fr::from(42u64),
         ];
 
         let decoded = decode_log_fields(&data, &meta).expect("decode");
@@ -450,7 +450,7 @@ mod tests {
     #[test]
     fn decode_log_fields_selector_mismatch() {
         let meta = sample_event_metadata();
-        let data = vec![Fr::from(99u64), Fr::from(100u64), Fr::from(200u64)];
+        let data = vec![Fr::from(100u64), Fr::from(200u64), Fr::from(99u64)];
 
         let err = decode_log_fields(&data, &meta).unwrap_err();
         assert!(matches!(err, Error::Abi(_)));
@@ -460,7 +460,7 @@ mod tests {
     #[test]
     fn decode_log_fields_insufficient_fields() {
         let meta = sample_event_metadata();
-        let data = vec![Fr::from(42u64), Fr::from(100u64)]; // only 1 field, need 2
+        let data = vec![Fr::from(100u64), Fr::from(42u64)]; // only 1 field, need 2
 
         let err = decode_log_fields(&data, &meta).unwrap_err();
         assert!(matches!(err, Error::Abi(_)));
@@ -496,7 +496,7 @@ mod tests {
             },
             field_names: vec![],
         };
-        let data = vec![Fr::from(42u64), Fr::from(100u64), Fr::from(200u64)];
+        let data = vec![Fr::from(100u64), Fr::from(200u64), Fr::from(42u64)];
 
         let decoded = decode_log_fields(&data, &meta).expect("decode");
         assert_eq!(decoded["amount"], Fr::from(100u64));
@@ -517,7 +517,7 @@ mod tests {
             },
             field_names: vec!["amount".to_owned(), "sender".to_owned()],
         };
-        let data = vec![Fr::from(42u64), Fr::from(100u64)];
+        let data = vec![Fr::from(100u64), Fr::from(42u64)];
 
         let err = decode_log_fields(&data, &meta).unwrap_err();
         assert!(matches!(err, Error::Abi(_)));
@@ -603,7 +603,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_public_events_passes_filter_with_selector() {
+    async fn get_public_events_passes_filter_without_selector() {
         let meta = sample_event_metadata();
         let contract = AztecAddress(Fr::from(99u64));
         let after = LogId {
@@ -637,19 +637,14 @@ mod tests {
         assert_eq!(captured.to_block, Some(100));
         assert_eq!(captured.contract_address, Some(contract));
         assert_eq!(captured.after_log, Some(after));
-        assert_eq!(captured.selector, Some(EventSelector(Fr::from(42u64))));
+        assert_eq!(captured.selector, None);
     }
 
     #[tokio::test]
     async fn get_public_events_decode_error_propagates() {
         let meta = sample_event_metadata();
-        // Log with wrong selector
-        let logs = vec![make_log(
-            Fr::from(99u64),
-            vec![Fr::from(1u64), Fr::from(2u64)],
-            1,
-            0,
-        )];
+        // Log with matching selector but insufficient fields.
+        let logs = vec![make_log(Fr::from(42u64), vec![Fr::from(1u64)], 1, 0)];
         let node = MockEventNode::new(PublicLogsResponse {
             logs,
             max_logs_hit: false,
