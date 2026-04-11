@@ -29,9 +29,7 @@ use aztec_rs::contract::Contract;
 use aztec_rs::crypto::complete_address_from_secret_key_and_partial_address;
 use aztec_rs::deployment::DeployOptions;
 use aztec_rs::embedded_pxe::{EmbeddedPxe, InMemoryKvStore};
-use aztec_rs::node::{
-    create_aztec_node_client, wait_for_tx, AztecNode, HttpNodeClient, WaitOpts,
-};
+use aztec_rs::node::{create_aztec_node_client, wait_for_tx, AztecNode, HttpNodeClient, WaitOpts};
 use aztec_rs::tx::{ExecutionPayload, FunctionCall, TxStatus};
 use aztec_rs::types::{AztecAddress, CompleteAddress, Fr};
 use aztec_rs::wallet::{BaseWallet, SendOptions, SimulateOptions, Wallet};
@@ -139,8 +137,11 @@ async fn setup_wallet(account: ImportedTestAccount) -> Option<(TestWallet, Aztec
         .await
         .expect("seed address store");
 
-    let provider =
-        SingleAccountProvider::new(complete.clone(), Box::new(SchnorrAccountContract::new(secret_key)), account.alias);
+    let provider = SingleAccountProvider::new(
+        complete.clone(),
+        Box::new(SchnorrAccountContract::new(secret_key)),
+        account.alias,
+    );
     let wallet = BaseWallet::new(pxe, node, provider);
     Some((wallet, complete.address))
 }
@@ -395,7 +396,9 @@ async fn setup_test_case() -> Option<TestCase> {
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn performs_legal_private_static_calls() {
     let _guard = serial_guard();
-    let Some(s) = setup_test_case().await else { return; };
+    let Some(s) = setup_test_case().await else {
+        return;
+    };
     send_call(
         &s.wallet,
         build_call(
@@ -414,7 +417,9 @@ async fn performs_legal_private_static_calls() {
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn fails_non_static_calls_to_poorly_written_static_private() {
     let _guard = serial_guard();
-    let Some(s) = setup_test_case().await else { return; };
+    let Some(s) = setup_test_case().await else {
+        return;
+    };
     let err = send_call_expect_revert(
         &s.wallet,
         build_call(
@@ -434,7 +439,9 @@ async fn fails_non_static_calls_to_poorly_written_static_private() {
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn performs_legal_public_static_calls() {
     let _guard = serial_guard();
-    let Some(s) = setup_test_case().await else { return; };
+    let Some(s) = setup_test_case().await else {
+        return;
+    };
     send_call(
         &s.wallet,
         build_call(
@@ -453,7 +460,9 @@ async fn performs_legal_public_static_calls() {
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn fails_non_static_calls_to_poorly_written_static_public() {
     let _guard = serial_guard();
-    let Some(s) = setup_test_case().await else { return; };
+    let Some(s) = setup_test_case().await else {
+        return;
+    };
     let err = simulate_call(
         &s.wallet,
         build_call(
@@ -477,7 +486,9 @@ async fn fails_non_static_calls_to_poorly_written_static_public() {
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn performs_legal_private_to_private_static_calls() {
     let _guard = serial_guard();
-    let Some(s) = setup_test_case().await else { return; };
+    let Some(s) = setup_test_case().await else {
+        return;
+    };
     let child_private_get = s
         .child
         .find_function("private_get_value")
@@ -527,7 +538,9 @@ async fn performs_legal_private_to_private_static_calls() {
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn performs_legal_nested_private_to_private_static_calls() {
     let _guard = serial_guard();
-    let Some(s) = setup_test_case().await else { return; };
+    let Some(s) = setup_test_case().await else {
+        return;
+    };
     let child_private_get = s
         .child
         .find_function("private_get_value")
@@ -560,7 +573,9 @@ async fn performs_legal_nested_private_to_private_static_calls() {
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn performs_legal_public_to_public_static_calls() {
     let _guard = serial_guard();
-    let Some(s) = setup_test_case().await else { return; };
+    let Some(s) = setup_test_case().await else {
+        return;
+    };
     let child_pub_get = s
         .child
         .find_function("pub_get_value")
@@ -606,7 +621,9 @@ async fn performs_legal_public_to_public_static_calls() {
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn performs_legal_nested_public_to_public_static_calls() {
     let _guard = serial_guard();
-    let Some(s) = setup_test_case().await else { return; };
+    let Some(s) = setup_test_case().await else {
+        return;
+    };
     let child_pub_get = s
         .child
         .find_function("pub_get_value")
@@ -636,7 +653,9 @@ async fn performs_legal_nested_public_to_public_static_calls() {
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn performs_legal_enqueued_public_static_calls() {
     let _guard = serial_guard();
-    let Some(s) = setup_test_case().await else { return; };
+    let Some(s) = setup_test_case().await else {
+        return;
+    };
     let child_pub_get = s
         .child
         .find_function("pub_get_value")
@@ -667,7 +686,10 @@ async fn performs_legal_enqueued_public_static_calls() {
             &s.parent,
             s.parent_address,
             "enqueue_public_get_value_from_child",
-            vec![abi_address(s.child_address), AbiValue::Field(Fr::from(42u64))],
+            vec![
+                abi_address(s.child_address),
+                AbiValue::Field(Fr::from(42u64)),
+            ],
         ),
         s.owner,
     )
@@ -679,7 +701,9 @@ async fn performs_legal_enqueued_public_static_calls() {
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn performs_legal_nested_enqueued_public_static_calls() {
     let _guard = serial_guard();
-    let Some(s) = setup_test_case().await else { return; };
+    let Some(s) = setup_test_case().await else {
+        return;
+    };
     let child_pub_get = s
         .child
         .find_function("pub_get_value")
@@ -709,7 +733,9 @@ async fn performs_legal_nested_enqueued_public_static_calls() {
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn fails_illegal_private_to_private_static_calls() {
     let _guard = serial_guard();
-    let Some(s) = setup_test_case().await else { return; };
+    let Some(s) = setup_test_case().await else {
+        return;
+    };
     let child_private_set = s
         .child
         .find_function("private_set_value")
@@ -744,7 +770,9 @@ async fn fails_illegal_private_to_private_static_calls() {
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn fails_non_static_calls_to_poorly_written_private_static() {
     let _guard = serial_guard();
-    let Some(s) = setup_test_case().await else { return; };
+    let Some(s) = setup_test_case().await else {
+        return;
+    };
     let child_illegal_private = s
         .child
         .find_function("private_illegal_set_value")
@@ -778,7 +806,9 @@ async fn fails_non_static_calls_to_poorly_written_private_static() {
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn fails_illegal_nested_private_to_private_static_calls() {
     let _guard = serial_guard();
-    let Some(s) = setup_test_case().await else { return; };
+    let Some(s) = setup_test_case().await else {
+        return;
+    };
     let child_private_set = s
         .child
         .find_function("private_set_value")
@@ -813,7 +843,9 @@ async fn fails_illegal_nested_private_to_private_static_calls() {
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn fails_illegal_public_to_public_static_calls() {
     let _guard = serial_guard();
-    let Some(s) = setup_test_case().await else { return; };
+    let Some(s) = setup_test_case().await else {
+        return;
+    };
     let child_pub_set = s
         .child
         .find_function("pub_set_value")
@@ -844,7 +876,9 @@ async fn fails_illegal_public_to_public_static_calls() {
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn fails_illegal_nested_public_to_public_static_calls() {
     let _guard = serial_guard();
-    let Some(s) = setup_test_case().await else { return; };
+    let Some(s) = setup_test_case().await else {
+        return;
+    };
     let child_pub_set = s
         .child
         .find_function("pub_set_value")
@@ -875,7 +909,9 @@ async fn fails_illegal_nested_public_to_public_static_calls() {
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn fails_illegal_enqueued_public_static_calls() {
     let _guard = serial_guard();
-    let Some(s) = setup_test_case().await else { return; };
+    let Some(s) = setup_test_case().await else {
+        return;
+    };
     let child_pub_set = s
         .child
         .find_function("pub_set_value")
@@ -906,7 +942,9 @@ async fn fails_illegal_enqueued_public_static_calls() {
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn fails_illegal_nested_enqueued_public_static_calls() {
     let _guard = serial_guard();
-    let Some(s) = setup_test_case().await else { return; };
+    let Some(s) = setup_test_case().await else {
+        return;
+    };
     let child_pub_set = s
         .child
         .find_function("pub_set_value")
@@ -937,7 +975,9 @@ async fn fails_illegal_nested_enqueued_public_static_calls() {
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn fails_non_static_enqueue_to_poorly_written_public_static() {
     let _guard = serial_guard();
-    let Some(s) = setup_test_case().await else { return; };
+    let Some(s) = setup_test_case().await else {
+        return;
+    };
     let child_pub_illegal = s
         .child
         .find_function("pub_illegal_inc_value")

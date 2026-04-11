@@ -42,6 +42,53 @@ pub struct UtilityExecutionOracle<'a, N: AztecNode> {
     auth_witnesses: Vec<(Fr, Vec<Fr>)>,
 }
 
+fn decode_base64_sibling_path(encoded: &str) -> Result<Vec<Fr>, Error> {
+    use base64::Engine;
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|e| Error::InvalidData(format!("invalid siblingPath base64: {e}")))?;
+
+    let payload = if bytes.len() >= 4 {
+        let declared_len =
+            u32::from_be_bytes(bytes[..4].try_into().expect("length prefix is 4 bytes")) as usize;
+        let payload = &bytes[4..];
+        if payload.len() == declared_len.saturating_mul(32) {
+            payload
+        } else if bytes.len() % 32 == 0 {
+            bytes.as_slice()
+        } else {
+            return Err(Error::InvalidData(format!(
+                "siblingPath payload length mismatch: declared {declared_len} elements, got {} bytes",
+                payload.len()
+            )));
+        }
+    } else {
+        bytes.as_slice()
+    };
+
+    Ok(payload
+        .chunks(32)
+        .map(|chunk| {
+            let mut padded = [0u8; 32];
+            let start = 32usize.saturating_sub(chunk.len());
+            padded[start..].copy_from_slice(chunk);
+            Fr::from(padded)
+        })
+        .collect())
+}
+
+fn parse_field_string(value: &str) -> Result<Fr, Error> {
+    if value.starts_with("0x") {
+        Fr::from_hex(value)
+    } else {
+        value
+            .parse::<u128>()
+            .map(Fr::from)
+            .map_err(|_| Error::InvalidData(format!("unsupported field string value: {value}")))
+    }
+}
+
 impl<'a, N: AztecNode> UtilityExecutionOracle<'a, N> {
     /// Map Noir NoteStatus enum values: ACTIVE = 1, ACTIVE_OR_NULLIFIED = 2.
     fn note_status_from_field(value: Fr) -> Result<NoteStatus, Error> {
@@ -193,12 +240,12 @@ impl<'a, N: AztecNode> UtilityExecutionOracle<'a, N> {
 
             // Membership witnesses
             "getNoteHashMembershipWitness" => Ok(vec![vec![]]),
-            "getNullifierMembershipWitness" => Ok(vec![vec![]]),
+            "getNullifierMembershipWitness" => self.get_nullifier_membership_witness(&args).await,
             "getLowNullifierMembershipWitness" => {
                 self.get_low_nullifier_membership_witness(&args).await
             }
             "getBlockHashMembershipWitness" => Ok(vec![vec![]]),
-            "getPublicDataWitness" => Ok(vec![vec![]]),
+            "getPublicDataWitness" => self.get_public_data_witness(&args).await,
             "getL1ToL2MembershipWitness" => Ok(vec![vec![]]),
 
             // Misc
@@ -345,20 +392,76 @@ impl<'a, N: AztecNode> UtilityExecutionOracle<'a, N> {
     }
 
     async fn get_public_storage_at(&self, args: &[Vec<Fr>]) -> Result<Vec<Vec<Fr>>, Error> {
-        let contract = args
-            .first()
-            .and_then(|v| v.first())
-            .ok_or_else(|| Error::InvalidData("missing contract address".into()))?;
-        let slot = args
-            .get(1)
-            .and_then(|v| v.first())
-            .ok_or_else(|| Error::InvalidData("missing storage slot".into()))?;
+        fn slot_with_offset(start_slot: Fr, offset: usize) -> Fr {
+            let mut bytes = start_slot.to_be_bytes();
+            let mut carry = offset as u128;
+            for byte in bytes.iter_mut().rev() {
+                if carry == 0 {
+                    break;
+                }
+                let sum = u128::from(*byte) + (carry & 0xff);
+                *byte = (sum & 0xff) as u8;
+                carry = (carry >> 8) + (sum >> 8);
+            }
+            Fr::from(bytes)
+        }
+
+        // Newer Noir utility storage reads use the `utilityStorageRead`
+        // signature `(block_hash, contract, start_slot, number_of_elements)`.
+        // Older bytecode still calls into the 2-argument single-slot variant.
+        let (block_hash, contract, start_slot, number_of_elements) = if args.len() >= 4 {
+            let block_hash = args
+                .first()
+                .and_then(|v| v.first())
+                .copied()
+                .unwrap_or_else(Fr::zero);
+            let contract = args
+                .get(1)
+                .and_then(|v| v.first())
+                .ok_or_else(|| Error::InvalidData("missing contract address".into()))?;
+            let start_slot = args
+                .get(2)
+                .and_then(|v| v.first())
+                .ok_or_else(|| Error::InvalidData("missing storage slot".into()))?;
+            let count = args
+                .get(3)
+                .and_then(|v| v.first())
+                .copied()
+                .unwrap_or_else(Fr::zero)
+                .to_usize();
+            (Some(block_hash), contract, start_slot, count.max(1))
+        } else {
+            let contract = args
+                .first()
+                .and_then(|v| v.first())
+                .ok_or_else(|| Error::InvalidData("missing contract address".into()))?;
+            let slot = args
+                .get(1)
+                .and_then(|v| v.first())
+                .ok_or_else(|| Error::InvalidData("missing storage slot".into()))?;
+            (None, contract, slot, 1)
+        };
+
         let contract_addr = AztecAddress(*contract);
-        let value = self
-            .node
-            .get_public_storage_at(0, &contract_addr, slot)
-            .await?;
-        Ok(vec![vec![value]])
+        let mut values = Vec::with_capacity(number_of_elements);
+        for offset in 0..number_of_elements {
+            let slot = slot_with_offset(*start_slot, offset);
+            let value = match block_hash.as_ref() {
+                Some(block_hash) => {
+                    self.node
+                        .get_public_storage_at_by_hash(block_hash, &contract_addr, &slot)
+                        .await?
+                }
+                None => {
+                    self.node
+                        .get_public_storage_at(0, &contract_addr, &slot)
+                        .await?
+                }
+            };
+            values.push(value);
+        }
+
+        Ok(vec![values])
     }
 
     async fn get_contract_instance(&self, args: &[Vec<Fr>]) -> Result<Vec<Vec<Fr>>, Error> {
@@ -760,6 +863,162 @@ impl<'a, N: AztecNode> UtilityExecutionOracle<'a, N> {
         Ok(vec![vec![Fr::from(witness.is_some())]])
     }
 
+    /// Query the node for a nullifier membership witness.
+    ///
+    /// The Noir oracle passes `[block_number, nullifier]`. The nullifier is
+    /// already siloed (matching what the kernel stores). We query at "latest"
+    /// (block 0) and return the same 5-slot format as
+    /// `get_low_nullifier_membership_witness`.
+    async fn get_nullifier_membership_witness(
+        &self,
+        args: &[Vec<Fr>],
+    ) -> Result<Vec<Vec<Fr>>, Error> {
+        let _block_number = args
+            .first()
+            .and_then(|v| v.first())
+            .copied()
+            .unwrap_or(Fr::zero());
+        let nullifier = args.get(1).and_then(|v| v.first()).ok_or_else(|| {
+            Error::InvalidData("getNullifierMembershipWitness: missing nullifier".into())
+        })?;
+
+        let witness_json = self
+            .node
+            .get_nullifier_membership_witness(0, nullifier)
+            .await?;
+
+        if let Some(json) = witness_json {
+            let index = Self::parse_field_or_number(json.get("index"));
+
+            let preimage = json.get("leafPreimage").unwrap_or(&json);
+            let leaf = preimage.get("leaf").unwrap_or(preimage);
+            let nullifier_val = leaf
+                .get("nullifier")
+                .and_then(|v| v.as_str())
+                .and_then(|s| Fr::from_hex(s).ok())
+                .unwrap_or(Fr::zero());
+            let next_nullifier = preimage
+                .get("nextKey")
+                .or_else(|| preimage.get("nextNullifier"))
+                .and_then(|v| v.as_str())
+                .and_then(|s| Fr::from_hex(s).ok())
+                .unwrap_or(Fr::zero());
+            let next_index = Self::parse_field_or_number(preimage.get("nextIndex"));
+
+            let path = json
+                .get("siblingPath")
+                .and_then(|v| v.as_str())
+                .and_then(|s| decode_base64_sibling_path(s).ok())
+                .unwrap_or_else(|| vec![Fr::zero(); 42]);
+
+            let mut path = path;
+            path.resize(42, Fr::zero());
+
+            Ok(vec![
+                vec![index],
+                vec![nullifier_val],
+                vec![next_nullifier],
+                vec![next_index],
+                path,
+            ])
+        } else {
+            Ok(vec![
+                vec![Fr::zero()],
+                vec![Fr::zero()],
+                vec![Fr::zero()],
+                vec![Fr::zero()],
+                vec![Fr::zero(); 42],
+            ])
+        }
+    }
+
+    async fn get_public_data_witness(&self, args: &[Vec<Fr>]) -> Result<Vec<Vec<Fr>>, Error> {
+        fn fr_at(value: &serde_json::Value, path: &str) -> Result<Fr, Error> {
+            let raw = value.pointer(path).ok_or_else(|| {
+                Error::InvalidData(format!("public data witness missing field at {path}"))
+            })?;
+            if let Some(s) = raw.as_str() {
+                return parse_field_string(s).map_err(|_| {
+                    Error::InvalidData(format!(
+                        "public data witness field at {path} has unsupported string value: {s}"
+                    ))
+                });
+            }
+            if let Some(n) = raw.as_u64() {
+                return Ok(Fr::from(n));
+            }
+            Err(Error::InvalidData(format!(
+                "public data witness field at {path} has unsupported shape: {raw:?}"
+            )))
+        }
+
+        let block_hash = args
+            .first()
+            .and_then(|v| v.first())
+            .copied()
+            .unwrap_or_else(Fr::zero);
+        let leaf_slot = args
+            .get(1)
+            .and_then(|v| v.first())
+            .ok_or_else(|| Error::InvalidData("missing leaf slot".into()))?;
+        let witness = self
+            .node
+            .get_public_data_witness_by_hash(&block_hash, leaf_slot)
+            .await?;
+        let Some(witness) = witness else {
+            return Ok(vec![
+                vec![Fr::zero()],
+                vec![Fr::zero()],
+                vec![Fr::zero()],
+                vec![Fr::zero()],
+                vec![Fr::zero()],
+                vec![Fr::zero(); aztec_core::constants::PUBLIC_DATA_TREE_HEIGHT],
+            ]);
+        };
+
+        let sibling_path = match witness.pointer("/siblingPath") {
+            Some(serde_json::Value::Array(entries)) => entries
+                .iter()
+                .map(|entry| {
+                    if let Some(s) = entry.as_str() {
+                        parse_field_string(s).map_err(|_| {
+                            Error::InvalidData(format!(
+                                "public data witness siblingPath entry has unsupported string value: {s}"
+                            ))
+                        })
+                    } else if let Some(n) = entry.as_u64() {
+                        Ok(Fr::from(n))
+                    } else {
+                        Err(Error::InvalidData(format!(
+                            "public data witness siblingPath entry has unsupported shape: {entry:?}"
+                        )))
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            Some(serde_json::Value::String(encoded)) => {
+                decode_base64_sibling_path(encoded)?
+            }
+            _ => {
+                return Err(Error::InvalidData(
+                    "public data witness missing siblingPath".into(),
+                ))
+            }
+        };
+
+        let mut sibling_path = sibling_path;
+        sibling_path.resize(aztec_core::constants::PUBLIC_DATA_TREE_HEIGHT, Fr::zero());
+        sibling_path.truncate(aztec_core::constants::PUBLIC_DATA_TREE_HEIGHT);
+
+        Ok(vec![
+            vec![fr_at(&witness, "/index")?],
+            vec![fr_at(&witness, "/leafPreimage/leaf/slot")?],
+            vec![fr_at(&witness, "/leafPreimage/leaf/value")?],
+            vec![fr_at(&witness, "/leafPreimage/nextKey")?],
+            vec![fr_at(&witness, "/leafPreimage/nextIndex")?],
+            sibling_path,
+        ])
+    }
+
     /// Return Option<[Field; 13]> with 4 points (x, y, is_infinite) + partial_address.
     async fn get_public_keys_and_partial_address(
         &self,
@@ -804,9 +1063,7 @@ impl<'a, N: AztecNode> UtilityExecutionOracle<'a, N> {
     fn parse_field_or_number(val: Option<&serde_json::Value>) -> Fr {
         val.and_then(|v| {
             if let Some(s) = v.as_str() {
-                Fr::from_hex(s)
-                    .ok()
-                    .or_else(|| s.parse::<u64>().ok().map(Fr::from))
+                parse_field_string(s).ok()
             } else {
                 v.as_u64().map(Fr::from)
             }
@@ -860,21 +1117,7 @@ impl<'a, N: AztecNode> UtilityExecutionOracle<'a, N> {
             let path = json
                 .get("siblingPath")
                 .and_then(|v| v.as_str())
-                .and_then(|s| {
-                    use base64::Engine;
-                    base64::engine::general_purpose::STANDARD.decode(s).ok()
-                })
-                .map(|bytes| {
-                    bytes
-                        .chunks(32)
-                        .map(|chunk| {
-                            let mut padded = [0u8; 32];
-                            let start = 32usize.saturating_sub(chunk.len());
-                            padded[start..].copy_from_slice(chunk);
-                            Fr::from(padded)
-                        })
-                        .collect::<Vec<_>>()
-                })
+                .and_then(|s| decode_base64_sibling_path(s).ok())
                 .unwrap_or_else(|| vec![Fr::zero(); 42]);
 
             let mut path = path;

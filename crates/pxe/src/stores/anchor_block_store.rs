@@ -42,7 +42,11 @@ impl AnchorBlockHeader {
             .and_then(|v| {
                 v.as_u64().or_else(|| {
                     v.as_str().and_then(|s| {
-                        u64::from_str_radix(s.strip_prefix("0x").unwrap_or(s), 16).ok()
+                        if let Some(hex) = s.strip_prefix("0x") {
+                            u64::from_str_radix(hex, 16).ok()
+                        } else {
+                            s.parse::<u64>().ok()
+                        }
                     })
                 })
             })

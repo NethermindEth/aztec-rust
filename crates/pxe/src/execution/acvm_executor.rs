@@ -7,7 +7,7 @@ use acir::brillig::{ForeignCallParam, ForeignCallResult};
 use acir::circuit::Program;
 use acir::native_types::{Witness, WitnessMap};
 use acir::FieldElement;
-use acvm::pwg::{ACVMStatus, ACVM};
+use acvm::pwg::{ACVMStatus, OpcodeResolutionError, ResolvedAssertionPayload, ACVM};
 use bn254_blackbox_solver::Bn254BlackBoxSolver;
 
 use aztec_core::abi::ContractArtifact;
@@ -143,6 +143,46 @@ impl AcvmExecutor {
         ForeignCallResult { values }
     }
 
+    /// Resolve an ACVM error into a human-readable message.
+    ///
+    /// Extracts the assertion payload from `OpcodeResolutionError` variants
+    /// and maps `Raw` payloads back to the string from the function's
+    /// `error_types` mapping when the error kind is `"string"`.
+    fn resolve_error(
+        err: &OpcodeResolutionError<FieldElement>,
+        error_types: Option<&serde_json::Value>,
+    ) -> String {
+        let payload = match err {
+            OpcodeResolutionError::BrilligFunctionFailed { payload, .. } => payload.as_ref(),
+            OpcodeResolutionError::UnsatisfiedConstrain { payload, .. } => payload.as_ref(),
+            _ => None,
+        };
+
+        if let Some(ResolvedAssertionPayload::String(msg)) = payload {
+            return msg.clone();
+        }
+
+        if let Some(ResolvedAssertionPayload::Raw(raw)) = payload {
+            let selector_key = raw.selector.as_u64().to_string();
+            if let Some(et) = error_types {
+                if let Some(entry) = et.get(&selector_key) {
+                    if entry.get("error_kind").and_then(|v| v.as_str()) == Some("string") {
+                        if let Some(msg) = entry.get("string").and_then(|v| v.as_str()) {
+                            return msg.to_owned();
+                        }
+                    }
+                    if entry.get("error_kind").and_then(|v| v.as_str()) == Some("fmtstring") {
+                        if let Some(tmpl) = entry.get("string").and_then(|v| v.as_str()) {
+                            return tmpl.to_owned();
+                        }
+                    }
+                }
+            }
+        }
+
+        err.to_string()
+    }
+
     /// Execute a constrained (private) function from a contract artifact.
     ///
     /// Returns the raw ACVM output. The caller (oracle) is responsible for
@@ -241,9 +281,11 @@ impl AcvmExecutor {
                                     "nested ACIR calls deeper than 2 levels not supported".into(),
                                 ));
                             }
-                            ACVMStatus::Failure(err) => {
+                            ACVMStatus::Failure(ref err) => {
+                                let resolved =
+                                    Self::resolve_error(err, function.error_types.as_ref());
                                 return Err(Error::InvalidData(format!(
-                                    "sub-circuit execution failed: {err}"
+                                    "sub-circuit execution failed: {resolved}"
                                 )));
                             }
                         }
@@ -263,9 +305,10 @@ impl AcvmExecutor {
                     }
                     acvm.resolve_pending_acir_call(return_values);
                 }
-                ACVMStatus::Failure(err) => {
+                ACVMStatus::Failure(ref err) => {
+                    let resolved = Self::resolve_error(err, function.error_types.as_ref());
                     return Err(Error::InvalidData(format!(
-                        "private function '{}' execution failed (last oracle: {last_private_fc}): {err}",
+                        "private function '{}' execution failed (last oracle: {last_private_fc}): {resolved}",
                         function_name
                     )));
                 }
@@ -351,9 +394,10 @@ impl AcvmExecutor {
                         "utility functions should not make ACIR calls".into(),
                     ));
                 }
-                ACVMStatus::Failure(err) => {
+                ACVMStatus::Failure(ref err) => {
+                    let resolved = Self::resolve_error(err, function.error_types.as_ref());
                     return Err(Error::InvalidData(format!(
-                        "utility function '{}' execution failed (last oracle: {last_fc}): {err}",
+                        "utility function '{}' execution failed (last oracle: {last_fc}): {resolved}",
                         function_name
                     )));
                 }

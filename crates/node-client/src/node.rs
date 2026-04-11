@@ -17,6 +17,10 @@ fn block_param_json(block_number: u64) -> serde_json::Value {
     }
 }
 
+fn block_hash_param_json(block_hash: &Fr) -> serde_json::Value {
+    serde_json::Value::String(block_hash.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Supporting types
 // ---------------------------------------------------------------------------
@@ -276,12 +280,33 @@ pub trait AztecNode: Send + Sync {
         slot: &Fr,
     ) -> Result<Fr, Error>;
 
+    /// Read a public storage slot value at a specific block hash.
+    async fn get_public_storage_at_by_hash(
+        &self,
+        block_hash: &Fr,
+        contract: &AztecAddress,
+        slot: &Fr,
+    ) -> Result<Fr, Error> {
+        let _ = block_hash;
+        self.get_public_storage_at(0, contract, slot).await
+    }
+
     /// Get a merkle witness for a public data leaf.
     async fn get_public_data_witness(
         &self,
         block_number: u64,
         leaf_slot: &Fr,
     ) -> Result<Option<serde_json::Value>, Error>;
+
+    /// Get a merkle witness for a public data leaf at a specific block hash.
+    async fn get_public_data_witness_by_hash(
+        &self,
+        block_hash: &Fr,
+        leaf_slot: &Fr,
+    ) -> Result<Option<serde_json::Value>, Error> {
+        let _ = block_hash;
+        self.get_public_data_witness(0, leaf_slot).await
+    }
 
     /// Get a membership witness for an L1-to-L2 message.
     async fn get_l1_to_l2_message_membership_witness(
@@ -498,6 +523,20 @@ impl AztecNode for HttpNodeClient {
             .await
     }
 
+    async fn get_public_storage_at_by_hash(
+        &self,
+        block_hash: &Fr,
+        contract: &AztecAddress,
+        slot: &Fr,
+    ) -> Result<Fr, Error> {
+        self.transport
+            .call(
+                "node_getPublicStorageAt",
+                serde_json::json!([block_hash_param_json(block_hash), contract, slot]),
+            )
+            .await
+    }
+
     async fn get_public_data_witness(
         &self,
         block_number: u64,
@@ -507,6 +546,19 @@ impl AztecNode for HttpNodeClient {
             .call_optional(
                 "node_getPublicDataWitness",
                 serde_json::json!([block_param_json(block_number), leaf_slot]),
+            )
+            .await
+    }
+
+    async fn get_public_data_witness_by_hash(
+        &self,
+        block_hash: &Fr,
+        leaf_slot: &Fr,
+    ) -> Result<Option<serde_json::Value>, Error> {
+        self.transport
+            .call_optional(
+                "node_getPublicDataWitness",
+                serde_json::json!([block_hash_param_json(block_hash), leaf_slot]),
             )
             .await
     }

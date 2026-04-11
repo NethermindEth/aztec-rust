@@ -44,25 +44,27 @@ pub struct PrivateExecutionOracle<'a, N: AztecNode> {
     sender_for_tags: Option<AztecAddress>,
     /// Execution scopes — used to enforce key validation access control.
     scopes: Vec<AztecAddress>,
+    /// Whether the currently executing private function is in a static context.
+    call_is_static: bool,
 
     // --- Counter-bearing side effects (matching upstream oracle) ---
     /// Side-effect counter, incremented for each side effect.
-    side_effect_counter: u32,
+    pub(crate) side_effect_counter: u32,
     /// Notes created during this call.
-    new_notes: Vec<NoteAndSlot>,
+    pub(crate) new_notes: Vec<NoteAndSlot>,
     /// Scoped note hashes with counters.
-    note_hashes: Vec<ScopedNoteHash>,
+    pub(crate) note_hashes: Vec<ScopedNoteHash>,
     /// Scoped nullifiers with counters.
-    nullifiers: Vec<ScopedNullifier>,
+    pub(crate) nullifiers: Vec<ScopedNullifier>,
     /// Maps note hash counter -> nullifier counter.
-    note_hash_nullifier_counter_map: std::collections::HashMap<u32, u32>,
+    pub(crate) note_hash_nullifier_counter_map: std::collections::HashMap<u32, u32>,
     /// Siloed nullifier values of DB notes consumed during this execution.
     /// Used to prevent returning already-consumed persistent notes from get_notes.
     consumed_db_nullifiers: std::collections::HashSet<Fr>,
     /// Private logs emitted.
-    private_logs: Vec<PrivateLogData>,
+    pub(crate) private_logs: Vec<PrivateLogData>,
     /// Contract class logs emitted.
-    contract_class_logs: Vec<CountedContractClassLog>,
+    pub(crate) contract_class_logs: Vec<CountedContractClassLog>,
     /// Offchain effects.
     offchain_effects: Vec<Vec<Fr>>,
     /// Public function call requests enqueued during private execution.
@@ -70,18 +72,65 @@ pub struct PrivateExecutionOracle<'a, N: AztecNode> {
     /// Teardown call request.
     public_teardown_call_request: Option<PublicCallRequestData>,
     /// Note hash read requests.
-    note_hash_read_requests: Vec<ScopedReadRequest>,
+    pub(crate) note_hash_read_requests: Vec<ScopedReadRequest>,
     /// Nullifier read requests.
-    nullifier_read_requests: Vec<ScopedReadRequest>,
+    pub(crate) nullifier_read_requests: Vec<ScopedReadRequest>,
     /// Minimum revertible side-effect counter.
-    min_revertible_side_effect_counter: u32,
+    pub(crate) min_revertible_side_effect_counter: u32,
     /// Public function calldata preimages.
     public_function_calldata: Vec<HashedValues>,
     /// Captured nested execution results (for return value extraction).
-    nested_results: Vec<PrivateCallExecutionResult>,
+    pub(crate) nested_results: Vec<PrivateCallExecutionResult>,
     /// Block-header + tx-context fields from the entrypoint witness,
     /// shared with nested calls so that chain_id/version are correct.
     pub(crate) context_witness_prefix: Vec<Fr>,
+}
+
+fn decode_base64_sibling_path(encoded: &str) -> Result<Vec<Fr>, Error> {
+    use base64::Engine;
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|e| Error::InvalidData(format!("invalid siblingPath base64: {e}")))?;
+
+    let payload = if bytes.len() >= 4 {
+        let declared_len =
+            u32::from_be_bytes(bytes[..4].try_into().expect("length prefix is 4 bytes")) as usize;
+        let payload = &bytes[4..];
+        if payload.len() == declared_len.saturating_mul(32) {
+            payload
+        } else if bytes.len() % 32 == 0 {
+            bytes.as_slice()
+        } else {
+            return Err(Error::InvalidData(format!(
+                "siblingPath payload length mismatch: declared {declared_len} elements, got {} bytes",
+                payload.len()
+            )));
+        }
+    } else {
+        bytes.as_slice()
+    };
+
+    Ok(payload
+        .chunks(32)
+        .map(|chunk| {
+            let mut padded = [0u8; 32];
+            let start = 32usize.saturating_sub(chunk.len());
+            padded[start..].copy_from_slice(chunk);
+            Fr::from(padded)
+        })
+        .collect())
+}
+
+fn parse_field_string(value: &str) -> Result<Fr, Error> {
+    if value.starts_with("0x") {
+        Fr::from_hex(value)
+    } else {
+        value
+            .parse::<u128>()
+            .map(Fr::from)
+            .map_err(|_| Error::InvalidData(format!("unsupported field string value: {value}")))
+    }
 }
 
 /// A note created during execution (not yet committed to state).
@@ -278,6 +327,7 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
         protocol_nullifier: Fr,
         sender_for_tags: Option<AztecAddress>,
         scopes: Vec<AztecAddress>,
+        call_is_static: bool,
     ) -> Self {
         Self {
             node,
@@ -294,6 +344,7 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             auth_witnesses: Vec::new(),
             sender_for_tags,
             scopes,
+            call_is_static,
             side_effect_counter: 0,
             new_notes: Vec::new(),
             note_hashes: Vec::new(),
@@ -314,9 +365,49 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
         }
     }
 
+    fn ensure_mutable_context(&self) -> Result<(), Error> {
+        if self.call_is_static {
+            return Err(Error::InvalidData(
+                "Static call cannot update the state".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Set auth witnesses for this execution context.
     pub fn set_auth_witnesses(&mut self, witnesses: Vec<(Fr, Vec<Fr>)>) {
         self.auth_witnesses = witnesses;
+    }
+
+    /// Pre-populate the execution cache with hashed values from the tx request.
+    ///
+    /// Mirrors the TS SDK's `HashedValuesCache.create(request.argsOfCalls)`.
+    /// The Noir entrypoint calls `loadFromExecutionCache(hash)` to retrieve
+    /// the args for each nested call; without pre-seeding the cache these
+    /// lookups would fail.
+    pub fn seed_execution_cache(&mut self, hashed_values: &[aztec_core::tx::HashedValues]) {
+        for hv in hashed_values {
+            self.execution_cache.insert(hv.hash, hv.values.clone());
+        }
+    }
+
+    /// Return the public call requests accumulated during this execution.
+    pub fn take_public_call_requests(
+        &mut self,
+    ) -> Vec<crate::execution::execution_result::PublicCallRequestData> {
+        std::mem::take(&mut self.public_call_requests)
+    }
+
+    /// Return the public function calldata accumulated during this execution.
+    pub fn take_public_function_calldata(&mut self) -> Vec<aztec_core::tx::HashedValues> {
+        std::mem::take(&mut self.public_function_calldata)
+    }
+
+    /// Return the teardown call request if one was enqueued.
+    pub fn take_teardown_call_request(
+        &mut self,
+    ) -> Option<crate::execution::execution_result::PublicCallRequestData> {
+        self.public_teardown_call_request.take()
     }
 
     /// Handle an ACVM foreign call by name and arguments.
@@ -737,6 +828,7 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
     }
 
     fn notify_created_note(&mut self, args: &[Vec<Fr>]) -> Result<Vec<Vec<Fr>>, Error> {
+        self.ensure_mutable_context()?;
         let owner = args
             .first()
             .and_then(|v| v.first())
@@ -795,6 +887,7 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
     }
 
     fn notify_nullified_note(&mut self, args: &[Vec<Fr>]) -> Result<Vec<Vec<Fr>>, Error> {
+        self.ensure_mutable_context()?;
         let inner_nullifier = args
             .first()
             .and_then(|v| v.first())
@@ -843,6 +936,7 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
     }
 
     fn notify_created_nullifier(&mut self, args: &[Vec<Fr>]) -> Result<Vec<Vec<Fr>>, Error> {
+        self.ensure_mutable_context()?;
         let inner_nullifier = args
             .first()
             .and_then(|v| v.first())
@@ -876,20 +970,73 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
     }
 
     async fn get_public_storage_at(&self, args: &[Vec<Fr>]) -> Result<Vec<Vec<Fr>>, Error> {
-        let contract = args
-            .first()
-            .and_then(|v| v.first())
-            .ok_or_else(|| Error::InvalidData("missing contract address".into()))?;
-        let slot = args
-            .get(1)
-            .and_then(|v| v.first())
-            .ok_or_else(|| Error::InvalidData("missing storage slot".into()))?;
+        fn slot_with_offset(start_slot: Fr, offset: usize) -> Fr {
+            let mut bytes = start_slot.to_be_bytes();
+            let mut carry = offset as u128;
+            for byte in bytes.iter_mut().rev() {
+                if carry == 0 {
+                    break;
+                }
+                let sum = u128::from(*byte) + (carry & 0xff);
+                *byte = (sum & 0xff) as u8;
+                carry = (carry >> 8) + (sum >> 8);
+            }
+            Fr::from(bytes)
+        }
+
+        let (block_hash, contract, start_slot, number_of_elements) = if args.len() >= 4 {
+            let block_hash = args
+                .first()
+                .and_then(|v| v.first())
+                .copied()
+                .unwrap_or_else(Fr::zero);
+            let contract = args
+                .get(1)
+                .and_then(|v| v.first())
+                .ok_or_else(|| Error::InvalidData("missing contract address".into()))?;
+            let start_slot = args
+                .get(2)
+                .and_then(|v| v.first())
+                .ok_or_else(|| Error::InvalidData("missing storage slot".into()))?;
+            let count = args
+                .get(3)
+                .and_then(|v| v.first())
+                .copied()
+                .unwrap_or_else(Fr::zero)
+                .to_usize();
+            (Some(block_hash), contract, start_slot, count.max(1))
+        } else {
+            let contract = args
+                .first()
+                .and_then(|v| v.first())
+                .ok_or_else(|| Error::InvalidData("missing contract address".into()))?;
+            let slot = args
+                .get(1)
+                .and_then(|v| v.first())
+                .ok_or_else(|| Error::InvalidData("missing storage slot".into()))?;
+            (None, contract, slot, 1)
+        };
+
         let contract_addr = AztecAddress(*contract);
-        let value = self
-            .node
-            .get_public_storage_at(0, &contract_addr, slot)
-            .await?;
-        Ok(vec![vec![value]])
+        let mut values = Vec::with_capacity(number_of_elements);
+        for offset in 0..number_of_elements {
+            let slot = slot_with_offset(*start_slot, offset);
+            let value = match block_hash.as_ref() {
+                Some(block_hash) => {
+                    self.node
+                        .get_public_storage_at_by_hash(block_hash, &contract_addr, &slot)
+                        .await?
+                }
+                None => {
+                    self.node
+                        .get_public_storage_at(0, &contract_addr, &slot)
+                        .await?
+                }
+            };
+            values.push(value);
+        }
+
+        Ok(vec![values])
     }
 
     async fn get_contract_instance(&self, args: &[Vec<Fr>]) -> Result<Vec<Vec<Fr>>, Error> {
@@ -933,6 +1080,7 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
     }
 
     fn emit_private_log(&mut self, args: &[Vec<Fr>]) -> Result<Vec<Vec<Fr>>, Error> {
+        self.ensure_mutable_context()?;
         let fields = args.first().cloned().unwrap_or_default();
         let emitted_length = fields.len() as u32;
         self.side_effect_counter += 1;
@@ -949,6 +1097,7 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
     }
 
     fn emit_contract_class_log(&mut self, args: &[Vec<Fr>]) -> Result<Vec<Vec<Fr>>, Error> {
+        self.ensure_mutable_context()?;
         let contract_addr = args
             .first()
             .and_then(|v| v.first())
@@ -1078,18 +1227,13 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
         &self,
         args: &[Vec<Fr>],
     ) -> Result<Vec<Vec<Fr>>, Error> {
-        let block_number = args
-            .first()
-            .and_then(|v| v.first())
-            .map(|f| f.to_usize() as u64)
-            .unwrap_or(0);
         let note_hash = args
             .get(1)
             .and_then(|v| v.first())
             .ok_or_else(|| Error::InvalidData("missing note hash".into()))?;
         let _witness = self
             .node
-            .get_note_hash_membership_witness(block_number, note_hash)
+            .get_note_hash_membership_witness(0, note_hash)
             .await?;
         // Return the witness as fields (the actual format depends on tree height)
         Ok(vec![])
@@ -1099,55 +1243,115 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
         &self,
         args: &[Vec<Fr>],
     ) -> Result<Vec<Vec<Fr>>, Error> {
-        let block_number = args
-            .first()
-            .and_then(|v| v.first())
-            .map(|f| f.to_usize() as u64)
-            .unwrap_or(0);
         let nullifier = args
             .get(1)
             .and_then(|v| v.first())
             .ok_or_else(|| Error::InvalidData("missing nullifier".into()))?;
         let _witness = self
             .node
-            .get_nullifier_membership_witness(block_number, nullifier)
+            .get_nullifier_membership_witness(0, nullifier)
             .await?;
         Ok(vec![])
     }
 
     async fn get_public_data_witness(&self, args: &[Vec<Fr>]) -> Result<Vec<Vec<Fr>>, Error> {
-        let block_number = args
+        fn fr_at(value: &serde_json::Value, path: &str) -> Result<Fr, Error> {
+            let raw = value.pointer(path).ok_or_else(|| {
+                Error::InvalidData(format!("public data witness missing field at {path}"))
+            })?;
+            if let Some(s) = raw.as_str() {
+                return parse_field_string(s).map_err(|_| {
+                    Error::InvalidData(format!(
+                        "public data witness field at {path} has unsupported string value: {s}"
+                    ))
+                });
+            }
+            if let Some(n) = raw.as_u64() {
+                return Ok(Fr::from(n));
+            }
+            Err(Error::InvalidData(format!(
+                "public data witness field at {path} has unsupported shape: {raw:?}"
+            )))
+        }
+
+        let block_hash = args
             .first()
             .and_then(|v| v.first())
-            .map(|f| f.to_usize() as u64)
-            .unwrap_or(0);
+            .copied()
+            .unwrap_or_else(Fr::zero);
         let leaf_slot = args
             .get(1)
             .and_then(|v| v.first())
             .ok_or_else(|| Error::InvalidData("missing leaf slot".into()))?;
-        let _witness = self
+        let witness = self
             .node
-            .get_public_data_witness(block_number, leaf_slot)
+            .get_public_data_witness_by_hash(&block_hash, leaf_slot)
             .await?;
-        Ok(vec![])
+        let Some(witness) = witness else {
+            return Ok(vec![
+                vec![Fr::zero()],
+                vec![Fr::zero()],
+                vec![Fr::zero()],
+                vec![Fr::zero()],
+                vec![Fr::zero()],
+                vec![Fr::zero(); aztec_core::constants::PUBLIC_DATA_TREE_HEIGHT],
+            ]);
+        };
+
+        let sibling_path = match witness.pointer("/siblingPath") {
+            Some(serde_json::Value::Array(entries)) => entries
+                .iter()
+                .map(|entry| {
+                    if let Some(s) = entry.as_str() {
+                        parse_field_string(s).map_err(|_| {
+                            Error::InvalidData(format!(
+                                "public data witness siblingPath entry has unsupported string value: {s}"
+                            ))
+                        })
+                    } else if let Some(n) = entry.as_u64() {
+                        Ok(Fr::from(n))
+                    } else {
+                        Err(Error::InvalidData(format!(
+                            "public data witness siblingPath entry has unsupported shape: {entry:?}"
+                        )))
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            Some(serde_json::Value::String(encoded)) => {
+                decode_base64_sibling_path(encoded)?
+            }
+            _ => {
+                return Err(Error::InvalidData(
+                    "public data witness missing siblingPath".into(),
+                ))
+            }
+        };
+
+        let mut sibling_path = sibling_path;
+        sibling_path.resize(aztec_core::constants::PUBLIC_DATA_TREE_HEIGHT, Fr::zero());
+        sibling_path.truncate(aztec_core::constants::PUBLIC_DATA_TREE_HEIGHT);
+
+        Ok(vec![
+            vec![fr_at(&witness, "/index")?],
+            vec![fr_at(&witness, "/leafPreimage/leaf/slot")?],
+            vec![fr_at(&witness, "/leafPreimage/leaf/value")?],
+            vec![fr_at(&witness, "/leafPreimage/nextKey")?],
+            vec![fr_at(&witness, "/leafPreimage/nextIndex")?],
+            sibling_path,
+        ])
     }
 
     async fn get_block_hash_membership_witness(
         &self,
         args: &[Vec<Fr>],
     ) -> Result<Vec<Vec<Fr>>, Error> {
-        let block_number = args
-            .first()
-            .and_then(|v| v.first())
-            .map(|f| f.to_usize() as u64)
-            .unwrap_or(0);
         let block_hash = args
             .get(1)
             .and_then(|v| v.first())
             .ok_or_else(|| Error::InvalidData("missing block hash".into()))?;
         let _witness = self
             .node
-            .get_block_hash_membership_witness(block_number, block_hash)
+            .get_block_hash_membership_witness(0, block_hash)
             .await?;
         Ok(vec![])
     }
@@ -1214,22 +1418,25 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
     }
 
     async fn check_nullifier_exists(&self, args: &[Vec<Fr>]) -> Result<Vec<Vec<Fr>>, Error> {
-        let nullifier = args
+        let inner_nullifier = args
             .first()
             .and_then(|v| v.first())
             .ok_or_else(|| Error::InvalidData("missing nullifier".into()))?;
+        // The Noir oracle passes the inner nullifier. The tree stores siloed
+        // nullifiers, so mirror the upstream PXE and silo before lookup.
+        let nullifier = aztec_core::hash::silo_nullifier(&self.contract_address, inner_nullifier);
         // Check pending nullifiers first
         if self
             .nullifiers
             .iter()
-            .any(|n| n.nullifier.value == *nullifier)
+            .any(|n| n.nullifier.value == nullifier)
         {
             return Ok(vec![vec![Fr::from(true)]]);
         }
         // Check on-chain nullifier tree
         let witness = self
             .node
-            .get_nullifier_membership_witness(0, nullifier)
+            .get_nullifier_membership_witness(0, &nullifier)
             .await?;
         let exists = witness.is_some();
         Ok(vec![vec![Fr::from(exists)]])
@@ -1298,6 +1505,10 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             })?;
         let function_name = function.name.clone();
 
+        if function.is_static && !is_static {
+            return Err(Error::InvalidData("can only be called statically".into()));
+        }
+
         // Retrieve arguments from the execution cache using the args hash.
         let cached_args = self
             .execution_cache
@@ -1360,6 +1571,7 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             self.protocol_nullifier,
             self.sender_for_tags,
             self.scopes.clone(),
+            is_static,
         );
 
         // Share the execution cache so return values are accessible.
@@ -1574,6 +1786,7 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
         &self,
         acvm_output: AcvmExecutionOutput,
         contract_address: AztecAddress,
+        expiration_timestamp: u64,
     ) -> PrivateExecutionResult {
         let entrypoint = PrivateCallExecutionResult {
             acir: acvm_output.acir_bytecode,
@@ -1584,7 +1797,7 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
                 msg_sender: AztecAddress::zero(), // Set by caller
                 contract_address,
                 function_selector: Fr::zero(),
-                is_static_call: false,
+                is_static_call: self.call_is_static,
             },
             return_values: acvm_output.return_values,
             new_notes: self.new_notes.clone(),
@@ -1612,6 +1825,7 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
         PrivateExecutionResult {
             entrypoint,
             first_nullifier,
+            expiration_timestamp,
             public_function_calldata: self.public_function_calldata.clone(),
         }
     }

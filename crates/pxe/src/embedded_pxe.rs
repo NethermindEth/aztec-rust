@@ -76,6 +76,8 @@ struct CallExecutionBundle {
     public_function_calldata: Vec<aztec_core::tx::HashedValues>,
     /// Return values from the first inner ACIR call (for private return value extraction).
     first_acir_call_return_values: Vec<Fr>,
+    /// User-visible return values for the top-level simulated call bundle.
+    simulated_return_values: Vec<Fr>,
 }
 
 fn parse_encoded_calls(fields: &[Fr]) -> Result<Vec<ParsedEntrypointCall>, Error> {
@@ -229,17 +231,20 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
 
         for call in exec_result.iter_all_calls() {
             for note in &call.new_notes {
-                let Some(nullifier_counter) = note_to_nullifier_counter.get(&note.counter).copied()
-                else {
-                    continue;
+                // Check if this note was also nullified in the same execution
+                // (transient note — squashed by the kernel).
+                let (siloed_nullifier, nullified) = if let Some(nullifier_counter) =
+                    note_to_nullifier_counter.get(&note.counter).copied()
+                {
+                    if let Some(sn) = nullifiers_by_counter.get(&nullifier_counter).copied() {
+                        (sn, true)
+                    } else {
+                        (Fr::zero(), false)
+                    }
+                } else {
+                    (Fr::zero(), false)
                 };
-                let Some(siloed_nullifier) = nullifiers_by_counter.get(&nullifier_counter).copied()
-                else {
-                    continue;
-                };
-                // Notes that were both created and nullified in this execution
-                // are transient (squashed by the kernel). Mark them as nullified
-                // so they don't appear as active in subsequent queries.
+
                 let stored = crate::stores::note_store::StoredNote {
                     contract_address: note.contract_address,
                     owner: note.owner,
@@ -249,7 +254,7 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
                     note_hash: note.note_hash,
                     siloed_nullifier,
                     note_data: note.note_items.clone(),
-                    nullified: true,
+                    nullified,
                     is_pending: true,
                     nullification_block_number: None,
                     leaf_index: None,
@@ -675,9 +680,11 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
 
                 return Ok(Some(CallExecutionBundle {
                     first_acir_call_return_values: Vec::new(),
+                    simulated_return_values: Vec::new(),
                     execution_result: crate::execution::execution_result::PrivateExecutionResult {
                         entrypoint,
                         first_nullifier,
+                        expiration_timestamp: 0,
                         public_function_calldata: vec![],
                     },
                     contract_class_log_fields: vec![
@@ -803,9 +810,11 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
 
                 return Ok(Some(CallExecutionBundle {
                     first_acir_call_return_values: Vec::new(),
+                    simulated_return_values: Vec::new(),
                     execution_result: crate::execution::execution_result::PrivateExecutionResult {
                         entrypoint,
                         first_nullifier,
+                        expiration_timestamp: 0,
                         public_function_calldata: vec![],
                     },
                     contract_class_log_fields: vec![],
@@ -871,11 +880,13 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
         let exec_result = PrivateExecutionResult {
             entrypoint,
             first_nullifier,
+            expiration_timestamp: 0,
             public_function_calldata: vec![hashed.clone()],
         };
 
         Ok(Some(CallExecutionBundle {
             first_acir_call_return_values: Vec::new(),
+            simulated_return_values: Vec::new(),
             execution_result: exec_result,
             contract_class_log_fields: vec![],
             public_function_calldata: vec![hashed],
@@ -1074,15 +1085,25 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
         let mut contract_class_log_fields = Vec::new();
         let mut min_revertible_side_effect_counter = 0u32;
         let mut first_acir_returns = Vec::new();
+        let mut simulated_return_values = Vec::new();
+        let mut expiration_timestamp = 0u64;
 
         for (idx, bundle) in bundles.into_iter().enumerate() {
             if idx == 0 {
                 first_nullifier = bundle.execution_result.first_nullifier;
                 first_acir_returns = bundle.first_acir_call_return_values;
+                simulated_return_values = bundle.simulated_return_values;
+                expiration_timestamp = bundle.execution_result.expiration_timestamp;
                 min_revertible_side_effect_counter = bundle
                     .execution_result
                     .entrypoint
                     .min_revertible_side_effect_counter;
+            } else if bundle.execution_result.expiration_timestamp != 0 {
+                expiration_timestamp = if expiration_timestamp == 0 {
+                    bundle.execution_result.expiration_timestamp
+                } else {
+                    expiration_timestamp.min(bundle.execution_result.expiration_timestamp)
+                };
             }
             let adjusted_entrypoint =
                 Self::offset_private_call_result(&bundle.execution_result.entrypoint, offset);
@@ -1109,9 +1130,11 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
 
         CallExecutionBundle {
             first_acir_call_return_values: first_acir_returns,
+            simulated_return_values,
             execution_result: crate::execution::execution_result::PrivateExecutionResult {
                 entrypoint: root,
                 first_nullifier,
+                expiration_timestamp,
                 public_function_calldata: public_function_calldata.clone(),
             },
             contract_class_log_fields,
@@ -1186,6 +1209,7 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
                 )?;
             return Ok(CallExecutionBundle {
                 first_acir_call_return_values: Vec::new(),
+                simulated_return_values: Vec::new(),
                 execution_result,
                 contract_class_log_fields,
                 public_function_calldata,
@@ -1217,6 +1241,7 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
             protocol_nullifier,
             Some(origin),
             scopes.to_vec(),
+            call.is_static,
         );
 
         // Extract and set auth witnesses from the TX request so nested
@@ -1269,7 +1294,7 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
                 acvm_output.first_acir_call_return_values.clone()
             }
         };
-        let mut execution_result = oracle.build_execution_result(acvm_output, contract_address);
+        let mut execution_result = oracle.build_execution_result(acvm_output, contract_address, 0);
         execution_result.entrypoint.call_context = aztec_core::kernel_types::CallContext {
             msg_sender: origin,
             contract_address,
@@ -1286,6 +1311,12 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
             let ctx_size = artifact.private_context_inputs_size(&function_name);
             let user_args_size = call.encoded_args.len();
             let params_size = ctx_size + user_args_size;
+            let expiration_timestamp = Self::extract_expiration_timestamp_from_witness(
+                &execution_result.entrypoint.partial_witness,
+                params_size,
+                ctx_size,
+            );
+            execution_result.expiration_timestamp = expiration_timestamp;
 
             let (circuit_note_hashes, _circuit_nullifiers, circuit_logs) =
                 Self::extract_side_effects_from_witness(
@@ -1324,11 +1355,18 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
             .collect::<Vec<_>>();
         let public_function_calldata = execution_result.public_function_calldata.clone();
 
+        let simulated_return_values = if !acir_call_returns.is_empty() {
+            acir_call_returns.clone()
+        } else {
+            execution_result.entrypoint.return_values.clone()
+        };
+
         Ok(CallExecutionBundle {
             execution_result,
             contract_class_log_fields,
             public_function_calldata,
             first_acir_call_return_values: acir_call_returns,
+            simulated_return_values,
         })
     }
 
@@ -1440,6 +1478,21 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
         }
 
         (note_hashes, nullifiers, logs)
+    }
+
+    fn extract_expiration_timestamp_from_witness(
+        witness: &acir::native_types::WitnessMap<acir::FieldElement>,
+        params_size: usize,
+        context_inputs_size: usize,
+    ) -> u64 {
+        let prefix_len = context_inputs_size.saturating_sub(5);
+        let expiration_offset = prefix_len + 8;
+        let idx = acir::native_types::Witness((params_size + expiration_offset) as u32);
+        witness
+            .get(&idx)
+            .map(crate::execution::field_conversion::fe_to_fr)
+            .map(|fr| fr.to_usize() as u64)
+            .unwrap_or(0)
     }
 
     fn extract_origin(&self, tx_request: &TxExecutionRequest) -> AztecAddress {
@@ -1678,7 +1731,11 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
             .and_then(|v| {
                 v.as_u64().or_else(|| {
                     v.as_str().and_then(|s| {
-                        u64::from_str_radix(s.strip_prefix("0x").unwrap_or(s), 16).ok()
+                        if let Some(hex) = s.strip_prefix("0x") {
+                            u64::from_str_radix(hex, 16).ok()
+                        } else {
+                            s.parse::<u64>().ok()
+                        }
                     })
                 })
             })
@@ -1743,6 +1800,196 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
 
     /// Build a synthetic execution result for a public function call.
     ///
+    /// Run the account contract's entrypoint function through ACVM.
+    ///
+    /// This mirrors the TS SDK flow where the entire entrypoint Noir circuit is
+    /// executed. The circuit handles both private (via nested ACVM calls) and
+    /// public (via `enqueuePublicFunctionCall` oracle) calls. This produces
+    /// correct `PublicCallRequest` data that the node can process.
+    async fn execute_entrypoint_via_acvm(
+        &self,
+        tx_request: &TxExecutionRequest,
+        origin: AztecAddress,
+        protocol_nullifier: Fr,
+        anchor: &AnchorBlockHeader,
+        scopes: &[AztecAddress],
+    ) -> Result<CallExecutionBundle, Error> {
+        let request: DecodedTxExecutionRequest = serde_json::from_value(tx_request.data.clone())?;
+
+        // Find the account contract artifact
+        let contract_instance = self.contract_store.get_instance(&origin).await?;
+        let class_id = contract_instance
+            .as_ref()
+            .map(|i| i.inner.current_contract_class_id)
+            .ok_or_else(|| Error::InvalidData(format!("account contract not found: {origin}")))?;
+        let artifact = self
+            .contract_store
+            .get_artifact(&class_id)
+            .await?
+            .ok_or_else(|| {
+                Error::InvalidData(format!(
+                    "account contract artifact not found for class {class_id}"
+                ))
+            })?;
+
+        // Find the entrypoint function — look up from the tx request's selector
+        let entrypoint_args = request
+            .args_of_calls
+            .iter()
+            .find(|hv| hv.hash == request.first_call_args_hash)
+            .ok_or_else(|| {
+                Error::InvalidData("firstCallArgsHash not found in argsOfCalls".into())
+            })?;
+
+        let function_name = {
+            let selector_field = tx_request
+                .data
+                .get("functionSelector")
+                .and_then(|v| v.as_str())
+                .and_then(|s| aztec_core::abi::FunctionSelector::from_hex(s).ok());
+            if let Some(sel) = selector_field {
+                self.resolve_function_name_by_selector(&origin, sel).await
+            } else {
+                // Default to "entrypoint" for account contracts
+                "entrypoint".to_owned()
+            }
+        };
+
+        let function = artifact.find_function(&function_name)?;
+
+        // Build the ACVM witness for the entrypoint
+        let full_witness = self.build_private_witness(
+            &artifact,
+            &function_name,
+            &entrypoint_args.values,
+            origin, // contract_address = account address
+            origin, // msg_sender = self-call
+            tx_request,
+            anchor,
+            function
+                .selector
+                .unwrap_or_else(aztec_core::abi::FunctionSelector::empty),
+            function.is_static,
+        );
+
+        // Create the oracle with pre-seeded execution cache
+        let mut oracle = crate::execution::PrivateExecutionOracle::new(
+            &self.node,
+            &self.contract_store,
+            &self.key_store,
+            &self.note_store,
+            &self.capsule_store,
+            &self.address_store,
+            &self.sender_tagging_store,
+            anchor.data.clone(),
+            origin,
+            protocol_nullifier,
+            Some(origin),
+            scopes.to_vec(),
+            false,
+        );
+
+        // Pre-populate execution cache with all hashed values from the tx request
+        // (mirrors TS: HashedValuesCache.create(request.argsOfCalls))
+        oracle.seed_execution_cache(&request.args_of_calls);
+
+        // Set auth witnesses from the tx request
+        if let Some(auth_witnesses) = tx_request.data.get("authWitnesses").and_then(|v| {
+            serde_json::from_value::<Vec<aztec_core::tx::AuthWitness>>(v.clone()).ok()
+        }) {
+            let pairs: Vec<(Fr, Vec<Fr>)> = auth_witnesses
+                .iter()
+                .map(|aw| (aw.request_hash, aw.fields.clone()))
+                .collect();
+            oracle.set_auth_witnesses(pairs);
+        }
+
+        // Store block-header + tx-context for nested calls
+        let context_inputs_size = artifact.private_context_inputs_size(&function_name);
+        if context_inputs_size > 5 {
+            oracle.context_witness_prefix =
+                full_witness[4..context_inputs_size.saturating_sub(1)].to_vec();
+        }
+
+        // Execute the entrypoint via ACVM
+        let acvm_output = crate::execution::AcvmExecutor::execute_private(
+            &artifact,
+            &function_name,
+            &full_witness,
+            &mut oracle,
+        )
+        .await?;
+
+        // Extract public call requests and calldata from oracle
+        let public_call_requests = oracle.take_public_call_requests();
+        let public_function_calldata = oracle.take_public_function_calldata();
+        let teardown_request = oracle.take_teardown_call_request();
+
+        // Build the execution result from oracle state
+        let entrypoint_result = crate::execution::execution_result::PrivateCallExecutionResult {
+            contract_address: origin,
+            call_context: aztec_core::kernel_types::CallContext {
+                msg_sender: origin,
+                contract_address: origin,
+                function_selector: function
+                    .selector
+                    .map(|s| s.to_field())
+                    .unwrap_or(Fr::zero()),
+                is_static_call: false,
+            },
+            acir: acvm_output.acir_bytecode.clone(),
+            vk: Vec::new(),
+            partial_witness: acvm_output.witness.clone(),
+            return_values: acvm_output.return_values.clone(),
+            new_notes: oracle.new_notes.clone(),
+            note_hash_nullifier_counter_map: oracle.note_hash_nullifier_counter_map.clone(),
+            offchain_effects: Vec::new(),
+            pre_tags: Vec::new(),
+            note_hashes: oracle.note_hashes.clone(),
+            nullifiers: oracle.nullifiers.clone(),
+            private_logs: oracle.private_logs.clone(),
+            contract_class_logs: oracle.contract_class_logs.clone(),
+            public_call_requests,
+            public_teardown_call_request: teardown_request,
+            start_side_effect_counter: 2,
+            end_side_effect_counter: oracle.side_effect_counter,
+            min_revertible_side_effect_counter: oracle.min_revertible_side_effect_counter,
+            note_hash_read_requests: oracle.note_hash_read_requests.clone(),
+            nullifier_read_requests: oracle.nullifier_read_requests.clone(),
+            nested_execution_results: oracle.nested_results.clone(),
+        };
+
+        let contract_class_log_fields = entrypoint_result
+            .contract_class_logs
+            .iter()
+            .map(|log| aztec_core::tx::ContractClassLogFields {
+                fields: log.log.fields.clone(),
+            })
+            .collect();
+        let expiration_timestamp = Self::extract_expiration_timestamp_from_witness(
+            &acvm_output.witness,
+            full_witness.len(),
+            context_inputs_size,
+        );
+
+        Ok(CallExecutionBundle {
+            simulated_return_values: if !acvm_output.first_acir_call_return_values.is_empty() {
+                acvm_output.first_acir_call_return_values.clone()
+            } else {
+                acvm_output.return_values.clone()
+            },
+            first_acir_call_return_values: acvm_output.first_acir_call_return_values,
+            execution_result: crate::execution::execution_result::PrivateExecutionResult {
+                entrypoint: entrypoint_result,
+                first_nullifier: protocol_nullifier,
+                expiration_timestamp,
+                public_function_calldata: public_function_calldata.clone(),
+            },
+            contract_class_log_fields,
+            public_function_calldata,
+        })
+    }
+
     /// Public functions are executed by the sequencer, not the PXE. This method
     /// creates a minimal `PrivateExecutionResult` that enqueues the public call
     /// so the simulated kernel can package it correctly.
@@ -1803,6 +2050,7 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
         let exec_result = PrivateExecutionResult {
             entrypoint,
             first_nullifier,
+            expiration_timestamp: 0,
             public_function_calldata: vec![hashed.clone()],
         };
 
@@ -1999,6 +2247,16 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
                 .await?,
             );
         }
+        let bundled_private_return_values: Vec<Vec<String>> = bundles
+            .iter()
+            .map(|bundle| {
+                bundle
+                    .simulated_return_values
+                    .iter()
+                    .map(|f| f.to_string())
+                    .collect()
+            })
+            .collect();
         let aggregated = Self::aggregate_call_bundles(origin, bundles);
 
         // Verify auth witness signatures.
@@ -2073,9 +2331,23 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
             }
         };
 
+        let return_values = if bundled_private_return_values.len() > 1 {
+            serde_json::Value::Array(
+                bundled_private_return_values
+                    .into_iter()
+                    .map(serde_json::to_value)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(Error::from)?,
+            )
+        } else {
+            serde_json::json!({
+                "returnValues": private_return_values,
+            })
+        };
+
         Ok(TxSimulationResult {
             data: serde_json::json!({
-                "returnValues": private_return_values,
+                "returnValues": return_values,
                 "gasUsed": {
                     "daGas": pi.gas_used.da_gas,
                     "l2Gas": pi.gas_used.l2_gas,
@@ -2102,7 +2374,6 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
             self.vk_tree_root,
             self.protocol_contracts_hash,
         );
-        let expiration_timestamp = Self::compute_expiration(&anchor);
         Self::ensure_min_fees(&mut tx_constants, &anchor);
         let request: DecodedTxExecutionRequest = serde_json::from_value(tx_request.data.clone())?;
         let fee_payer = request.fee_payer.unwrap_or(origin);
@@ -2124,21 +2395,83 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
             }
         }
 
-        let mut bundles = Vec::with_capacity(decoded_calls.len());
-        for call in &decoded_calls {
-            bundles.push(
-                self.execute_entrypoint_call_bundle(
+        // If any call is public, run the account entrypoint through ACVM
+        // (like the TS SDK). The Noir entrypoint handles public calls via
+        // `enqueuePublicFunctionCall` which the oracle captures correctly.
+        // The decode-and-dispatch path only works for private-only payloads.
+        //
+        // We detect public calls from the parsed entrypoint payload (the
+        // `is_public` flag in the encoded call fields).
+        let has_public_calls = {
+            let entrypoint_args = request
+                .args_of_calls
+                .iter()
+                .find(|hv| hv.hash == request.first_call_args_hash);
+            if let Some(ea) = entrypoint_args {
+                parse_encoded_calls(&ea.values)
+                    .map(|calls| calls.iter().any(|c| c.is_public))
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        };
+
+        let aggregated = if has_public_calls {
+            match self
+                .execute_entrypoint_via_acvm(
                     tx_request,
-                    call,
                     origin,
                     protocol_nullifier,
                     &anchor,
                     &scopes,
                 )
-                .await?,
-            );
-        }
-        let aggregated = Self::aggregate_call_bundles(origin, bundles);
+                .await
+            {
+                Ok(bundle) => bundle,
+                Err(Error::InvalidData(msg))
+                    if msg.contains("account contract not found")
+                        || msg.contains("account contract artifact not found") =>
+                {
+                    let mut bundles = Vec::with_capacity(decoded_calls.len());
+                    for call in &decoded_calls {
+                        bundles.push(
+                            self.execute_entrypoint_call_bundle(
+                                tx_request,
+                                call,
+                                origin,
+                                protocol_nullifier,
+                                &anchor,
+                                &scopes,
+                            )
+                            .await?,
+                        );
+                    }
+                    Self::aggregate_call_bundles(origin, bundles)
+                }
+                Err(err) => return Err(err),
+            }
+        } else {
+            let mut bundles = Vec::with_capacity(decoded_calls.len());
+            for call in &decoded_calls {
+                bundles.push(
+                    self.execute_entrypoint_call_bundle(
+                        tx_request,
+                        call,
+                        origin,
+                        protocol_nullifier,
+                        &anchor,
+                        &scopes,
+                    )
+                    .await?,
+                );
+            }
+            Self::aggregate_call_bundles(origin, bundles)
+        };
+        let expiration_timestamp = if aggregated.execution_result.expiration_timestamp != 0 {
+            aggregated.execution_result.expiration_timestamp
+        } else {
+            Self::compute_expiration(&anchor)
+        };
 
         // Verify auth witness signatures (same check as simulate_tx).
         self.verify_auth_witness_signatures(tx_request, origin)
@@ -2193,10 +2526,61 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
 
     async fn profile_tx(
         &self,
-        _tx_request: &TxExecutionRequest,
-        _opts: ProfileTxOpts,
+        tx_request: &TxExecutionRequest,
+        opts: ProfileTxOpts,
     ) -> Result<TxProfileResult, Error> {
-        Err(Error::InvalidData("profile_tx not yet implemented".into()))
+        self.sync_block_state().await?;
+
+        let anchor = self.get_anchor_block_header().await?;
+        let protocol_nullifier = compute_protocol_nullifier(&Self::tx_request_hash(tx_request)?);
+        let request: DecodedTxExecutionRequest = serde_json::from_value(tx_request.data.clone())?;
+        let origin = request.origin;
+        let decoded_calls = Self::decode_entrypoint_calls(&request)?;
+        let fee_payer = request.fee_payer.unwrap_or(origin);
+        let mut bundles = Vec::with_capacity(decoded_calls.len());
+        for call in &decoded_calls {
+            bundles.push(
+                self.execute_entrypoint_call_bundle(
+                    tx_request,
+                    call,
+                    origin,
+                    protocol_nullifier,
+                    &anchor,
+                    &opts.scopes,
+                )
+                .await?,
+            );
+        }
+        let aggregated = Self::aggregate_call_bundles(origin, bundles);
+
+        let mut tx_constants = Self::build_tx_constant_data(
+            &anchor,
+            tx_request,
+            self.vk_tree_root,
+            self.protocol_contracts_hash,
+        );
+        let expiration_timestamp = if aggregated.execution_result.expiration_timestamp != 0 {
+            aggregated.execution_result.expiration_timestamp
+        } else {
+            Self::compute_expiration(&anchor)
+        };
+        Self::ensure_min_fees(&mut tx_constants, &anchor);
+
+        let _kernel_output = crate::kernel::SimulatedKernel::process(
+            &aggregated.execution_result,
+            tx_constants,
+            &fee_payer.0,
+            expiration_timestamp,
+        )?;
+
+        let data = serde_json::json!({
+            "expirationTimestamp": expiration_timestamp,
+            "data": {
+                "expirationTimestamp": expiration_timestamp,
+            },
+        });
+
+        Ok(TxProfileResult { data })
     }
 
     async fn execute_utility(

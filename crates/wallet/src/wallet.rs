@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -408,6 +408,103 @@ pub trait Wallet: Send + Sync {
 
     /// Read a public storage value at the given contract address and slot.
     async fn get_public_storage_at(&self, contract: &AztecAddress, slot: &Fr) -> Result<Fr, Error>;
+}
+
+// ---------------------------------------------------------------------------
+// Arc blanket impl — lets `Arc<W>` be used as a cloneable `Wallet`
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl<W: Wallet> Wallet for Arc<W> {
+    async fn get_chain_info(&self) -> Result<ChainInfo, Error> {
+        (**self).get_chain_info().await
+    }
+    async fn get_accounts(&self) -> Result<Vec<Aliased<AztecAddress>>, Error> {
+        (**self).get_accounts().await
+    }
+    async fn get_address_book(&self) -> Result<Vec<Aliased<AztecAddress>>, Error> {
+        (**self).get_address_book().await
+    }
+    async fn register_sender(
+        &self,
+        address: AztecAddress,
+        alias: Option<String>,
+    ) -> Result<AztecAddress, Error> {
+        (**self).register_sender(address, alias).await
+    }
+    async fn get_contract_metadata(
+        &self,
+        address: AztecAddress,
+    ) -> Result<ContractMetadata, Error> {
+        (**self).get_contract_metadata(address).await
+    }
+    async fn get_contract_class_metadata(
+        &self,
+        class_id: Fr,
+    ) -> Result<ContractClassMetadata, Error> {
+        (**self).get_contract_class_metadata(class_id).await
+    }
+    async fn register_contract(
+        &self,
+        instance: ContractInstanceWithAddress,
+        artifact: Option<ContractArtifact>,
+        secret_key: Option<Fr>,
+    ) -> Result<ContractInstanceWithAddress, Error> {
+        (**self)
+            .register_contract(instance, artifact, secret_key)
+            .await
+    }
+    async fn get_private_events(
+        &self,
+        event_metadata: &EventMetadataDefinition,
+        filter: PrivateEventFilter,
+    ) -> Result<Vec<PrivateEvent>, Error> {
+        (**self).get_private_events(event_metadata, filter).await
+    }
+    async fn simulate_tx(
+        &self,
+        exec: ExecutionPayload,
+        opts: SimulateOptions,
+    ) -> Result<TxSimulationResult, Error> {
+        (**self).simulate_tx(exec, opts).await
+    }
+    async fn execute_utility(
+        &self,
+        call: FunctionCall,
+        opts: ExecuteUtilityOptions,
+    ) -> Result<UtilityExecutionResult, Error> {
+        (**self).execute_utility(call, opts).await
+    }
+    async fn profile_tx(
+        &self,
+        exec: ExecutionPayload,
+        opts: ProfileOptions,
+    ) -> Result<TxProfileResult, Error> {
+        (**self).profile_tx(exec, opts).await
+    }
+    async fn send_tx(
+        &self,
+        exec: ExecutionPayload,
+        opts: SendOptions,
+    ) -> Result<SendResult, Error> {
+        (**self).send_tx(exec, opts).await
+    }
+    async fn wait_for_contract(&self, address: AztecAddress) -> Result<(), Error> {
+        (**self).wait_for_contract(address).await
+    }
+    async fn wait_for_tx_proven(&self, tx_hash: TxHash) -> Result<(), Error> {
+        (**self).wait_for_tx_proven(tx_hash).await
+    }
+    async fn create_auth_wit(
+        &self,
+        from: AztecAddress,
+        message_hash_or_intent: MessageHashOrIntent,
+    ) -> Result<AuthWitness, Error> {
+        (**self).create_auth_wit(from, message_hash_or_intent).await
+    }
+    async fn get_public_storage_at(&self, contract: &AztecAddress, slot: &Fr) -> Result<Fr, Error> {
+        (**self).get_public_storage_at(contract, slot).await
+    }
 }
 
 // ---------------------------------------------------------------------------

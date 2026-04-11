@@ -108,6 +108,8 @@ pub struct PrivateExecutionResult {
     pub entrypoint: PrivateCallExecutionResult,
     /// The first nullifier (protocol nullifier / nonce generator).
     pub first_nullifier: Fr,
+    /// The minimum include-by timestamp enforced during private execution.
+    pub expiration_timestamp: u64,
     /// Calldata preimages for enqueued public calls.
     pub public_function_calldata: Vec<HashedValues>,
 }

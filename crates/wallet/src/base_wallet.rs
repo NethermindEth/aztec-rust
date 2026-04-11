@@ -81,6 +81,18 @@ impl<P: Pxe, N: AztecNode, A: AccountProvider> BaseWallet<P, N, A> {
         scopes
     }
 
+    fn has_no_private_return_values(result: &serde_json::Value) -> bool {
+        match result.get("returnValues") {
+            Some(serde_json::Value::Array(arr)) => arr.is_empty(),
+            Some(serde_json::Value::Object(obj)) => obj
+                .get("returnValues")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.is_empty())
+                .unwrap_or(false),
+            _ => false,
+        }
+    }
+
     async fn wait_for_submission_checkpoint(&self, tx_hash: &TxHash) -> Result<(), Error> {
         let start_block = self.node.get_block_number().await.unwrap_or(0);
         let wait_opts = WaitOpts {
@@ -89,7 +101,7 @@ impl<P: Pxe, N: AztecNode, A: AccountProvider> BaseWallet<P, N, A> {
         };
 
         match wait_for_tx(&self.node, tx_hash, wait_opts).await {
-            Ok(_) => Ok(()),
+            Ok(_) => {}
             Err(Error::Timeout(_)) | Err(Error::InvalidData(_)) => {
                 let deadline = Instant::now() + Duration::from_secs(30);
                 let mut next_log = Instant::now();
@@ -117,7 +129,7 @@ impl<P: Pxe, N: AztecNode, A: AccountProvider> BaseWallet<P, N, A> {
                     }
                     let current_block = self.node.get_block_number().await?;
                     if current_block > start_block {
-                        return Ok(());
+                        break;
                     }
                     if Instant::now() >= deadline {
                         return Err(Error::Timeout(
@@ -128,7 +140,55 @@ impl<P: Pxe, N: AztecNode, A: AccountProvider> BaseWallet<P, N, A> {
                     sleep(Duration::from_millis(500)).await;
                 }
             }
-            Err(err) => Err(err),
+            Err(err) => return Err(err),
+        }
+
+        // Allow the node's world-state trees (nullifier, note-hash, public-data)
+        // to finish processing the block.  The tx is confirmed but the indexed
+        // Merkle trees may lag slightly behind the block tip.
+        self.wait_for_world_state(tx_hash).await
+    }
+
+    /// Poll the node until its world-state trees have been updated to include
+    /// the given transaction's effects.  We probe for one of the tx's own
+    /// nullifiers via `getNullifierMembershipWitness`; once the tree contains
+    /// it the world state is guaranteed current for that block.
+    async fn wait_for_world_state(&self, tx_hash: &TxHash) -> Result<(), Error> {
+        // Fetch the tx effect to obtain a known nullifier (the first nullifier
+        // is always the protocol/tx-hash nullifier).
+        let effect = match self.node.get_tx_effect(tx_hash).await {
+            Ok(Some(e)) => e,
+            _ => {
+                // If we can't fetch the effect, fall back to a short sleep.
+                sleep(Duration::from_secs(1)).await;
+                return Ok(());
+            }
+        };
+
+        let first_nullifier = effect
+            .pointer("/data/nullifiers/0")
+            .and_then(|v| v.as_str())
+            .and_then(|s| crate::types::Fr::from_hex(s).ok());
+
+        let Some(nullifier) = first_nullifier else {
+            sleep(Duration::from_secs(1)).await;
+            return Ok(());
+        };
+
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if let Ok(Some(_)) = self
+                .node
+                .get_nullifier_membership_witness(0, &nullifier)
+                .await
+            {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                // Don't fail — the tx IS mined, the tree will catch up.
+                return Ok(());
+            }
+            sleep(Duration::from_millis(200)).await;
         }
     }
 
@@ -136,7 +196,7 @@ impl<P: Pxe, N: AztecNode, A: AccountProvider> BaseWallet<P, N, A> {
         &self,
         tx_hash: &TxHash,
         tx_json: &serde_json::Value,
-    ) -> Result<(), Error> {
+    ) -> Result<serde_json::Value, Error> {
         let simulation = self.node.simulate_public_calls(tx_json, false).await?;
         if let Some(revert_reason) = simulation.get("revertReason") {
             if !revert_reason.is_null() {
@@ -150,7 +210,7 @@ impl<P: Pxe, N: AztecNode, A: AccountProvider> BaseWallet<P, N, A> {
                 )));
             }
         }
-        Ok(())
+        Ok(simulation)
     }
 
     /// Errors from the simulation preflight that should be ignored.
@@ -354,6 +414,7 @@ impl<P: Pxe, N: AztecNode, A: AccountProvider> Wallet for BaseWallet<P, N, A> {
         };
 
         let result = self.pxe.simulate_tx(&tx_request, pxe_opts).await?;
+        let mut return_values = result.data.clone();
 
         // Simulate public calls on the node (mirrors upstream PXE behaviour).
         // The local PXE only executes the private part; public functions are
@@ -366,11 +427,17 @@ impl<P: Pxe, N: AztecNode, A: AccountProvider> Wallet for BaseWallet<P, N, A> {
                 Error::InvalidData("PXE prove_tx result did not include a tx hash".into())
             })?;
             let tx_json = tx.to_json_value()?;
-            self.simulate_public_calls(&tx_hash, &tx_json).await?;
+            let simulation = self.simulate_public_calls(&tx_hash, &tx_json).await?;
+            let no_private_returns = Self::has_no_private_return_values(&return_values);
+            if no_private_returns {
+                if let Some(public_return_values) = simulation.get("publicReturnValues") {
+                    return_values = public_return_values.clone();
+                }
+            }
         }
 
         Ok(TxSimulationResult {
-            return_values: result.data.clone(),
+            return_values,
             gas_used: None, // TODO: extract from result.data (Step 9)
         })
     }
@@ -457,7 +524,7 @@ impl<P: Pxe, N: AztecNode, A: AccountProvider> Wallet for BaseWallet<P, N, A> {
             let tx_json = tx.to_json_value()?;
             if !tx.public_function_calldata.is_empty() {
                 match self.simulate_public_calls(&tx_hash, &tx_json).await {
-                    Ok(()) => {}
+                    Ok(_) => {}
                     Err(err) if Self::should_ignore_public_preflight_error(&err) => {
                         tracing::debug!(
                             tx_hash = %tx_hash,
