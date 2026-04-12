@@ -225,32 +225,26 @@ impl SchnorrAccountContract {
     }
 
     fn constructor_artifact() -> FunctionArtifact {
-        let public_key_struct = AbiType::Struct {
-            name: "schnorr_account::auth::PublicKey".to_owned(),
-            fields: vec![
-                AbiParameter {
-                    name: "x".to_owned(),
-                    typ: AbiType::Field,
-                    visibility: None,
-                },
-                AbiParameter {
-                    name: "y".to_owned(),
-                    typ: AbiType::Field,
-                    visibility: None,
-                },
-            ],
-        };
-
+        // Parameters must match the compiled Noir artifact exactly (flat fields,
+        // not a struct) so that the computed selector matches the one stored in
+        // the PXE's compiled artifact.
         FunctionArtifact {
             name: "constructor".to_owned(),
             function_type: FunctionType::Private,
             is_initializer: true,
             is_static: false,
-            parameters: vec![AbiParameter {
-                name: "signing_pub_key".to_owned(),
-                typ: public_key_struct,
-                visibility: None,
-            }],
+            parameters: vec![
+                AbiParameter {
+                    name: "signing_pub_key_x".to_owned(),
+                    typ: AbiType::Field,
+                    visibility: None,
+                },
+                AbiParameter {
+                    name: "signing_pub_key_y".to_owned(),
+                    typ: AbiType::Field,
+                    visibility: None,
+                },
+            ],
             return_types: vec![],
             selector: None,
             bytecode: None,
@@ -282,13 +276,12 @@ impl AccountContract for SchnorrAccountContract {
     }
 
     async fn initialization_function_and_args(&self) -> Result<Option<InitializationSpec>, Error> {
-        let mut pk_fields = std::collections::BTreeMap::new();
-        pk_fields.insert("x".to_owned(), AbiValue::Field(self.signing_public_key.x));
-        pk_fields.insert("y".to_owned(), AbiValue::Field(self.signing_public_key.y));
-
         Ok(Some(InitializationSpec {
             constructor_name: "constructor".to_owned(),
-            constructor_args: vec![AbiValue::Struct(pk_fields)],
+            constructor_args: vec![
+                AbiValue::Field(self.signing_public_key.x),
+                AbiValue::Field(self.signing_public_key.y),
+            ],
         }))
     }
 
@@ -354,7 +347,7 @@ mod tests {
             .expect("init spec")
             .expect("should have spec");
         assert_eq!(spec.constructor_name, "constructor");
-        assert_eq!(spec.constructor_args.len(), 1);
+        assert_eq!(spec.constructor_args.len(), 2);
     }
 
     #[tokio::test]
