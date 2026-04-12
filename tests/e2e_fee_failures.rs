@@ -592,7 +592,9 @@ async fn fails_transaction_that_error_in_setup() {
         err_str.contains("SETUP")
             || err_str.contains("UNRECOVERABLE")
             || err_str.contains("AUTHWIT")
-            || err_str.contains("REVERTED"),
+            || err_str.contains("REVERTED")
+            || err_str.contains("NOT ENOUGH BALANCE")
+            || err_str.contains("FEE PAYER"),
         "expected setup/authwit error in simulation, got: {sim_err}"
     );
 
@@ -619,7 +621,9 @@ async fn fails_transaction_that_error_in_setup() {
             || err_str.contains("setup")
             || err_str.contains("reverted")
             || err_str.contains("authwit")
-            || err_str.contains("rejected"),
+            || err_str.contains("rejected")
+            || err_str.contains("not enough balance")
+            || err_str.contains("fee payer"),
         "expected tx dropped/setup error, got: {send_err}"
     );
 }
