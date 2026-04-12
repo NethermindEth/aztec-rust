@@ -304,6 +304,23 @@ pub fn load_no_constructor_artifact() -> Option<ContractArtifact> {
     ])
 }
 
+pub fn load_offchain_effect_artifact() -> Option<ContractArtifact> {
+    let root = repo_root();
+    try_load_artifact_from_candidates(&[
+        root.join("fixtures/offchain_effect_contract_compiled.json")
+    ])
+}
+
+pub fn load_updatable_artifact() -> Option<ContractArtifact> {
+    let root = repo_root();
+    try_load_artifact_from_candidates(&[root.join("fixtures/updatable_contract_compiled.json")])
+}
+
+pub fn load_updated_artifact() -> Option<ContractArtifact> {
+    let root = repo_root();
+    try_load_artifact_from_candidates(&[root.join("fixtures/updated_contract_compiled.json")])
+}
+
 // ---------------------------------------------------------------------------
 // Common error string constants
 // ---------------------------------------------------------------------------
