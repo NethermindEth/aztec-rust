@@ -40,35 +40,15 @@ async fn read_minter_slot(wallet: &TestWallet, token: AztecAddress, minter: &Azt
     read_public_u128(wallet, token, slot).await
 }
 
-// ---------------------------------------------------------------------------
-// Shared state
-// ---------------------------------------------------------------------------
-
-struct AccessControlState {
-    wallet: TestWallet,
+/// Deploy a fresh token contract with `admin` as the admin.
+async fn deploy_token(
+    wallet: &TestWallet,
     admin: AztecAddress,
-    other: AztecAddress,
-    token_artifact: ContractArtifact,
-    token_address: AztecAddress,
-}
-
-static SHARED_STATE: OnceCell<Option<AccessControlState>> = OnceCell::const_new();
-
-async fn get_shared_state() -> Option<&'static AccessControlState> {
-    SHARED_STATE
-        .get_or_init(|| async { init_shared_state().await })
-        .await
-        .as_ref()
-}
-
-async fn init_shared_state() -> Option<AccessControlState> {
-    let (wallet, admin) = setup_wallet(TEST_ACCOUNT_0).await?;
-    let other = imported_complete_address(TEST_ACCOUNT_1).address;
-
-    let token_artifact = load_token_artifact();
+) -> (AztecAddress, ContractArtifact) {
+    let artifact = load_token_artifact();
     let deploy = Contract::deploy(
-        &wallet,
-        token_artifact.clone(),
+        wallet,
+        artifact.clone(),
         vec![
             AbiValue::Field(Fr::from(admin)),
             AbiValue::String("AccessToken".to_owned()),
@@ -93,17 +73,38 @@ async fn init_shared_state() -> Option<AccessControlState> {
         .await
         .expect("deploy token");
 
-    Some(AccessControlState {
-        wallet,
-        admin,
-        other,
-        token_artifact,
-        token_address: result.instance.address,
-    })
+    (result.instance.address, artifact)
+}
+
+// ---------------------------------------------------------------------------
+// Shared wallet state (wallet is shared, but each test deploys its own token)
+// ---------------------------------------------------------------------------
+
+struct WalletState {
+    wallet: TestWallet,
+    admin: AztecAddress,
+    other: AztecAddress,
+}
+
+static WALLET_STATE: OnceCell<Option<WalletState>> = OnceCell::const_new();
+
+async fn get_wallet_state() -> Option<&'static WalletState> {
+    WALLET_STATE
+        .get_or_init(|| async {
+            let (wallet, admin) = setup_wallet(TEST_ACCOUNT_0).await?;
+            let other = imported_complete_address(TEST_ACCOUNT_1).address;
+            Some(WalletState {
+                wallet,
+                admin,
+                other,
+            })
+        })
+        .await
+        .as_ref()
 }
 
 // ===========================================================================
-// Tests
+// Tests — each deploys a fresh token (mirrors upstream beforeEach)
 // ===========================================================================
 
 /// TS: Set admin
@@ -111,12 +112,14 @@ async fn init_shared_state() -> Option<AccessControlState> {
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn set_admin() {
     let _guard = serial_guard();
-    let Some(s) = get_shared_state().await else {
+    let Some(s) = get_wallet_state().await else {
         return;
     };
 
+    let (token_address, artifact) = deploy_token(&s.wallet, s.admin).await;
+
     // Verify initial admin
-    let initial_admin = read_admin_slot(&s.wallet, s.token_address).await;
+    let initial_admin = read_admin_slot(&s.wallet, token_address).await;
     assert_eq!(
         initial_admin,
         Fr::from(s.admin),
@@ -125,8 +128,8 @@ async fn set_admin() {
 
     // Set new admin
     let call = build_call(
-        &s.token_artifact,
-        s.token_address,
+        &artifact,
+        token_address,
         "set_admin",
         vec![AbiValue::Field(Fr::from(s.other))],
     );
@@ -144,12 +147,8 @@ async fn set_admin() {
         .await
         .expect("set_admin");
 
-    let new_admin = read_admin_slot(&s.wallet, s.token_address).await;
+    let new_admin = read_admin_slot(&s.wallet, token_address).await;
     assert_eq!(new_admin, Fr::from(s.other), "admin should be updated");
-
-    // Note: admin was changed to s.other. We can't restore from s.other
-    // because it's not in our wallet's account provider. The set_admin
-    // is a one-way test — subsequent tests must account for this.
 }
 
 /// TS: Add minter as admin
@@ -157,13 +156,15 @@ async fn set_admin() {
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn add_minter_as_admin() {
     let _guard = serial_guard();
-    let Some(s) = get_shared_state().await else {
+    let Some(s) = get_wallet_state().await else {
         return;
     };
 
+    let (token_address, artifact) = deploy_token(&s.wallet, s.admin).await;
+
     let call = build_call(
-        &s.token_artifact,
-        s.token_address,
+        &artifact,
+        token_address,
         "set_minter",
         vec![AbiValue::Field(Fr::from(s.other)), AbiValue::Boolean(true)],
     );
@@ -181,7 +182,7 @@ async fn add_minter_as_admin() {
         .await
         .expect("set_minter(true)");
 
-    let is_minter = read_minter_slot(&s.wallet, s.token_address, &s.other).await;
+    let is_minter = read_minter_slot(&s.wallet, token_address, &s.other).await;
     assert!(is_minter != 0, "other should be minter");
 }
 
@@ -190,14 +191,16 @@ async fn add_minter_as_admin() {
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn revoke_minter_as_admin() {
     let _guard = serial_guard();
-    let Some(s) = get_shared_state().await else {
+    let Some(s) = get_wallet_state().await else {
         return;
     };
 
-    // First ensure other is a minter
+    let (token_address, artifact) = deploy_token(&s.wallet, s.admin).await;
+
+    // Add minter
     let add = build_call(
-        &s.token_artifact,
-        s.token_address,
+        &artifact,
+        token_address,
         "set_minter",
         vec![AbiValue::Field(Fr::from(s.other)), AbiValue::Boolean(true)],
     );
@@ -217,8 +220,8 @@ async fn revoke_minter_as_admin() {
 
     // Revoke
     let revoke = build_call(
-        &s.token_artifact,
-        s.token_address,
+        &artifact,
+        token_address,
         "set_minter",
         vec![AbiValue::Field(Fr::from(s.other)), AbiValue::Boolean(false)],
     );
@@ -236,7 +239,7 @@ async fn revoke_minter_as_admin() {
         .await
         .expect("revoke minter");
 
-    let is_minter = read_minter_slot(&s.wallet, s.token_address, &s.other).await;
+    let is_minter = read_minter_slot(&s.wallet, token_address, &s.other).await;
     assert_eq!(is_minter, 0, "other should no longer be minter");
 }
 
@@ -245,13 +248,15 @@ async fn revoke_minter_as_admin() {
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn set_admin_not_admin_fails() {
     let _guard = serial_guard();
-    let Some(s) = get_shared_state().await else {
+    let Some(s) = get_wallet_state().await else {
         return;
     };
 
+    let (token_address, artifact) = deploy_token(&s.wallet, s.admin).await;
+
     let call = build_call(
-        &s.token_artifact,
-        s.token_address,
+        &artifact,
+        token_address,
         "set_admin",
         vec![AbiValue::Field(Fr::from(s.other))],
     );
@@ -264,7 +269,7 @@ async fn set_admin_not_admin_fails() {
                 ..Default::default()
             },
             SendOptions {
-                from: s.other, // NOT admin
+                from: s.other,
                 ..Default::default()
             },
         )
@@ -286,13 +291,15 @@ async fn set_admin_not_admin_fails() {
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn revoke_minter_not_admin_fails() {
     let _guard = serial_guard();
-    let Some(s) = get_shared_state().await else {
+    let Some(s) = get_wallet_state().await else {
         return;
     };
 
+    let (token_address, artifact) = deploy_token(&s.wallet, s.admin).await;
+
     let call = build_call(
-        &s.token_artifact,
-        s.token_address,
+        &artifact,
+        token_address,
         "set_minter",
         vec![AbiValue::Field(Fr::from(s.other)), AbiValue::Boolean(false)],
     );
@@ -305,7 +312,7 @@ async fn revoke_minter_not_admin_fails() {
                 ..Default::default()
             },
             SendOptions {
-                from: s.other, // NOT admin
+                from: s.other,
                 ..Default::default()
             },
         )
