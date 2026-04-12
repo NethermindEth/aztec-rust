@@ -84,6 +84,9 @@ pub struct PrivateExecutionOracle<'a, N: AztecNode> {
     /// Block-header + tx-context fields from the entrypoint witness,
     /// shared with nested calls so that chain_id/version are correct.
     pub(crate) context_witness_prefix: Vec<Fr>,
+    /// Capsules from the tx request — used by protocol contract handlers
+    /// (e.g., contract class registerer) that need bytecode data.
+    capsules: Vec<aztec_core::tx::Capsule>,
 }
 
 fn decode_base64_sibling_path(encoded: &str) -> Result<Vec<Fr>, Error> {
@@ -287,17 +290,148 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             return Ok(None);
         }
 
+        // --- Contract Class Registerer: publish(Field,Field,Field) ---
+        let publish_class_selector =
+            aztec_core::abi::FunctionSelector::from_signature("publish(Field,Field,Field)");
+        if target_address
+            == aztec_core::constants::protocol_contract_address::contract_class_registry()
+            && selector == publish_class_selector
+        {
+            return self.handle_nested_publish_class(
+                target_address,
+                selector,
+                encoded_args,
+                circuit_side_effect_counter,
+            );
+        }
+
+        // --- Contract Instance Registry: publish_for_public_execution ---
         let publish_instance_selector = aztec_core::abi::FunctionSelector::from_signature(
             "publish_for_public_execution(Field,(Field),Field,(((Field,Field,bool)),((Field,Field,bool)),((Field,Field,bool)),((Field,Field,bool))),bool)",
         );
-
         if target_address
-            != aztec_core::constants::protocol_contract_address::contract_instance_registry()
-            || selector != publish_instance_selector
+            == aztec_core::constants::protocol_contract_address::contract_instance_registry()
+            && selector == publish_instance_selector
         {
-            return Ok(None);
+            return self.handle_nested_publish_instance(
+                target_address,
+                selector,
+                encoded_args,
+                circuit_side_effect_counter,
+            );
         }
 
+        Ok(None)
+    }
+
+    /// Handle nested call to contract class registerer `publish(Field,Field,Field)`.
+    ///
+    /// Mirrors the top-level `protocol_private_execution` handler in embedded_pxe.rs.
+    /// Emits a nullifier (class_id) and a contract class log with bytecode.
+    fn handle_nested_publish_class(
+        &mut self,
+        target_address: AztecAddress,
+        selector: aztec_core::abi::FunctionSelector,
+        encoded_args: &[Fr],
+        circuit_side_effect_counter: u32,
+    ) -> Result<Option<Vec<Vec<Fr>>>, Error> {
+        if encoded_args.len() < 3 {
+            return Err(Error::InvalidData(format!(
+                "nested publish args too short: {}",
+                encoded_args.len()
+            )));
+        }
+
+        let artifact_hash = encoded_args[0];
+        let private_functions_root = encoded_args[1];
+        let public_bytecode_commitment = encoded_args[2];
+        let class_id = aztec_core::hash::compute_contract_class_id(
+            artifact_hash,
+            private_functions_root,
+            public_bytecode_commitment,
+        );
+
+        // Load bytecode fields from capsules seeded from the tx request.
+        let bytecode_fields = self
+            .capsules
+            .iter()
+            .find(|capsule| {
+                capsule.contract_address
+                    == aztec_core::constants::protocol_contract_address::contract_class_registry()
+                    && capsule.storage_slot
+                        == aztec_core::constants::contract_class_registry_bytecode_capsule_slot()
+            })
+            .map(|capsule| capsule.data.clone())
+            .unwrap_or_default();
+
+        // Build emitted fields: magic + class_id + version + artifact_hash +
+        // private_functions_root + bytecode_fields
+        let mut emitted_fields = Vec::with_capacity(
+            aztec_core::constants::MAX_PACKED_PUBLIC_BYTECODE_SIZE_IN_FIELDS + 5,
+        );
+        emitted_fields.push(aztec_core::constants::contract_class_published_magic_value());
+        emitted_fields.push(class_id);
+        emitted_fields.push(Fr::from(1u64)); // version
+        emitted_fields.push(artifact_hash);
+        emitted_fields.push(private_functions_root);
+        emitted_fields.extend(bytecode_fields);
+
+        let nullifier_counter = circuit_side_effect_counter;
+        let class_log_counter = nullifier_counter.saturating_add(1);
+        let end_side_effect_counter = class_log_counter.saturating_add(1);
+
+        // Emit nullifier: class_id (prevents duplicate registration)
+        self.nullifiers.push(ScopedNullifier {
+            nullifier: Nullifier {
+                value: class_id,
+                note_hash: Fr::zero(),
+                counter: nullifier_counter,
+            },
+            contract_address: target_address,
+        });
+
+        // Emit contract class log (NOT a private log)
+        self.contract_class_logs.push(CountedContractClassLog {
+            log: ContractClassLog {
+                contract_address: target_address,
+                emitted_length: emitted_fields.len() as u32,
+                fields: emitted_fields,
+            },
+            counter: class_log_counter,
+        });
+
+        self.side_effect_counter = self.side_effect_counter.max(end_side_effect_counter);
+
+        let returns_hash = aztec_core::hash::compute_var_args_hash(&[]);
+        self.execution_cache.entry(returns_hash).or_default();
+        self.nested_results.push(PrivateCallExecutionResult {
+            contract_address: target_address,
+            call_context: CallContext {
+                msg_sender: self.contract_address,
+                contract_address: target_address,
+                function_selector: selector.to_field(),
+                is_static_call: false,
+            },
+            start_side_effect_counter: nullifier_counter,
+            end_side_effect_counter,
+            min_revertible_side_effect_counter: nullifier_counter,
+            ..Default::default()
+        });
+
+        Ok(Some(vec![vec![
+            Fr::from(u64::from(end_side_effect_counter)),
+            returns_hash,
+        ]]))
+    }
+
+    /// Handle nested call to contract instance registry `publish_for_public_execution`.
+    fn handle_nested_publish_instance(
+        &mut self,
+        target_address: AztecAddress,
+        selector: aztec_core::abi::FunctionSelector,
+        encoded_args: &[Fr],
+        circuit_side_effect_counter: u32,
+    ) -> Result<Option<Vec<Vec<Fr>>>, Error> {
         if encoded_args.len() < 16 {
             return Err(Error::InvalidData(format!(
                 "nested publish_for_public_execution args too short: {}",
@@ -521,6 +655,7 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             public_function_calldata: Vec::new(),
             nested_results: Vec::new(),
             context_witness_prefix: Vec::new(),
+            capsules: Vec::new(),
         }
     }
 
@@ -536,6 +671,12 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
     /// Set auth witnesses for this execution context.
     pub fn set_auth_witnesses(&mut self, witnesses: Vec<(Fr, Vec<Fr>)>) {
         self.auth_witnesses = witnesses;
+    }
+
+    /// Set capsules from the tx request so protocol contract handlers can
+    /// access auxiliary data (e.g., packed bytecode for class registration).
+    pub fn set_capsules(&mut self, capsules: Vec<aztec_core::tx::Capsule>) {
+        self.capsules = capsules;
     }
 
     /// Pre-populate the execution cache with hashed values from the tx request.
@@ -1393,10 +1534,27 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             .and_then(|v| v.first())
             .ok_or_else(|| Error::InvalidData("missing L1→L2 message hash".into()))?;
 
+        // Use the anchor block number from the execution context (matching
+        // upstream PXE which uses the historical block header's block number).
+        let block_number = self
+            .block_header
+            .pointer("/globalVariables/blockNumber")
+            .and_then(|v| v.as_u64())
+            .or_else(|| {
+                self.block_header
+                    .get("blockNumber")
+                    .and_then(|v| v.as_u64())
+            })
+            .unwrap_or(0);
         let witness_json = self
             .node
-            .get_l1_to_l2_message_membership_witness(0, msg_hash)
-            .await?;
+            .get_l1_to_l2_message_membership_witness(block_number, msg_hash)
+            .await?
+            .ok_or_else(|| {
+                Error::InvalidData(format!(
+                    "L1→L2 message membership witness not found for {msg_hash} at block {block_number}"
+                ))
+            })?;
 
         // The node returns: [leafIndex, siblingPathArray]
         // We need to return: [[leafIndex], [path[0]], [path[1]], ..., [path[height-1]]]
@@ -1801,6 +1959,8 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
         nested_oracle.min_revertible_side_effect_counter = self.min_revertible_side_effect_counter;
         // Share context witness prefix (block header + tx_context) for nested calls.
         nested_oracle.context_witness_prefix = self.context_witness_prefix.clone();
+        // Share capsules so nested protocol contract handlers can access bytecode data.
+        nested_oracle.capsules = self.capsules.clone();
         // Share parent state so nested calls can see notes/hashes from sibling
         // calls. Track inherited sizes to avoid duplicating during merge.
         nested_oracle.new_notes = self.new_notes.clone();

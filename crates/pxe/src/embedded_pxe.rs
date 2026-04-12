@@ -1904,6 +1904,18 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
             oracle.set_auth_witnesses(pairs);
         }
 
+        // Seed capsules from the tx request so protocol contract handlers
+        // (e.g., contract class registerer) can access bytecode data.
+        if let Some(capsules) = tx_request
+            .data
+            .get("capsules")
+            .cloned()
+            .map(serde_json::from_value::<Vec<aztec_core::tx::Capsule>>)
+            .transpose()?
+        {
+            oracle.set_capsules(capsules);
+        }
+
         // Store block-header + tx-context for nested calls
         let context_inputs_size = artifact.private_context_inputs_size(&function_name);
         if context_inputs_size > 5 {
@@ -1962,8 +1974,8 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
         let contract_class_log_fields = entrypoint_result
             .contract_class_logs
             .iter()
-            .map(|log| aztec_core::tx::ContractClassLogFields {
-                fields: log.log.fields.clone(),
+            .map(|log| {
+                aztec_core::tx::ContractClassLogFields::from_emitted_fields(log.log.fields.clone())
             })
             .collect();
         let expiration_timestamp = Self::extract_expiration_timestamp_from_witness(

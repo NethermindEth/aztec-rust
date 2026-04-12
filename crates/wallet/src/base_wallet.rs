@@ -568,13 +568,24 @@ impl<P: Pxe, N: AztecNode, A: AccountProvider> Wallet for BaseWallet<P, N, A> {
         exec: ExecutionPayload,
         opts: SimulateOptions,
     ) -> Result<TxSimulationResult, Error> {
-        let exec = Self::merge_execution_payload(exec, &opts.auth_witnesses, &opts.capsules);
+        let mut exec = Self::merge_execution_payload(exec, &opts.auth_witnesses, &opts.capsules);
+        if let Some(ref fee_payload) = opts.fee_execution_payload {
+            exec.calls.extend(fee_payload.calls.clone());
+            exec.auth_witnesses
+                .extend(fee_payload.auth_witnesses.clone());
+            exec.capsules.extend(fee_payload.capsules.clone());
+            exec.extra_hashed_args
+                .extend(fee_payload.extra_hashed_args.clone());
+            if let Some(payer) = fee_payload.fee_payer {
+                exec.fee_payer = Some(payer);
+            }
+        }
         let chain_info = self.get_chain_info().await?;
         let gas_settings = opts.gas_settings.clone().unwrap_or_default();
 
         let tx_request = self
             .accounts
-            .create_tx_execution_request(&opts.from, exec, gas_settings, &chain_info, None)
+            .create_tx_execution_request(&opts.from, exec, gas_settings, &chain_info, None, None)
             .await?;
 
         let scopes = Self::build_scopes(&opts.from, &opts.additional_scopes);
@@ -659,7 +670,7 @@ impl<P: Pxe, N: AztecNode, A: AccountProvider> Wallet for BaseWallet<P, N, A> {
 
         let tx_request = self
             .accounts
-            .create_tx_execution_request(&opts.from, exec, gas_settings, &chain_info, None)
+            .create_tx_execution_request(&opts.from, exec, gas_settings, &chain_info, None, None)
             .await?;
 
         let scopes = Self::build_scopes(&opts.from, &opts.additional_scopes);
@@ -690,14 +701,33 @@ impl<P: Pxe, N: AztecNode, A: AccountProvider> Wallet for BaseWallet<P, N, A> {
         exec: ExecutionPayload,
         opts: SendOptions,
     ) -> Result<SendResult, Error> {
-        let exec = Self::merge_execution_payload(exec, &opts.auth_witnesses, &opts.capsules);
+        let mut exec = Self::merge_execution_payload(exec, &opts.auth_witnesses, &opts.capsules);
+        // Merge fee execution payload (e.g., FeeJuicePaymentMethodWithClaim)
+        if let Some(ref fee_payload) = opts.fee_execution_payload {
+            exec.calls.extend(fee_payload.calls.clone());
+            exec.auth_witnesses
+                .extend(fee_payload.auth_witnesses.clone());
+            exec.capsules.extend(fee_payload.capsules.clone());
+            exec.extra_hashed_args
+                .extend(fee_payload.extra_hashed_args.clone());
+            if let Some(payer) = fee_payload.fee_payer {
+                exec.fee_payer = Some(payer);
+            }
+        }
         let chain_info = self.get_chain_info().await?;
         let gas_settings = opts.gas_settings.clone().unwrap_or_default();
         let fee_payer = exec.fee_payer;
 
         let tx_request = self
             .accounts
-            .create_tx_execution_request(&opts.from, exec, gas_settings, &chain_info, fee_payer)
+            .create_tx_execution_request(
+                &opts.from,
+                exec,
+                gas_settings,
+                &chain_info,
+                fee_payer,
+                opts.fee_execution_payload.as_ref().map(|_| 2u8), // FeeJuiceWithClaim when fee payload present
+            )
             .await?;
 
         let scopes = Self::build_scopes(&opts.from, &opts.additional_scopes);
@@ -1374,6 +1404,7 @@ mod tests {
             _gas_settings: GasSettings,
             _chain_info: &ChainInfo,
             _fee_payer: Option<AztecAddress>,
+            _fee_payment_method: Option<u8>,
         ) -> Result<TxExecutionRequest, Error> {
             if !self.accounts.iter().any(|a| a.item == *from) {
                 return Err(Error::InvalidData(format!("account not found: {from}")));

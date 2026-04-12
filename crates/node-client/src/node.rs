@@ -313,7 +313,7 @@ pub trait AztecNode: Send + Sync {
         &self,
         block_number: u64,
         entry_key: &Fr,
-    ) -> Result<serde_json::Value, Error>;
+    ) -> Result<Option<serde_json::Value>, Error>;
 
     /// Get the checkpoint number at which an L1-to-L2 message becomes available.
     ///
@@ -579,9 +579,9 @@ impl AztecNode for HttpNodeClient {
         &self,
         block_number: u64,
         entry_key: &Fr,
-    ) -> Result<serde_json::Value, Error> {
+    ) -> Result<Option<serde_json::Value>, Error> {
         self.transport
-            .call(
+            .call_optional(
                 "node_getL1ToL2MessageMembershipWitness",
                 serde_json::json!([block_param_json(block_number), entry_key]),
             )
@@ -1240,8 +1240,8 @@ mod tests {
             &self,
             _block_number: u64,
             _entry_key: &Fr,
-        ) -> Result<serde_json::Value, Error> {
-            Ok(serde_json::Value::Null)
+        ) -> Result<Option<serde_json::Value>, Error> {
+            Ok(None)
         }
         async fn simulate_public_calls(
             &self,
