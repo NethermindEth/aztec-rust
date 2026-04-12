@@ -687,7 +687,7 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             "getNullifierMembershipWitness" => self.get_nullifier_membership_witness(&args).await,
             "getPublicDataWitness" => self.get_public_data_witness(&args).await,
             "getBlockHashMembershipWitness" => self.get_block_hash_membership_witness(&args).await,
-            "getL1ToL2MembershipWitness" => Ok(vec![]),
+            "getL1ToL2MembershipWitness" => self.get_l1_to_l2_membership_witness(&args).await,
 
             // Note discovery
             "fetchTaggedLogs" | "bulkRetrieveLogs" => Ok(vec![]),
@@ -1381,6 +1381,49 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             self.public_call_requests.push(request);
         }
         Ok(vec![])
+    }
+
+    async fn get_l1_to_l2_membership_witness(
+        &self,
+        args: &[Vec<Fr>],
+    ) -> Result<Vec<Vec<Fr>>, Error> {
+        // args: [contract_address, msg_hash, secret]
+        let msg_hash = args
+            .get(1)
+            .and_then(|v| v.first())
+            .ok_or_else(|| Error::InvalidData("missing L1→L2 message hash".into()))?;
+
+        let witness_json = self
+            .node
+            .get_l1_to_l2_message_membership_witness(0, msg_hash)
+            .await?;
+
+        // The node returns: [leafIndex, siblingPathArray]
+        // We need to return: [[leafIndex], [path[0]], [path[1]], ..., [path[height-1]]]
+        let leaf_index = witness_json
+            .get(0)
+            .and_then(|v| v.as_str())
+            .and_then(|s| Fr::from_hex(s).ok())
+            .or_else(|| witness_json.get(0).and_then(|v| v.as_u64()).map(Fr::from))
+            .unwrap_or(Fr::zero());
+
+        // Parse sibling path into a flat Vec<Fr>
+        let mut sibling_path = Vec::with_capacity(aztec_core::constants::L1_TO_L2_MSG_TREE_HEIGHT);
+        if let Some(path_arr) = witness_json.get(1).and_then(|v| v.as_array()) {
+            for node in path_arr {
+                let fr = if let Some(s) = node.as_str() {
+                    Fr::from_hex(s).unwrap_or(Fr::zero())
+                } else {
+                    Fr::zero()
+                };
+                sibling_path.push(fr);
+            }
+        }
+        // Pad to tree height
+        sibling_path.resize(aztec_core::constants::L1_TO_L2_MSG_TREE_HEIGHT, Fr::zero());
+
+        // Return as 2 ACVM slots: [leafIndex] and [path[0..36]]
+        Ok(vec![vec![leaf_index], sibling_path])
     }
 
     async fn get_note_hash_membership_witness(
