@@ -594,6 +594,12 @@ impl<P: Pxe, N: AztecNode, A: AccountProvider> Wallet for BaseWallet<P, N, A> {
         // The local PXE only executes the private part; public functions are
         // executed by the sequencer, so we need the node's AVM simulator to
         // catch public-side errors (e.g. duplicate nullifiers, assertions).
+        // Extract gas_used from the PXE simulation (private-phase only)
+        let mut gas_used = result.data.get("gasUsed").map(|g| crate::fee::Gas {
+            da_gas: g.get("daGas").and_then(|v| v.as_u64()).unwrap_or(0),
+            l2_gas: g.get("l2Gas").and_then(|v| v.as_u64()).unwrap_or(0),
+        });
+
         let proven = self.pxe.prove_tx(&tx_request, scopes).await?;
         let tx = proven.to_tx();
         if !tx.public_function_calldata.is_empty() {
@@ -608,11 +614,19 @@ impl<P: Pxe, N: AztecNode, A: AccountProvider> Wallet for BaseWallet<P, N, A> {
                     return_values = public_return_values.clone();
                 }
             }
+            // Update gas_used with total gas from public simulation
+            // (includes both private and public phase gas)
+            if let Some(total_gas) = simulation.get("gasUsed").and_then(|g| g.get("totalGas")) {
+                gas_used = Some(crate::fee::Gas {
+                    da_gas: total_gas.get("daGas").and_then(|v| v.as_u64()).unwrap_or(0),
+                    l2_gas: total_gas.get("l2Gas").and_then(|v| v.as_u64()).unwrap_or(0),
+                });
+            }
         }
 
         Ok(TxSimulationResult {
             return_values,
-            gas_used: None, // TODO: extract from result.data (Step 9)
+            gas_used,
         })
     }
 
