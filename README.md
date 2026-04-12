@@ -3,6 +3,9 @@
 Rust SDK for the [Aztec Network](https://aztec.network). Provides a client library for interacting with Aztec nodes, managing wallets and accounts, deploying contracts, and sending transactions. The design mirrors the upstream [`aztec.js`](https://github.com/AztecProtocol/aztec-packages/tree/master/yarn-project/aztec.js) package.
 
 > **Status:** Active development (v0.4.0). APIs may still change.
+>
+> **Not yet on crates.io** — depends on noir `1.0.0-beta.18` which is only available via git.
+> Install from GitHub as shown below.
 
 ## Features
 
@@ -21,12 +24,26 @@ Rust SDK for the [Aztec Network](https://aztec.network). Provides a client libra
 
 ## Installation
 
-Add `aztec-rs` to your `Cargo.toml`:
+`aztec-rs` is not yet published to crates.io because it depends on noir crates
+(`acvm`, `brillig_vm`, `acir`, `noirc_abi`, `bn254_blackbox_solver`) at
+`1.0.0-beta.18`, which are only available as pre-release builds from the
+[noir](https://github.com/noir-lang/noir) repository. This matches the same
+noir version pinned by upstream
+[aztec-packages](https://github.com/AztecProtocol/aztec-packages) (commit
+`2db78f8894936db05c53430f364360ac9cc5c61f`).
+
+Add `aztec-rs` as a git dependency in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-aztec-rs = "0.4.0"
+aztec-rs = { git = "https://github.com/NethermindEth/aztec-rust.git", tag = "v0.4.0" }
 ```
+
+The noir git patches are declared in the workspace `Cargo.toml` and apply
+automatically when Cargo resolves the dependency — no `[patch.crates-io]`
+needed in your project. Once noir publishes stable releases to crates.io,
+`aztec-rs` will be published there too and a simple version dependency will
+work.
 
 ## Quick Start
 
