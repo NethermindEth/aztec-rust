@@ -21,11 +21,11 @@ tokio = { version = "1", features = ["sync", "process", "fs", "macros"] }
 tracing = "0.1"
 
 # Noir ACVM — pinned to the exact noir commit matching compiled contract artifacts
-acvm = { git = "https://github.com/noir-lang/noir.git", rev = "2db78f8894936db05c53430f364360ac9cc5c61f", package = "acvm" }
-brillig_vm = { git = "https://github.com/noir-lang/noir.git", rev = "2db78f8894936db05c53430f364360ac9cc5c61f", package = "brillig_vm" }
-acir = { git = "https://github.com/noir-lang/noir.git", rev = "2db78f8894936db05c53430f364360ac9cc5c61f", package = "acir" }
-noirc_abi = { git = "https://github.com/noir-lang/noir.git", rev = "2db78f8894936db05c53430f364360ac9cc5c61f", package = "noirc_abi" }
-bn254_blackbox_solver = { git = "https://github.com/noir-lang/noir.git", rev = "2db78f8894936db05c53430f364360ac9cc5c61f", package = "bn254_blackbox_solver" }
+acvm = { version = "1.0.0-beta.18", git = "https://github.com/noir-lang/noir.git", rev = "2db78f8894936db05c53430f364360ac9cc5c61f", package = "acvm" }
+brillig_vm = { version = "1.0.0-beta.18", git = "https://github.com/noir-lang/noir.git", rev = "2db78f8894936db05c53430f364360ac9cc5c61f", package = "brillig_vm" }
+acir = { version = "1.0.0-beta.18", git = "https://github.com/noir-lang/noir.git", rev = "2db78f8894936db05c53430f364360ac9cc5c61f", package = "acir" }
+noirc_abi = { version = "1.0.0-beta.18", git = "https://github.com/noir-lang/noir.git", rev = "2db78f8894936db05c53430f364360ac9cc5c61f", package = "noirc_abi" }
+bn254_blackbox_solver = { version = "1.0.0-beta.18", git = "https://github.com/noir-lang/noir.git", rev = "2db78f8894936db05c53430f364360ac9cc5c61f", package = "bn254_blackbox_solver" }
 flate2 = "1"
 
 [dev-dependencies]

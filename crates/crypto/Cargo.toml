@@ -9,7 +9,7 @@ license = "Apache-2.0"
 aztec-core = { path = "../core", version = "0.4.0" }
 blake2 = "0.10"
 sha2 = "0.10"
-bn254_blackbox_solver = { git = "https://github.com/noir-lang/noir.git", rev = "2db78f8894936db05c53430f364360ac9cc5c61f", package = "bn254_blackbox_solver" }
+bn254_blackbox_solver = { version = "1.0.0-beta.18", git = "https://github.com/noir-lang/noir.git", rev = "2db78f8894936db05c53430f364360ac9cc5c61f", package = "bn254_blackbox_solver" }
 ark-grumpkin = "0.5"
 ark-ec = "0.5"
 ark-ff = "0.5"
