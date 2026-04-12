@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-12
+
+### Added
+
+- **Embedded PXE runtime** — full in-process private execution engine replacing the HTTP PXE client (`aztec-pxe`)
+  - Private kernel execution prover with barretenberg integration
+  - Persistent stores: NoteStore (scopes, status filtering, rollback), ContractStore, AddressStore, PrivateEventStore, sender/recipient tagging stores
+  - Block sync service with proven anchor blocks
+  - Execution oracle with note select clause filtering, nested private function calls, and auth witness propagation
+  - L1-to-L2 membership witness resolution
+  - Key validation, AES decrypt, shared secret derivation, and witness extraction
+  - Pending note support with consumed nullifier tracking and transient squashing
+  - Scope isolation for multi-account access control
+  - Private return value extraction via PCPI witness and execution cache
+  - Side-effect counter sync and sorted public calldata
+- **L1↔L2 cross-chain messaging** (`aztec-ethereum`)
+  - Messaging types: `L1Actor`, `L2Actor`, `L1ToL2Message`, `L2Claim`, `L2AmountClaim`, `generate_claim_secret`
+  - `EthClient` — minimal Ethereum JSON-RPC client for Inbox/Outbox contract interaction
+  - `send_l1_to_l2_message` with `MessageSent` event log parsing
+  - `L1ContractAddresses` parsed from node info
+  - Cross-chain readiness utilities: `is_l1_to_l2_message_ready`, `wait_for_l1_to_l2_message_ready`
+- `compute_l1_to_l2_message_nullifier` and `compute_l2_to_l1_message_hash` hash functions (`aztec-core`)
+- `MESSAGE_NULLIFIER` domain separator, `L1_TO_L2_MSG_SUBTREE_HEIGHT`, `NUMBER_OF_L1_L2_MESSAGES_PER_ROLLUP` constants (`aztec-core`)
+- `sha256_to_field_pub` — public cross-crate SHA-256 to field conversion (`aztec-core`)
+- Protocol constants, kernel types, and crypto primitives for embedded PXE (`aztec-core`)
+- Silo note-hash and nullifier domain separators (`aztec-core`)
+- `pedersen_hash` and corrected Schnorr signing to match Noir scheme (`aztec-crypto`)
+- `get_l1_to_l2_message_checkpoint` on `AztecNode` trait and `HttpNodeClient` (`aztec-node-client`)
+- Phase 2 RPC methods on `AztecNode` trait: simulation, state queries, tree lookups (`aztec-node-client`)
+- `cross_chain` and `l1_client` modules re-exported from `aztec-rs` umbrella crate
+- Public authwit validity check via direct storage read (`aztec-wallet`)
+- Public call simulation on node during `simulate_tx` (`aztec-wallet`)
+- Gas extraction from private and public tx simulation in `BaseWallet`
+- Tx validation and preflight simulation (`aztec-wallet`, `aztec-contract`)
+- Multi-account shared encryption key support (`aztec-account`)
+- Auth witness signature verification in PXE (`aztec-pxe`)
+- AuthRegistry public call support and nested call context sharing (`aztec-pxe`)
+- 30 e2e test files covering: token transfers (private, public, shielding, unshielding), minting, burning, access control, authwit, account contracts, deploy methods, private initialization, contract class registration, contract updates, scope isolation, note getters, pending note hashes, double spend, key management, static calls, partial notes, nested calls (private call, private enqueue), multi-account encryption, pruned blocks, event logs, fee payments (gas estimation, fee juice, private fees), offchain effects, and cross-chain messaging (L1→L2, L2→L1, token bridge private)
+- Shared e2e test utilities module with wallet setup, token deployment, signing key note helpers, and Ethereum address helpers
+
+### Changed
+
+- Architecture switched from HTTP PXE client to embedded in-process PXE — private execution now runs locally without requiring a separate PXE server
+- `RpcTransport` exposes `url` and `timeout` accessors (`aztec-rpc`)
+- `is_static` renamed to `is_private` in tx request hash computation (`aztec-core`)
+- ABI encoder accepts Field values for integer parameters (`aztec-core`)
+- PXE handles uncompressed ACIR bytecode (`aztec-pxe`)
+
+### Fixed
+
+- Nullifier siloing, kernel ordering, and note uniquification in PXE
+- Note nullifier sync and contract sync cache handling
+- Tag siloing and note sync validation for sender discovery
+- Auth witness payload hashing
+- Anchor header validation with extended wait and proven block sync
+- Private transfer recursion error reporting
+- Token burn authwit error handling
+- State var and static call runtime handling
+- Constructor argument pre-encoding for correct field padding
+- Event selector position and client-side log filtering
+- `findLeavesIndexes` response parsing (InBlock wrapper, string-encoded numbers, numeric tree_id)
+- Nested protocol private call handling in PXE
+
 ## [0.3.2] - 2026-04-08
 
 ### Added
@@ -301,7 +364,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Implementation plan and spec documents
 
-[Unreleased]: https://github.com/NethermindEth/aztec-rust/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/NethermindEth/aztec-rust/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/NethermindEth/aztec-rust/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/NethermindEth/aztec-rust/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/NethermindEth/aztec-rust/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/NethermindEth/aztec-rust/compare/v0.2.5...v0.3.0

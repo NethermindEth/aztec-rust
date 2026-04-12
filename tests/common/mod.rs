@@ -345,7 +345,7 @@ pub fn make_signing_key_note(
 ) -> StoredNote {
     let signing_pk = account_contract.signing_public_key();
     // Construct a deterministic but unique siloed nullifier from the seed.
-    let mut hex = format!("0xdeadbeef{:0>56x}", nullifier_seed);
+    let mut hex = format!("0xdeadbeef{nullifier_seed:0>56x}");
     // Ensure the hex string is exactly 66 chars (0x + 64 hex digits).
     hex.truncate(66);
     StoredNote {
@@ -628,7 +628,7 @@ pub async fn register_contract_on_pxe(
 
 /// Deploys a contract and returns its address, artifact, and instance.
 pub async fn deploy_contract(
-    wallet: &(impl Wallet + Send + Sync),
+    wallet: &impl Wallet,
     artifact: ContractArtifact,
     constructor_args: Vec<AbiValue>,
     from: AztecAddress,
@@ -694,7 +694,7 @@ pub fn build_call(
 
 /// Sends a single contract method call as a transaction.
 pub async fn send_token_method(
-    wallet: &(impl Wallet + Send + Sync),
+    wallet: &impl Wallet,
     artifact: &ContractArtifact,
     token_address: AztecAddress,
     method_name: &str,
@@ -719,7 +719,7 @@ pub async fn send_token_method(
 
 /// Sends a single [`FunctionCall`] as a transaction.
 pub async fn send_call(
-    wallet: &(impl Wallet + Send + Sync),
+    wallet: &impl Wallet,
     call: FunctionCall,
     from: AztecAddress,
 ) {
@@ -741,7 +741,7 @@ pub async fn send_call(
 /// Sends a call and asserts it fails with an error containing one of the
 /// expected fragments (case-insensitive).
 pub async fn send_call_should_fail(
-    wallet: &(impl Wallet + Send + Sync),
+    wallet: &impl Wallet,
     call: FunctionCall,
     from: AztecAddress,
     expected_fragments: &[&str],
@@ -766,15 +766,14 @@ pub async fn send_call_should_fail(
         .any(|frag| err_str.contains(&frag.to_lowercase()));
     assert!(
         matches,
-        "expected one of {:?}, got: {}",
-        expected_fragments, err
+        "expected one of {expected_fragments:?}, got: {err}",
     );
 }
 
 /// Simulates a call and asserts it fails with an error containing one of the
 /// expected fragments (case-insensitive).
 pub async fn simulate_should_fail(
-    wallet: &(impl Wallet + Send + Sync),
+    wallet: &impl Wallet,
     call: FunctionCall,
     from: AztecAddress,
     expected_fragments: &[&str],
@@ -799,8 +798,7 @@ pub async fn simulate_should_fail(
         .any(|frag| err_str.contains(&frag.to_lowercase()));
     assert!(
         matches,
-        "expected one of {:?}, got: {}",
-        expected_fragments, err
+        "expected one of {expected_fragments:?}, got: {err}",
     );
 }
 
@@ -811,7 +809,7 @@ pub async fn simulate_should_fail(
 /// Execute a utility function and return the raw first-field value as `u64`.
 #[allow(clippy::cast_possible_truncation)]
 pub async fn call_utility_u64(
-    wallet: &(impl Wallet + Send + Sync),
+    wallet: &impl Wallet,
     artifact: &ContractArtifact,
     contract_address: AztecAddress,
     method_name: &str,
@@ -851,7 +849,7 @@ pub async fn call_utility_u64(
 
 /// Execute a utility function and return the result as `u128`.
 pub async fn call_utility_u128(
-    wallet: &(impl Wallet + Send + Sync),
+    wallet: &impl Wallet,
     artifact: &ContractArtifact,
     contract_address: AztecAddress,
     method_name: &str,
@@ -863,7 +861,7 @@ pub async fn call_utility_u128(
 
 /// Execute a utility function and return the result as `bool`.
 pub async fn call_utility_bool(
-    wallet: &(impl Wallet + Send + Sync),
+    wallet: &impl Wallet,
     artifact: &ContractArtifact,
     contract_address: AztecAddress,
     method_name: &str,
@@ -924,6 +922,7 @@ pub fn abi_selector(selector: FunctionSelector) -> AbiValue {
 pub use aztec_rs::types::EthAddress;
 
 /// Parse a hex string (with or without 0x) into a 20-byte Ethereum address.
+#[allow(clippy::cast_possible_truncation)]
 pub fn parse_eth_address(hex_str: &str) -> EthAddress {
     let hex_str = hex_str.strip_prefix("0x").unwrap_or(hex_str);
     let mut bytes = [0u8; 20];
@@ -996,7 +995,7 @@ pub async fn public_balance(
 /// Deploy the compiled token contract, optionally minting an initial private
 /// balance to `admin`. Mirrors upstream `TokenContract.deploy(admin, ...)`.
 pub async fn deploy_token(
-    wallet: &(impl Wallet + Send + Sync),
+    wallet: &impl Wallet,
     admin: AztecAddress,
     initial_balance: u64,
 ) -> (AztecAddress, ContractArtifact, ContractInstanceWithAddress) {
@@ -1031,7 +1030,7 @@ pub async fn deploy_token(
 
 /// Call `mint_to_private` on a token contract.
 pub async fn mint_tokens_to_private(
-    wallet: &(impl Wallet + Send + Sync),
+    wallet: &impl Wallet,
     token_address: AztecAddress,
     artifact: &ContractArtifact,
     from: AztecAddress,
@@ -1054,7 +1053,7 @@ pub async fn mint_tokens_to_private(
 
 /// Call `balance_of_private` and assert the result equals `expected`.
 pub async fn expect_token_balance(
-    wallet: &(impl Wallet + Send + Sync),
+    wallet: &impl Wallet,
     token_address: AztecAddress,
     artifact: &ContractArtifact,
     owner: AztecAddress,
