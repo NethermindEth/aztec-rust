@@ -332,6 +332,7 @@ async fn prove_parent_method(state: &TestCase, method_name: &str) -> ProvenInter
             GasSettings::default(),
             &chain_info,
             None,
+            None,
         )
         .await
         .expect("create tx execution request");

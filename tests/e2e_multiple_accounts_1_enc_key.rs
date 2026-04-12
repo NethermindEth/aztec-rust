@@ -181,6 +181,7 @@ impl AccountProvider for MultiAccountProvider {
         gas_settings: aztec_rs::fee::GasSettings,
         chain_info: &ChainInfo,
         fee_payer: Option<AztecAddress>,
+        fee_payment_method: Option<u8>,
     ) -> Result<aztec_rs::pxe::TxExecutionRequest, aztec_rs::Error> {
         let entry = self.find(from)?;
         let contract =
@@ -189,6 +190,7 @@ impl AccountProvider for MultiAccountProvider {
         let options = EntrypointOptions {
             fee_payer,
             gas_settings: Some(gas_settings.clone()),
+            fee_payment_method,
         };
         let tx_request = account
             .create_tx_execution_request(exec, gas_settings, chain_info, options)

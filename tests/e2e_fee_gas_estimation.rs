@@ -131,10 +131,7 @@ async fn init_shared_state() -> Option<GasEstimationState> {
         let fpc_deploy = Contract::deploy(
             &wallet,
             fpc_art.clone(),
-            vec![
-                AbiValue::Field(Fr::from(token_address)),
-                AbiValue::Field(Fr::from(alice_address)),
-            ],
+            vec![abi_address(token_address), abi_address(alice_address)],
             None,
         )
         .expect("deploy fpc builder");

@@ -304,6 +304,14 @@ pub fn load_no_constructor_artifact() -> Option<ContractArtifact> {
     ])
 }
 
+pub fn load_sponsored_fpc_artifact() -> Option<ContractArtifact> {
+    let root = repo_root();
+    try_load_artifact_from_candidates(&[
+        root.join("fixtures/sponsored_fpc_contract_compiled.json"),
+        root.join("../aztec-packages/noir-projects/noir-contracts/target/sponsored_fpc_contract-SponsoredFPC.json"),
+    ])
+}
+
 pub fn load_offchain_effect_artifact() -> Option<ContractArtifact> {
     let root = repo_root();
     try_load_artifact_from_candidates(&[
@@ -437,10 +445,50 @@ pub async fn setup_wallet(account: ImportedTestAccount) -> Option<(TestWallet, A
 
     seed_signing_key_note(&pxe, &account_contract, complete.address, 1).await;
 
+    // Register protocol contracts so the ACVM can execute them
+    register_protocol_contracts(&pxe).await;
+
     let provider =
         SingleAccountProvider::new(complete.clone(), Box::new(account_contract), account.alias);
     let wallet = BaseWallet::new(pxe, node, provider);
     Some((wallet, complete.address))
+}
+
+/// Register protocol contract artifacts in the PXE.
+///
+/// Mirrors upstream `PXE.registerProtocolContracts()`. Required so the ACVM
+/// can execute protocol contract functions (e.g., FeeJuice.claim).
+pub async fn register_protocol_contracts(pxe: &EmbeddedPxe<HttpNodeClient>) {
+    // FeeJuice protocol contract (address 0x05)
+    if let Some(artifact) = load_fee_juice_artifact() {
+        let fee_juice_address = aztec_rs::constants::protocol_contract_address::fee_juice();
+        let class_id = compute_contract_class_id_from_artifact(&artifact).unwrap_or(Fr::zero());
+        let _ = pxe
+            .contract_store()
+            .add_artifact(&class_id, &artifact)
+            .await;
+        let instance = ContractInstanceWithAddress {
+            address: fee_juice_address,
+            inner: ContractInstance {
+                version: 1,
+                salt: Fr::zero(),
+                deployer: AztecAddress::zero(),
+                current_contract_class_id: class_id,
+                original_contract_class_id: class_id,
+                initialization_hash: Fr::zero(),
+                public_keys: PublicKeys::default(),
+            },
+        };
+        let _ = pxe.contract_store().add_instance(&instance).await;
+    }
+}
+
+pub fn load_fee_juice_artifact() -> Option<ContractArtifact> {
+    let root = repo_root();
+    try_load_artifact_from_candidates(&[
+        root.join("fixtures/fee_juice_contract_compiled.json"),
+        root.join("../aztec-packages/noir-projects/noir-contracts/target/fee_juice_contract-FeeJuice.json"),
+    ])
 }
 
 // ---------------------------------------------------------------------------
