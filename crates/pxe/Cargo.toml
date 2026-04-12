@@ -4,6 +4,8 @@ version = "0.4.0"
 edition = "2021"
 description = "Embedded PXE (Private eXecution Environment) for the Aztec Rust SDK"
 license = "Apache-2.0"
+# Depends on unpublished noir pre-release; publish when noir 1.0 lands on crates.io
+publish = false
 
 [dependencies]
 aztec-core = { path = "../core", version = "0.4.0" }
@@ -21,11 +23,12 @@ tokio = { version = "1", features = ["sync", "process", "fs", "macros"] }
 tracing = "0.1"
 
 # Noir ACVM — pinned to the exact noir commit matching compiled contract artifacts
-acvm = { version = "1.0.0-beta.18", git = "https://github.com/noir-lang/noir.git", rev = "2db78f8894936db05c53430f364360ac9cc5c61f", package = "acvm" }
-brillig_vm = { version = "1.0.0-beta.18", git = "https://github.com/noir-lang/noir.git", rev = "2db78f8894936db05c53430f364360ac9cc5c61f", package = "brillig_vm" }
-acir = { version = "1.0.0-beta.18", git = "https://github.com/noir-lang/noir.git", rev = "2db78f8894936db05c53430f364360ac9cc5c61f", package = "acir" }
-noirc_abi = { version = "1.0.0-beta.18", git = "https://github.com/noir-lang/noir.git", rev = "2db78f8894936db05c53430f364360ac9cc5c61f", package = "noirc_abi" }
-bn254_blackbox_solver = { version = "1.0.0-beta.18", git = "https://github.com/noir-lang/noir.git", rev = "2db78f8894936db05c53430f364360ac9cc5c61f", package = "bn254_blackbox_solver" }
+# Noir ACVM — pinned to git rev via workspace [patch.crates-io]
+acvm = { version = "1.0.0-beta.18" }
+brillig_vm = { version = "1.0.0-beta.18" }
+acir = { version = "1.0.0-beta.18" }
+noirc_abi = { version = "1.0.0-beta.18" }
+bn254_blackbox_solver = { version = "1.0.0-beta.18" }
 flate2 = "1"
 
 [dev-dependencies]

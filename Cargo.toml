@@ -19,6 +19,8 @@ version = "0.4.0"
 edition = "2021"
 description = "Rust SDK for the Aztec Network"
 license = "Apache-2.0"
+# Depends on unpublished noir pre-release via aztec-crypto/aztec-pxe
+publish = false
 
 [dependencies]
 aztec-core = { path = "crates/core", version = "0.4.0" }
@@ -45,3 +47,9 @@ tokio = { version = "1", features = ["full", "test-util"] }
 # Patch to resolve dependency version conflicts with noir crates
 [patch.crates-io]
 keccak = { git = "https://github.com/RustCrypto/sponges.git", tag = "keccak-v0.2.0-rc.0" }
+# Pin noir crates to the exact commit matching compiled contract artifacts
+acvm = { git = "https://github.com/noir-lang/noir.git", rev = "2db78f8894936db05c53430f364360ac9cc5c61f", package = "acvm" }
+brillig_vm = { git = "https://github.com/noir-lang/noir.git", rev = "2db78f8894936db05c53430f364360ac9cc5c61f", package = "brillig_vm" }
+acir = { git = "https://github.com/noir-lang/noir.git", rev = "2db78f8894936db05c53430f364360ac9cc5c61f", package = "acir" }
+noirc_abi = { git = "https://github.com/noir-lang/noir.git", rev = "2db78f8894936db05c53430f364360ac9cc5c61f", package = "noirc_abi" }
+bn254_blackbox_solver = { git = "https://github.com/noir-lang/noir.git", rev = "2db78f8894936db05c53430f364360ac9cc5c61f", package = "bn254_blackbox_solver" }

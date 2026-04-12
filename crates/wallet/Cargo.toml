@@ -4,6 +4,8 @@ version = "0.4.0"
 edition = "2021"
 description = "Wallet trait, MockWallet, and supporting types for the Aztec Rust SDK"
 license = "Apache-2.0"
+# Depends on unpublished noir pre-release via aztec-crypto/aztec-pxe
+publish = false
 
 [dependencies]
 aztec-core = { path = "../core", version = "0.4.0" }
