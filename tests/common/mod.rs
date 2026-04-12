@@ -718,11 +718,7 @@ pub async fn send_token_method(
 }
 
 /// Sends a single [`FunctionCall`] as a transaction.
-pub async fn send_call(
-    wallet: &impl Wallet,
-    call: FunctionCall,
-    from: AztecAddress,
-) {
+pub async fn send_call(wallet: &impl Wallet, call: FunctionCall, from: AztecAddress) {
     wallet
         .send_tx(
             ExecutionPayload {

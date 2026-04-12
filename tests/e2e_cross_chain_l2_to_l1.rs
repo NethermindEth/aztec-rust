@@ -195,13 +195,12 @@ async fn two_messages_private_and_public() {
         let l2_to_l1 = effect
             .pointer("/data/l2ToL1Msgs")
             .and_then(|v| v.as_array())
-            .map(|arr| {
+            .map_or(0, |arr| {
                 arr.iter()
                     .filter_map(|v| v.as_str())
                     .filter(|s| *s != Fr::zero().to_string())
                     .count()
-            })
-            .unwrap_or(0);
+            });
         assert!(
             l2_to_l1 >= 1,
             "tx should contain at least 1 L2→L1 message (found {l2_to_l1})"

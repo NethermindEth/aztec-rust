@@ -109,9 +109,10 @@ async fn init_shared_state() -> Option<ContractUpdateState> {
         .await
     {
         let err_str = err.to_string().to_lowercase();
-        if !err_str.contains("existing nullifier") && !err_str.contains("dropped") {
-            panic!("publish updated class: {err}");
-        }
+        assert!(
+            err_str.contains("existing nullifier") || err_str.contains("dropped"),
+            "publish updated class: {err}"
+        );
     }
 
     let updated_class_id =
@@ -261,7 +262,7 @@ async fn rejects_delay_below_minimum() {
         &s.updatable_artifact,
         s.contract_address,
         "set_update_delay",
-        vec![AbiValue::Integer(too_small_delay as i128)],
+        vec![AbiValue::Integer(i128::from(too_small_delay))],
     );
 
     let err = s

@@ -103,7 +103,7 @@ async fn transfer_to_public_on_behalf_of_self() {
     };
 
     let priv_before = call_utility_u128(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         &s.base.token_artifact,
         s.base.token_address,
         "balance_of_private",
@@ -115,14 +115,14 @@ async fn transfer_to_public_on_behalf_of_self() {
     assert!(amount > 0, "admin should have a positive private balance");
 
     let pub_before = public_balance(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         s.base.token_address,
         &s.base.admin_address,
     )
     .await;
 
     send_token_method(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         &s.base.token_artifact,
         s.base.token_address,
         "transfer_to_public",
@@ -136,10 +136,10 @@ async fn transfer_to_public_on_behalf_of_self() {
     )
     .await;
 
-    wait_for_next_block(&*s.base.admin_wallet).await;
+    wait_for_next_block(&s.base.admin_wallet).await;
 
     let priv_after = call_utility_u128(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         &s.base.token_artifact,
         s.base.token_address,
         "balance_of_private",
@@ -154,7 +154,7 @@ async fn transfer_to_public_on_behalf_of_self() {
     );
 
     let pub_after = public_balance(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         s.base.token_address,
         &s.base.admin_address,
     )
@@ -176,7 +176,7 @@ async fn transfer_to_public_on_behalf_of_other() {
     };
 
     let priv_before = call_utility_u128(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         &s.base.token_artifact,
         s.base.token_address,
         "balance_of_private",
@@ -189,7 +189,7 @@ async fn transfer_to_public_on_behalf_of_other() {
     assert!(amount > 0, "admin should have a positive private balance");
 
     let account1_pub_before = public_balance(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         s.base.token_address,
         &s.base.account1_address,
     )
@@ -239,10 +239,10 @@ async fn transfer_to_public_on_behalf_of_other() {
         .await
         .expect("send transfer_to_public via proxy");
 
-    wait_for_next_block(&*s.base.admin_wallet).await;
+    wait_for_next_block(&s.base.admin_wallet).await;
 
     let priv_after = call_utility_u128(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         &s.base.token_artifact,
         s.base.token_address,
         "balance_of_private",
@@ -257,7 +257,7 @@ async fn transfer_to_public_on_behalf_of_other() {
     );
 
     let account1_pub_after = public_balance(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         s.base.token_address,
         &s.base.account1_address,
     )
@@ -309,7 +309,7 @@ async fn transfer_to_public_on_behalf_of_self_more_than_balance() {
     };
 
     let priv_balance = call_utility_u128(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         &s.base.token_artifact,
         s.base.token_address,
         "balance_of_private",
@@ -367,7 +367,7 @@ async fn transfer_to_public_on_behalf_of_self_invalid_authwit_nonce() {
     };
 
     let priv_balance = call_utility_u128(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         &s.base.token_artifact,
         s.base.token_address,
         "balance_of_private",
@@ -425,7 +425,7 @@ async fn transfer_to_public_on_behalf_of_other_more_than_balance() {
     };
 
     let priv_balance = call_utility_u128(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         &s.base.token_artifact,
         s.base.token_address,
         "balance_of_private",
@@ -498,7 +498,7 @@ async fn transfer_to_public_on_behalf_of_other_invalid_designated_caller() {
     };
 
     let priv_balance = call_utility_u128(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         &s.base.token_artifact,
         s.base.token_address,
         "balance_of_private",

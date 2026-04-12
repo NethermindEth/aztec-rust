@@ -96,7 +96,7 @@ async fn public_burn_less_than_balance() {
     };
 
     let balance0 = public_balance(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         s.base.token_address,
         &s.base.admin_address,
     )
@@ -105,7 +105,7 @@ async fn public_burn_less_than_balance() {
     assert!(amount > 0);
 
     send_token_method(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         &s.base.token_artifact,
         s.base.token_address,
         "burn_public",
@@ -120,7 +120,7 @@ async fn public_burn_less_than_balance() {
 
     wait_for_next_block(&s.base.admin_wallet).await;
     let balance_after = public_balance(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         s.base.token_address,
         &s.base.admin_address,
     )
@@ -138,7 +138,7 @@ async fn public_burn_on_behalf_of_other() {
     };
 
     let balance0 = public_balance(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         s.base.token_address,
         &s.base.admin_address,
     )
@@ -162,7 +162,7 @@ async fn public_burn_on_behalf_of_other() {
         call: action.clone(),
     };
     let set_authwit = SetPublicAuthWitInteraction::create(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         s.base.admin_address,
         intent,
         true,
@@ -191,7 +191,7 @@ async fn public_burn_on_behalf_of_other() {
 
     wait_for_next_block(&s.base.account1_wallet).await;
     let balance_after = public_balance(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         s.base.token_address,
         &s.base.admin_address,
     )
@@ -229,7 +229,7 @@ async fn public_burn_more_than_balance_fails() {
     };
 
     let balance0 = public_balance(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         s.base.token_address,
         &s.base.admin_address,
     )
@@ -272,7 +272,7 @@ async fn public_burn_self_nonzero_nonce_fails() {
     };
 
     let balance0 = public_balance(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         s.base.token_address,
         &s.base.admin_address,
     )
@@ -315,7 +315,7 @@ async fn public_burn_on_behalf_without_approval_fails() {
     };
 
     let balance0 = public_balance(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         s.base.token_address,
         &s.base.admin_address,
     )
@@ -359,7 +359,7 @@ async fn public_burn_more_than_balance_on_behalf_fails() {
     };
 
     let balance0 = public_balance(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         s.base.token_address,
         &s.base.admin_address,
     )
@@ -381,7 +381,7 @@ async fn public_burn_more_than_balance_on_behalf_fails() {
         call: action.clone(),
     };
     let set_authwit = SetPublicAuthWitInteraction::create(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         s.base.admin_address,
         intent,
         true,
@@ -421,7 +421,7 @@ async fn public_burn_wrong_designated_caller_fails() {
     };
 
     let balance0 = public_balance(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         s.base.token_address,
         &s.base.admin_address,
     )
@@ -443,7 +443,7 @@ async fn public_burn_wrong_designated_caller_fails() {
         call: action.clone(),
     };
     let set_authwit = SetPublicAuthWitInteraction::create(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         s.base.admin_address,
         wrong_intent,
         true,
@@ -487,7 +487,7 @@ async fn private_burn_less_than_balance() {
     };
 
     let balance0 = call_utility_u128(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         &s.base.token_artifact,
         s.base.token_address,
         "balance_of_private",
@@ -499,7 +499,7 @@ async fn private_burn_less_than_balance() {
     assert!(amount > 0);
 
     send_token_method(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         &s.base.token_artifact,
         s.base.token_address,
         "burn_private",
@@ -513,7 +513,7 @@ async fn private_burn_less_than_balance() {
     .await;
 
     let balance_after = call_utility_u128(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         &s.base.token_artifact,
         s.base.token_address,
         "balance_of_private",
@@ -534,7 +534,7 @@ async fn private_burn_on_behalf_of_other() {
     };
 
     let balance0 = call_utility_u128(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         &s.base.token_artifact,
         s.base.token_address,
         "balance_of_private",
@@ -585,7 +585,7 @@ async fn private_burn_on_behalf_of_other() {
         .expect("burn through authwit proxy");
 
     let balance_after = call_utility_u128(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         &s.base.token_artifact,
         s.base.token_address,
         "balance_of_private",
@@ -627,7 +627,7 @@ async fn private_burn_more_than_balance_fails() {
     };
 
     let balance0 = call_utility_u128(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         &s.base.token_artifact,
         s.base.token_address,
         "balance_of_private",
@@ -672,7 +672,7 @@ async fn private_burn_self_nonzero_nonce_fails() {
     };
 
     let balance0 = call_utility_u128(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         &s.base.token_artifact,
         s.base.token_address,
         "balance_of_private",
@@ -717,7 +717,7 @@ async fn private_burn_more_than_balance_on_behalf_fails() {
     };
 
     let balance0 = call_utility_u128(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         &s.base.token_artifact,
         s.base.token_address,
         "balance_of_private",
@@ -783,7 +783,7 @@ async fn private_burn_without_approval_fails() {
     };
 
     let balance0 = call_utility_u128(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         &s.base.token_artifact,
         s.base.token_address,
         "balance_of_private",
@@ -851,7 +851,7 @@ async fn private_burn_invalid_designated_caller_fails() {
     };
 
     let balance0 = call_utility_u128(
-        &*s.base.admin_wallet,
+        &s.base.admin_wallet,
         &s.base.token_artifact,
         s.base.token_address,
         "balance_of_private",

@@ -335,12 +335,12 @@ async fn pays_fees_runs_public_app_logic() {
 
     assert_eq!(
         end_alice,
-        initial_alice - transfer_amount as u128,
+        initial_alice - transfer_amount.unsigned_abs(),
         "alice balance should decrease"
     );
     assert_eq!(
         end_bob,
-        initial_bob + transfer_amount as u128,
+        initial_bob + transfer_amount.unsigned_abs(),
         "bob balance should increase"
     );
 
@@ -408,7 +408,7 @@ async fn pays_fees_batched_public() {
 
     let end_alice = read_public_u128(&s.wallet, s.token_address, alice_slot).await;
     // Alice: initial - transfer + mint
-    let expected = initial_alice - transfer_amount as u128 + mint_amount as u128;
+    let expected = initial_alice - transfer_amount.unsigned_abs() + mint_amount.unsigned_abs();
     assert_eq!(end_alice, expected, "alice balance should reflect batch");
 
     let end_fee = get_fee_juice_balance(&s.wallet, s.alice_address).await;
