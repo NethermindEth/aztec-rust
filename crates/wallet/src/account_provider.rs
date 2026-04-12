@@ -38,6 +38,7 @@ pub trait AccountProvider: Send + Sync {
         gas_settings: GasSettings,
         chain_info: &ChainInfo,
         fee_payer: Option<AztecAddress>,
+        fee_payment_method: Option<u8>,
     ) -> Result<TxExecutionRequest, Error>;
 
     /// Create an authorization witness for the given account.

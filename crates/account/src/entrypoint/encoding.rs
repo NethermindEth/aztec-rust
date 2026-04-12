@@ -85,19 +85,15 @@ impl EncodedAppEntrypointCalls {
 
         for call in padded_calls {
             let is_public = call.function_type == FunctionType::Public;
-
-            // Flatten ABI args to field elements.
             let arg_fields = abi_values_to_fields(&call.args);
 
             let (args_hash, hashed_values) = if is_public {
-                // For public calls: calldata = [selector, ...args]
                 let mut calldata = vec![call.selector.to_field()];
                 calldata.extend_from_slice(&arg_fields);
                 let hv = HashedValues::from_calldata(calldata);
                 let h = hv.hash();
                 (h, hv)
             } else {
-                // For private calls: hash just the args
                 let hv = HashedValues::from_args(arg_fields);
                 let h = hv.hash();
                 (h, hv)

@@ -15,6 +15,7 @@ use aztec_core::tx::{AuthWitness, ExecutionPayload};
 use aztec_core::types::{AztecAddress, CompleteAddress, Fr, Point};
 use aztec_core::Error;
 
+use crate::entrypoint::account_entrypoint::AccountFeePaymentMethodOptions;
 use aztec_crypto::keys::{derive_public_key_from_secret_key, derive_signing_key};
 use aztec_crypto::schnorr::schnorr_sign;
 
@@ -106,19 +107,22 @@ impl Account for SchnorrAccount {
         exec: ExecutionPayload,
         gas_settings: GasSettings,
         chain_info: &WalletChainInfo,
-        _options: EntrypointOptions,
+        options: EntrypointOptions,
     ) -> Result<TxExecutionRequest, Error> {
         let core_chain_info = ChainInfo {
             chain_id: chain_info.chain_id,
             version: chain_info.version,
         };
+        let mut ep_opts = DefaultAccountEntrypointOptions::default();
+        if let Some(method) = options.fee_payment_method {
+            ep_opts.fee_payment_method_options = match method {
+                1 => AccountFeePaymentMethodOptions::PreexistingFeeJuice,
+                2 => AccountFeePaymentMethodOptions::FeeJuiceWithClaim,
+                _ => AccountFeePaymentMethodOptions::External,
+            };
+        }
         self.entrypoint
-            .create_tx_execution_request(
-                exec,
-                gas_settings,
-                &core_chain_info,
-                &DefaultAccountEntrypointOptions::default(),
-            )
+            .create_tx_execution_request(exec, gas_settings, &core_chain_info, &ep_opts)
             .await
     }
 

@@ -56,6 +56,7 @@ impl From<DefaultAccountEntrypointOptions> for EntrypointOptions {
         Self {
             fee_payer: None,
             gas_settings: None,
+            fee_payment_method: None,
         }
     }
 }

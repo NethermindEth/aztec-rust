@@ -28,6 +28,9 @@ pub struct EntrypointOptions {
     pub fee_payer: Option<AztecAddress>,
     /// Gas settings for the entrypoint call.
     pub gas_settings: Option<GasSettings>,
+    /// Fee payment method for the account entrypoint (0=External, 1=PreexistingFeeJuice, 2=FeeJuiceWithClaim).
+    #[serde(default)]
+    pub fee_payment_method: Option<u8>,
 }
 
 /// A transaction execution request produced by an account's entrypoint.

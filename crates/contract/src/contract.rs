@@ -99,10 +99,11 @@ impl<W: Wallet> Contract<W> {
                 name, self.artifact.name
             ))
         })?;
+        let encoded_args = aztec_core::abi::encode_arguments(func, &args)?;
         let call = FunctionCall {
             to: self.address,
             selector,
-            args,
+            args: encoded_args.into_iter().map(AbiValue::Field).collect(),
             function_type: func.function_type.clone(),
             is_static: func.is_static,
             hide_msg_sender: false,

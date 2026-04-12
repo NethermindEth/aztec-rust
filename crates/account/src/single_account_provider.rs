@@ -47,6 +47,7 @@ impl AccountProvider for SingleAccountProvider {
         gas_settings: GasSettings,
         chain_info: &ChainInfo,
         fee_payer: Option<AztecAddress>,
+        fee_payment_method: Option<u8>,
     ) -> Result<TxExecutionRequest, Error> {
         if *from != self.complete_address.address {
             return Err(Error::InvalidData(format!("account not found: {from}")));
@@ -56,6 +57,7 @@ impl AccountProvider for SingleAccountProvider {
         let options = EntrypointOptions {
             fee_payer,
             gas_settings: Some(gas_settings.clone()),
+            fee_payment_method,
         };
 
         let tx_request = account
