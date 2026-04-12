@@ -78,6 +78,10 @@ pub mod fee {
     pub use aztec_core::fee::*;
     pub use aztec_fee::*;
 }
+/// Cross-chain utilities (L1↔L2 message readiness).
+pub use aztec_ethereum::cross_chain;
+/// L1 client for Inbox/Outbox contract interaction.
+pub use aztec_ethereum::l1_client;
 /// L1-L2 messaging helpers.
 pub use aztec_ethereum::messaging;
 /// Node client, readiness polling, and receipt waiting.
