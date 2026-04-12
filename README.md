@@ -2,14 +2,19 @@
 
 Rust SDK for the [Aztec Network](https://aztec.network). Provides a client library for interacting with Aztec nodes, managing wallets and accounts, deploying contracts, and sending transactions. The design mirrors the upstream [`aztec.js`](https://github.com/AztecProtocol/aztec-packages/tree/master/yarn-project/aztec.js) package.
 
-> **Status:** Early development (v0.1.0). APIs are subject to change.
+> **Status:** Active development (v0.4.0). APIs may still change.
 
 ## Features
 
+- **Embedded PXE** — in-process private execution engine with note discovery, kernel proving, and block sync
 - **Node client** — connect to an Aztec node over JSON-RPC, query blocks, chain info, and wait for readiness
 - **Contract interaction** — load contract artifacts, build and send function calls (private, public, utility)
-- **Contract deployment** — builder-pattern deployer with deterministic addressing and multi-phase deployment
-- **Account abstraction** — traits and manager for account lifecycle, entrypoint execution, and authorization witnesses
+- **Contract deployment** — builder-pattern deployer with deterministic addressing, class registration, and instance publication
+- **Account abstraction** — Schnorr/ECDSA/SingleKey account flavors, entrypoint execution, and authorization witnesses
+- **Auth witnesses** — create, validate, and consume authorization witnesses in private and public contexts
+- **Fee payments** — native, sponsored, private FPC, and Fee Juice claim-based payment methods
+- **Cross-chain messaging** — L1-to-L2 and L2-to-L1 message sending, readiness polling, and consumption
+- **Cryptography** — BN254/Grumpkin field arithmetic, Poseidon2, Pedersen, Schnorr signing, key derivation
 - **Transaction handling** — construct, simulate, send, and track transactions through their full lifecycle
 - **Event decoding** — filter and decode public and private contract events
 - **Type system** — BN254 field elements, Aztec addresses, keys, and contract instances
@@ -20,7 +25,7 @@ Add `aztec-rs` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-aztec-rs = "0.1.1"
+aztec-rs = "0.4.0"
 ```
 
 ## Quick Start
@@ -68,18 +73,23 @@ AZTEC_NODE_URL=http://localhost:9090 cargo run --example node_info
 
 | Module | Description |
 |--------|-------------|
-| `abi` | ABI types, selectors, and contract artifact loading |
-| `account` | Account abstraction traits, manager, and deployment |
-| `authorization` | Authorization witness types and helpers |
-| `contract` | Contract handles and function interactions |
-| `deployment` | Contract deployment helpers and deployer builder |
+| `abi` | ABI types, selectors, encoding/decoding, and contract artifact loading |
+| `account` | Account abstraction traits, Schnorr/ECDSA/SingleKey flavors, manager, and deployment |
+| `authwit` | Authorization witness creation, validation, and public auth registry interaction |
+| `contract` | Contract handles, function interactions, and batch calls |
+| `cross_chain` | L1-to-L2 message readiness checking and polling utilities |
+| `crypto` | Key derivation, Schnorr signing, Pedersen hashing, and Grumpkin curve operations |
+| `deployment` | Contract deployment, class registration, and instance publication |
 | `events` | Public and private event types and decoding |
-| `fee` | Gas and fee payment types |
-| `messaging` | L1-L2 messaging helpers |
+| `fee` | Gas settings and fee payment methods (native, sponsored, private FPC, claim-based) |
+| `hash` | Poseidon2, SHA-256, authwit hashing, and cross-chain message hashing |
+| `l1_client` | Ethereum JSON-RPC client for Inbox/Outbox contract interaction |
+| `messaging` | L1-L2 messaging types (L1Actor, L2Actor, L1ToL2Message, claims) |
 | `node` | Node client, readiness polling, and receipt waiting |
+| `pxe` | Embedded PXE runtime with private execution, note stores, and block sync |
 | `tx` | Transaction types, receipts, statuses, and execution payloads |
 | `types` | Core field (Fr), address, key, and contract instance types |
-| `wallet` | Wallet trait and mock implementation |
+| `wallet` | BaseWallet implementation backed by embedded PXE and node connections |
 
 ## Development
 
@@ -100,8 +110,8 @@ cargo build
 # Unit tests
 cargo test
 
-# Integration tests (requires a running Aztec node)
-cargo test --test integration -- --ignored
+# E2E tests (requires a running Aztec sandbox)
+AZTEC_NODE_URL=http://localhost:8080 cargo test --test e2e_token_transfer_private -- --ignored --nocapture
 ```
 
 ### Lint
