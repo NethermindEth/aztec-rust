@@ -97,27 +97,8 @@ async fn init_shared_state() -> Option<L1ToL2State> {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Helpers (uses common::build_call, common::eth_address_as_field, etc.)
 // ---------------------------------------------------------------------------
-
-fn build_call(
-    artifact: &ContractArtifact,
-    address: AztecAddress,
-    method: &str,
-    args: Vec<AbiValue>,
-) -> FunctionCall {
-    let func = artifact
-        .find_function(method)
-        .unwrap_or_else(|e| panic!("function '{method}' not found: {e}"));
-    FunctionCall {
-        to: address,
-        selector: func.selector.expect("selector"),
-        args,
-        function_type: func.function_type.clone(),
-        is_static: false,
-        hide_msg_sender: false,
-    }
-}
 
 /// Send empty tx to advance the L2 block number.
 async fn advance_block(wallet: &TestWallet, from: AztecAddress) {
@@ -190,8 +171,8 @@ async fn l1_to_l2_message_consumed_private_public() {
 
     // Consume the message via TestContract.consume_message_from_arbitrary_sender_private
     // The eth_account is the L1 sender (first Anvil account)
-    let eth_account = s.eth_client.get_account().await.expect("get L1 account");
-    let eth_addr_fr = Fr::from_hex(&eth_account).unwrap_or(Fr::zero());
+    let eth_account_hex = s.eth_client.get_account().await.expect("get L1 account");
+    let eth_addr_fr = eth_address_as_field(&parse_eth_address(&eth_account_hex));
 
     let consume_call = build_call(
         &s.test_artifact,

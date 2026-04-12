@@ -900,6 +900,39 @@ pub fn abi_selector(selector: FunctionSelector) -> AbiValue {
     AbiValue::Struct(fields)
 }
 
+// ---------------------------------------------------------------------------
+// Ethereum / L1 helpers
+// ---------------------------------------------------------------------------
+
+pub use aztec_rs::types::EthAddress;
+
+/// Parse a hex string (with or without 0x) into a 20-byte Ethereum address.
+pub fn parse_eth_address(hex_str: &str) -> EthAddress {
+    let hex_str = hex_str.strip_prefix("0x").unwrap_or(hex_str);
+    let mut bytes = [0u8; 20];
+    let nibbles: Vec<u8> = hex_str
+        .chars()
+        .filter_map(|c| c.to_digit(16).map(|d| d as u8))
+        .collect();
+    let len = nibbles.len() / 2;
+    let start = 20usize.saturating_sub(len);
+    for i in 0..len.min(20) {
+        bytes[start + i] = (nibbles[i * 2] << 4) | nibbles[i * 2 + 1];
+    }
+    EthAddress(bytes)
+}
+
+/// Convert an `EthAddress` to an `Fr` (left-padded to 32 bytes).
+pub fn eth_address_as_field(addr: &EthAddress) -> Fr {
+    let mut bytes = [0u8; 32];
+    bytes[12..32].copy_from_slice(&addr.0);
+    Fr::from(bytes)
+}
+
+// ---------------------------------------------------------------------------
+// Proxy helpers
+// ---------------------------------------------------------------------------
+
 /// Build a proxy forwarding call (e.g. `forward_private_N`).
 pub fn build_proxy_call(
     proxy_artifact: &ContractArtifact,
