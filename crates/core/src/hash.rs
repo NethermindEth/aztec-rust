@@ -103,6 +103,48 @@ pub fn compute_secret_hash(secret: &Fr) -> Fr {
     poseidon2_hash_with_separator(&[*secret], domain_separator::SECRET_HASH)
 }
 
+/// Compute the nullifier for an L1-to-L2 message consumption.
+///
+/// `inner = poseidon2([message_hash, secret], MESSAGE_NULLIFIER)`
+/// `result = poseidon2([contract, inner], SILOED_NULLIFIER)`
+///
+/// Mirrors TS `computeL1ToL2MessageNullifier(contract, messageHash, secret)`.
+pub fn compute_l1_to_l2_message_nullifier(
+    contract: &AztecAddress,
+    message_hash: &Fr,
+    secret: &Fr,
+) -> Fr {
+    let inner = poseidon2_hash_with_separator(
+        &[*message_hash, *secret],
+        domain_separator::MESSAGE_NULLIFIER,
+    );
+    silo_nullifier(contract, &inner)
+}
+
+/// Compute an L2-to-L1 message hash.
+///
+/// `sha256_to_field([l2_sender, rollup_version, l1_recipient, chain_id, content])`
+///
+/// Mirrors TS `computeL2ToL1MessageHash(...)`.
+pub fn compute_l2_to_l1_message_hash(
+    l2_sender: &AztecAddress,
+    l1_recipient: &crate::types::EthAddress,
+    content: &Fr,
+    rollup_version: &Fr,
+    chain_id: &Fr,
+) -> Fr {
+    let mut data = Vec::with_capacity(5 * 32);
+    data.extend_from_slice(&l2_sender.0.to_be_bytes());
+    data.extend_from_slice(&rollup_version.to_be_bytes());
+    // EthAddress is 20 bytes, left-pad to 32
+    let mut eth_bytes = [0u8; 32];
+    eth_bytes[12..32].copy_from_slice(&l1_recipient.0);
+    data.extend_from_slice(&eth_bytes);
+    data.extend_from_slice(&chain_id.to_be_bytes());
+    data.extend_from_slice(&content.to_be_bytes());
+    sha256_to_field(&data)
+}
+
 /// Hash function arguments using Poseidon2 with the `FUNCTION_ARGS` separator.
 ///
 /// Returns `Fr::zero()` if `args` is empty.
@@ -502,6 +544,11 @@ fn sha256_merkle_root(leaves: &[Fr]) -> Fr {
 ///
 /// Matches the TS `sha256ToField` which truncates to 31 bytes and prepends a
 /// zero byte, guaranteeing the result fits in the BN254 scalar field.
+/// Public version of `sha256_to_field` for cross-crate use.
+pub fn sha256_to_field_pub(data: &[u8]) -> Fr {
+    sha256_to_field(data)
+}
+
 fn sha256_to_field(data: &[u8]) -> Fr {
     let hash = Sha256::digest(data);
     let mut bytes = [0u8; 32];

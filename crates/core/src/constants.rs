@@ -147,6 +147,11 @@ pub mod domain_separator {
     /// TS: `DomainSeparator.SECRET_HASH = 4199652938`
     pub const SECRET_HASH: u32 = 4_199_652_938;
 
+    /// Message nullifier (for L1-to-L2 message consumption proofs).
+    ///
+    /// TS: `DomainSeparator.MESSAGE_NULLIFIER = 3754509616`
+    pub const MESSAGE_NULLIFIER: u32 = 3_754_509_616;
+
     /// Domain separator for signature payload hashing (entrypoint encoding).
     ///
     /// TS: `DomainSeparator.SIGNATURE_PAYLOAD = 463525807`
@@ -251,6 +256,10 @@ pub const NULLIFIER_TREE_HEIGHT: usize = 42;
 pub const PUBLIC_DATA_TREE_HEIGHT: usize = 40;
 /// L1-to-L2 message tree height.
 pub const L1_TO_L2_MSG_TREE_HEIGHT: usize = 36;
+/// Maximum L1-to-L2 messages per rollup checkpoint.
+pub const NUMBER_OF_L1_L2_MESSAGES_PER_ROLLUP: usize = 1024;
+/// L1-to-L2 message subtree height (for subtree insertion proofs).
+pub const L1_TO_L2_MSG_SUBTREE_HEIGHT: usize = 10;
 /// Archive tree height.
 pub const ARCHIVE_HEIGHT: usize = 30;
 /// VK tree height.
