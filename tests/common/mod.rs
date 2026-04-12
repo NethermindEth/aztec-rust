@@ -933,3 +933,90 @@ pub async fn public_balance(
     let slot = derive_storage_slot_in_map(token_storage::PUBLIC_BALANCES_SLOT, account);
     read_public_u128(wallet, token, slot).await
 }
+
+// ---------------------------------------------------------------------------
+// Token deployment & interaction helpers
+// ---------------------------------------------------------------------------
+
+/// Deploy the compiled token contract, optionally minting an initial private
+/// balance to `admin`. Mirrors upstream `TokenContract.deploy(admin, ...)`.
+pub async fn deploy_token(
+    wallet: &(impl Wallet + Send + Sync),
+    admin: AztecAddress,
+    initial_balance: u64,
+) -> (AztecAddress, ContractArtifact, ContractInstanceWithAddress) {
+    let artifact = load_token_artifact();
+    let (token_address, artifact, instance) = deploy_contract(
+        wallet,
+        artifact,
+        vec![
+            AbiValue::Field(Fr::from(admin)),
+            AbiValue::String("TestToken".to_owned()),
+            AbiValue::String("TT".to_owned()),
+            AbiValue::Integer(18),
+        ],
+        admin,
+    )
+    .await;
+
+    if initial_balance > 0 {
+        mint_tokens_to_private(
+            wallet,
+            token_address,
+            &artifact,
+            admin,
+            admin,
+            initial_balance,
+        )
+        .await;
+    }
+
+    (token_address, artifact, instance)
+}
+
+/// Call `mint_to_private` on a token contract.
+pub async fn mint_tokens_to_private(
+    wallet: &(impl Wallet + Send + Sync),
+    token_address: AztecAddress,
+    artifact: &ContractArtifact,
+    from: AztecAddress,
+    to: AztecAddress,
+    amount: u64,
+) {
+    send_token_method(
+        wallet,
+        artifact,
+        token_address,
+        "mint_to_private",
+        vec![
+            AbiValue::Field(Fr::from(to)),
+            AbiValue::Integer(i128::from(amount)),
+        ],
+        from,
+    )
+    .await;
+}
+
+/// Call `balance_of_private` and assert the result equals `expected`.
+pub async fn expect_token_balance(
+    wallet: &(impl Wallet + Send + Sync),
+    token_address: AztecAddress,
+    artifact: &ContractArtifact,
+    owner: AztecAddress,
+    expected: u64,
+) {
+    let balance = call_utility_u64(
+        wallet,
+        artifact,
+        token_address,
+        "balance_of_private",
+        vec![AbiValue::Field(Fr::from(owner))],
+        owner,
+    )
+    .await;
+
+    assert_eq!(
+        balance, expected,
+        "expected balance {expected} for {owner}, got {balance}"
+    );
+}
