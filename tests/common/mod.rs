@@ -47,6 +47,8 @@ pub use aztec_rs::wallet::{
     BaseWallet, ExecuteUtilityOptions, SendOptions, SimulateOptions, Wallet,
 };
 
+pub use tokio::sync::OnceCell;
+
 // ---------------------------------------------------------------------------
 // Type aliases
 // ---------------------------------------------------------------------------
@@ -310,6 +312,60 @@ pub const U128_UNDERFLOW_ERROR: &str = "attempt to subtract with overflow";
 pub const U128_OVERFLOW_ERROR: &str = "attempt to add with overflow";
 
 // ---------------------------------------------------------------------------
+// Signing key note helpers
+// ---------------------------------------------------------------------------
+
+/// Build a [`StoredNote`] representing a Schnorr signing key for `owner`.
+///
+/// Pre-imported accounts' signing key notes are not discoverable on-chain, so
+/// we inject a synthetic note into the PXE's note store.  The `nullifier_seed`
+/// must be unique per note to avoid duplicate-nullifier errors when multiple
+/// notes are injected in the same test.
+pub fn make_signing_key_note(
+    account_contract: &SchnorrAccountContract,
+    owner: AztecAddress,
+    nullifier_seed: u64,
+) -> StoredNote {
+    let signing_pk = account_contract.signing_public_key();
+    // Construct a deterministic but unique siloed nullifier from the seed.
+    let mut hex = format!("0xdeadbeef{:0>56x}", nullifier_seed);
+    // Ensure the hex string is exactly 66 chars (0x + 64 hex digits).
+    hex.truncate(66);
+    StoredNote {
+        contract_address: owner,
+        owner,
+        storage_slot: Fr::from(1u64),
+        randomness: Fr::zero(),
+        note_nonce: Fr::from(1u64),
+        note_hash: Fr::from(1u64),
+        siloed_nullifier: Fr::from_hex(&hex).expect("unique nullifier"),
+        note_data: vec![signing_pk.x, signing_pk.y],
+        nullified: false,
+        is_pending: false,
+        nullification_block_number: None,
+        leaf_index: None,
+        block_number: None,
+        tx_index_in_block: None,
+        note_index_in_tx: None,
+        scopes: vec![owner],
+    }
+}
+
+/// Inject a Schnorr signing key note into a PXE's note store.
+pub async fn seed_signing_key_note(
+    pxe: &EmbeddedPxe<HttpNodeClient>,
+    account_contract: &SchnorrAccountContract,
+    owner: AztecAddress,
+    nullifier_seed: u64,
+) {
+    let note = make_signing_key_note(account_contract, owner, nullifier_seed);
+    pxe.note_store()
+        .add_note(&note)
+        .await
+        .expect("seed signing key note");
+}
+
+// ---------------------------------------------------------------------------
 // Wallet setup (registers account contract + signing key note in PXE)
 // ---------------------------------------------------------------------------
 
@@ -362,33 +418,7 @@ pub async fn setup_wallet(account: ImportedTestAccount) -> Option<(TestWallet, A
         .await
         .ok()?;
 
-    // Seed signing key note (pre-imported accounts' notes aren't discoverable)
-    let signing_pk = account_contract.signing_public_key();
-    let note = StoredNote {
-        contract_address: complete.address,
-        owner: complete.address,
-        storage_slot: Fr::from(1u64),
-        randomness: Fr::zero(),
-        note_nonce: Fr::from(1u64),
-        note_hash: Fr::from(1u64),
-        siloed_nullifier: Fr::from_hex(
-            "0xdeadbeef00000000000000000000000000000000000000000000000000000001",
-        )
-        .expect("unique nullifier"),
-        note_data: vec![signing_pk.x, signing_pk.y],
-        nullified: false,
-        is_pending: false,
-        nullification_block_number: None,
-        leaf_index: None,
-        block_number: None,
-        tx_index_in_block: None,
-        note_index_in_tx: None,
-        scopes: vec![complete.address],
-    };
-    pxe.note_store()
-        .add_note(&note)
-        .await
-        .expect("seed signing key note");
+    seed_signing_key_note(&pxe, &account_contract, complete.address, 1).await;
 
     let provider =
         SingleAccountProvider::new(complete.clone(), Box::new(account_contract), account.alias);
@@ -503,32 +533,7 @@ pub async fn create_wallet(
     }
 
     let account_contract = SchnorrAccountContract::new(secret_key);
-    let signing_pk = account_contract.signing_public_key();
-    let note = StoredNote {
-        contract_address: complete.address,
-        owner: complete.address,
-        storage_slot: Fr::from(1u64),
-        randomness: Fr::zero(),
-        note_nonce: Fr::from(1u64),
-        note_hash: Fr::from(1u64),
-        siloed_nullifier: Fr::from_hex(
-            "0xdeadbeef00000000000000000000000000000000000000000000000000000001",
-        )
-        .expect("unique nullifier"),
-        note_data: vec![signing_pk.x, signing_pk.y],
-        nullified: false,
-        is_pending: false,
-        nullification_block_number: None,
-        leaf_index: None,
-        block_number: None,
-        tx_index_in_block: None,
-        note_index_in_tx: None,
-        scopes: vec![complete.address],
-    };
-    pxe.note_store()
-        .add_note(&note)
-        .await
-        .expect("seed signing note");
+    seed_signing_key_note(&pxe, &account_contract, complete.address, 1).await;
 
     let provider = SingleAccountProvider::new(
         complete.clone(),
@@ -1019,4 +1024,161 @@ pub async fn expect_token_balance(
         balance, expected,
         "expected balance {expected} for {owner}, got {balance}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Common token test state (shared across many token e2e tests)
+// ---------------------------------------------------------------------------
+
+/// Common shared state for token e2e tests: two wallets with a deployed token
+/// contract and initial minting done.  Tests that need extra state (proxy,
+/// bad_account, etc.) can embed this and add their own fields.
+pub struct TokenTestState {
+    pub admin_wallet: TestWallet,
+    pub account1_wallet: TestWallet,
+    pub admin_address: AztecAddress,
+    pub account1_address: AztecAddress,
+    pub token_address: AztecAddress,
+    pub token_artifact: ContractArtifact,
+}
+
+/// Initialise a [`TokenTestState`]: two wallets (via `setup_wallet`) with
+/// sender registration, a deployed token contract registered on both PXEs,
+/// and configurable minting to admin.
+pub async fn init_token_test_state(public_mint: u64, private_mint: u64) -> Option<TokenTestState> {
+    let (admin_wallet, admin_address) = setup_wallet(TEST_ACCOUNT_0).await?;
+    let (account1_wallet, account1_address) = setup_wallet(TEST_ACCOUNT_1).await?;
+
+    // Register senders across wallets for tag discovery
+    admin_wallet
+        .pxe()
+        .register_sender(&account1_address)
+        .await
+        .expect("admin registers account1");
+    account1_wallet
+        .pxe()
+        .register_sender(&admin_address)
+        .await
+        .expect("account1 registers admin");
+
+    // Deploy token with admin as the admin/minter
+    let (token_address, token_artifact, token_instance) =
+        deploy_token(&admin_wallet, admin_address, 0).await;
+
+    // Register token on account1's PXE
+    register_contract_on_pxe(account1_wallet.pxe(), &token_artifact, &token_instance).await;
+
+    if public_mint > 0 {
+        send_token_method(
+            &admin_wallet,
+            &token_artifact,
+            token_address,
+            "mint_to_public",
+            vec![
+                AbiValue::Field(Fr::from(admin_address)),
+                AbiValue::Integer(i128::from(public_mint)),
+            ],
+            admin_address,
+        )
+        .await;
+    }
+
+    if private_mint > 0 {
+        mint_tokens_to_private(
+            &admin_wallet,
+            token_address,
+            &token_artifact,
+            admin_address,
+            admin_address,
+            private_mint,
+        )
+        .await;
+    }
+
+    Some(TokenTestState {
+        admin_wallet,
+        account1_wallet,
+        admin_address,
+        account1_address,
+        token_address,
+        token_artifact,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Authwit token test state (uses create_wallet with Arc-wrapped wallets)
+// ---------------------------------------------------------------------------
+
+/// Shared state for token tests that need authwit support (Arc-wrapped
+/// wallets from [`create_wallet`]).
+pub struct AuthwitTokenTestState {
+    pub admin_wallet: SharedTestWallet,
+    pub account1_wallet: SharedTestWallet,
+    pub admin_address: AztecAddress,
+    pub account1_address: AztecAddress,
+    pub token_address: AztecAddress,
+    pub token_artifact: ContractArtifact,
+}
+
+/// Initialise an [`AuthwitTokenTestState`]: two authwit-capable wallets (via
+/// `create_wallet`), a deployed token contract registered on both PXEs,
+/// and configurable minting to admin.
+pub async fn init_authwit_token_test_state(
+    public_mint: u64,
+    private_mint: u64,
+) -> Option<AuthwitTokenTestState> {
+    let (admin_wallet, admin_address) = create_wallet(TEST_ACCOUNT_0, &[TEST_ACCOUNT_1]).await?;
+    let (account1_wallet, account1_address) =
+        create_wallet(TEST_ACCOUNT_1, &[TEST_ACCOUNT_0]).await?;
+
+    let (token_address, token_artifact, token_instance) = deploy_contract(
+        &*admin_wallet,
+        load_token_artifact(),
+        vec![
+            AbiValue::Field(Fr::from(admin_address)),
+            AbiValue::String("TestToken".to_owned()),
+            AbiValue::String("TT".to_owned()),
+            AbiValue::Integer(18),
+        ],
+        admin_address,
+    )
+    .await;
+
+    register_contract_on_pxe(account1_wallet.pxe(), &token_artifact, &token_instance).await;
+
+    if public_mint > 0 {
+        send_token_method(
+            &*admin_wallet,
+            &token_artifact,
+            token_address,
+            "mint_to_public",
+            vec![
+                AbiValue::Field(Fr::from(admin_address)),
+                AbiValue::Integer(i128::from(public_mint)),
+            ],
+            admin_address,
+        )
+        .await;
+    }
+
+    if private_mint > 0 {
+        mint_tokens_to_private(
+            &*admin_wallet,
+            token_address,
+            &token_artifact,
+            admin_address,
+            admin_address,
+            private_mint,
+        )
+        .await;
+    }
+
+    Some(AuthwitTokenTestState {
+        admin_wallet,
+        account1_wallet,
+        admin_address,
+        account1_address,
+        token_address,
+        token_artifact,
+    })
 }
