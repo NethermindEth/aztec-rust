@@ -25,20 +25,35 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub use aztec_rs::abi::ContractArtifact;
-pub use aztec_rs::account::{SchnorrAccountContract, SingleAccountProvider};
+use std::collections::BTreeMap;
+
+pub use aztec_rs::abi::{AbiValue, ContractArtifact, FunctionSelector, FunctionType};
+pub use aztec_rs::account::{AccountContract, SchnorrAccountContract, SingleAccountProvider};
+pub use aztec_rs::contract::Contract;
 pub use aztec_rs::crypto::complete_address_from_secret_key_and_partial_address;
+pub use aztec_rs::deployment::DeployOptions;
+pub use aztec_rs::embedded_pxe::stores::note_store::StoredNote;
 pub use aztec_rs::embedded_pxe::{EmbeddedPxe, InMemoryKvStore};
-pub use aztec_rs::node::{create_aztec_node_client, HttpNodeClient};
-pub use aztec_rs::types::{AztecAddress, CompleteAddress, Fr};
-pub use aztec_rs::wallet::BaseWallet;
+pub use aztec_rs::hash::{
+    compute_contract_address_from_instance, compute_contract_class_id_from_artifact,
+};
+pub use aztec_rs::node::{create_aztec_node_client, AztecNode, HttpNodeClient};
+pub use aztec_rs::pxe::{Pxe, RegisterContractRequest};
+pub use aztec_rs::tx::{ExecutionPayload, FunctionCall};
+pub use aztec_rs::types::{
+    AztecAddress, CompleteAddress, ContractInstance, ContractInstanceWithAddress, Fr, PublicKeys,
+};
+pub use aztec_rs::wallet::{
+    BaseWallet, ExecuteUtilityOptions, SendOptions, SimulateOptions, Wallet,
+};
 
 // ---------------------------------------------------------------------------
 // Type aliases
 // ---------------------------------------------------------------------------
 
 /// The standard wallet type used by most e2e tests.
-pub type TestWallet = BaseWallet<EmbeddedPxe<HttpNodeClient>, HttpNodeClient, SingleAccountProvider>;
+pub type TestWallet =
+    BaseWallet<EmbeddedPxe<HttpNodeClient>, HttpNodeClient, SingleAccountProvider>;
 
 /// Arc-wrapped wallet variant used by tests that need shared ownership.
 pub type SharedTestWallet = Arc<TestWallet>;
@@ -293,3 +308,628 @@ pub fn load_no_constructor_artifact() -> Option<ContractArtifact> {
 
 pub const U128_UNDERFLOW_ERROR: &str = "attempt to subtract with overflow";
 pub const U128_OVERFLOW_ERROR: &str = "attempt to add with overflow";
+
+// ---------------------------------------------------------------------------
+// Wallet setup (registers account contract + signing key note in PXE)
+// ---------------------------------------------------------------------------
+
+/// Creates a wallet for a pre-imported test account.
+///
+/// Registers the Schnorr account contract artifact, instance, and signing key
+/// note in the PXE so that `execute_entrypoint_via_acvm` can run the real Noir
+/// entrypoint circuit (required for public function calls).
+pub async fn setup_wallet(account: ImportedTestAccount) -> Option<(TestWallet, AztecAddress)> {
+    let url = node_url();
+    let node = create_aztec_node_client(&url);
+    if node.get_node_info().await.is_err() {
+        return None;
+    }
+
+    let kv = Arc::new(InMemoryKvStore::new());
+    let pxe = EmbeddedPxe::create(node.clone(), kv).await.ok()?;
+
+    let secret_key = Fr::from_hex(account.secret_key).expect("valid sk");
+    let complete = imported_complete_address(account);
+
+    pxe.key_store().add_account(&secret_key).await.ok()?;
+    pxe.address_store().add(&complete).await.ok()?;
+
+    let account_contract = SchnorrAccountContract::new(secret_key);
+
+    // Register account contract artifact + instance in PXE
+    let compiled_account_artifact = load_schnorr_account_artifact();
+    let dynamic_artifact = account_contract.contract_artifact().await.ok()?;
+    let dynamic_class_id = compute_contract_class_id_from_artifact(&dynamic_artifact).ok()?;
+
+    pxe.contract_store()
+        .add_artifact(&dynamic_class_id, &compiled_account_artifact)
+        .await
+        .ok()?;
+    let account_instance = ContractInstanceWithAddress {
+        address: complete.address,
+        inner: ContractInstance {
+            version: 1,
+            salt: Fr::from(0u64),
+            deployer: AztecAddress::zero(),
+            current_contract_class_id: dynamic_class_id,
+            original_contract_class_id: dynamic_class_id,
+            initialization_hash: Fr::zero(),
+            public_keys: complete.public_keys.clone(),
+        },
+    };
+    pxe.contract_store()
+        .add_instance(&account_instance)
+        .await
+        .ok()?;
+
+    // Seed signing key note (pre-imported accounts' notes aren't discoverable)
+    let signing_pk = account_contract.signing_public_key();
+    let note = StoredNote {
+        contract_address: complete.address,
+        owner: complete.address,
+        storage_slot: Fr::from(1u64),
+        randomness: Fr::zero(),
+        note_nonce: Fr::from(1u64),
+        note_hash: Fr::from(1u64),
+        siloed_nullifier: Fr::from_hex(
+            "0xdeadbeef00000000000000000000000000000000000000000000000000000001",
+        )
+        .expect("unique nullifier"),
+        note_data: vec![signing_pk.x, signing_pk.y],
+        nullified: false,
+        is_pending: false,
+        nullification_block_number: None,
+        leaf_index: None,
+        block_number: None,
+        tx_index_in_block: None,
+        note_index_in_tx: None,
+        scopes: vec![complete.address],
+    };
+    pxe.note_store()
+        .add_note(&note)
+        .await
+        .expect("seed signing key note");
+
+    let provider =
+        SingleAccountProvider::new(complete.clone(), Box::new(account_contract), account.alias);
+    let wallet = BaseWallet::new(pxe, node, provider);
+    Some((wallet, complete.address))
+}
+
+// ---------------------------------------------------------------------------
+// Public storage helpers
+// ---------------------------------------------------------------------------
+
+/// Derive a storage slot for a key in a Map storage variable.
+pub fn derive_storage_slot_in_map(base_slot: u64, key: &AztecAddress) -> Fr {
+    const DOM_SEP_PUBLIC_STORAGE_MAP_SLOT: u32 = 4_015_149_901;
+    aztec_rs::hash::poseidon2_hash_with_separator(
+        &[Fr::from(base_slot), Fr::from(*key)],
+        DOM_SEP_PUBLIC_STORAGE_MAP_SLOT,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Wallet setup with extra accounts (authwit-capable)
+// ---------------------------------------------------------------------------
+
+/// Registers an account's Schnorr contract artifact and instance on the PXE so
+/// that auth-witness inner-hash lookups resolve correctly.
+pub async fn register_account_for_authwit(
+    pxe: &EmbeddedPxe<HttpNodeClient>,
+    compiled_artifact: &ContractArtifact,
+    account: ImportedTestAccount,
+) {
+    let secret_key = Fr::from_hex(account.secret_key).expect("valid sk");
+    let account_contract = SchnorrAccountContract::new(secret_key);
+    let dynamic_artifact = account_contract
+        .contract_artifact()
+        .await
+        .expect("dynamic artifact");
+    let complete = imported_complete_address(account);
+
+    let class_id =
+        compute_contract_class_id_from_artifact(&dynamic_artifact).expect("compute class id");
+    pxe.contract_store()
+        .add_artifact(&class_id, compiled_artifact)
+        .await
+        .expect("register compiled account artifact");
+
+    let instance = ContractInstanceWithAddress {
+        address: complete.address,
+        inner: ContractInstance {
+            version: 1,
+            salt: Fr::from(0u64),
+            deployer: AztecAddress::zero(),
+            current_contract_class_id: class_id,
+            original_contract_class_id: class_id,
+            initialization_hash: Fr::zero(),
+            public_keys: complete.public_keys.clone(),
+        },
+    };
+    pxe.contract_store()
+        .add_instance(&instance)
+        .await
+        .expect("register account instance");
+}
+
+/// Creates a wallet for `primary` with `extra` accounts also registered,
+/// including authwit contract registration and signing key note injection.
+/// This is the full-featured variant used by token tests that need authwit.
+pub async fn create_wallet(
+    primary: ImportedTestAccount,
+    extra: &[ImportedTestAccount],
+) -> Option<(SharedTestWallet, AztecAddress)> {
+    let url = node_url();
+    let node = create_aztec_node_client(&url);
+    if node.get_node_info().await.is_err() {
+        return None;
+    }
+
+    let kv = Arc::new(InMemoryKvStore::new());
+    let pxe = EmbeddedPxe::create(node.clone(), kv).await.ok()?;
+
+    let secret_key = Fr::from_hex(primary.secret_key).expect("valid primary secret key");
+    let complete = imported_complete_address(primary);
+    pxe.key_store()
+        .add_account(&secret_key)
+        .await
+        .expect("seed key store");
+    pxe.address_store()
+        .add(&complete)
+        .await
+        .expect("seed address store");
+
+    for account in extra {
+        let sk = Fr::from_hex(account.secret_key).expect("valid extra secret key");
+        let ca = imported_complete_address(*account);
+        pxe.key_store()
+            .add_account(&sk)
+            .await
+            .expect("seed extra key");
+        pxe.address_store()
+            .add(&ca)
+            .await
+            .expect("seed extra address");
+        pxe.register_sender(&ca.address)
+            .await
+            .expect("register sender");
+    }
+
+    let compiled_account = load_schnorr_account_artifact();
+    register_account_for_authwit(&pxe, &compiled_account, primary).await;
+    for account in extra {
+        register_account_for_authwit(&pxe, &compiled_account, *account).await;
+    }
+
+    let account_contract = SchnorrAccountContract::new(secret_key);
+    let signing_pk = account_contract.signing_public_key();
+    let note = StoredNote {
+        contract_address: complete.address,
+        owner: complete.address,
+        storage_slot: Fr::from(1u64),
+        randomness: Fr::zero(),
+        note_nonce: Fr::from(1u64),
+        note_hash: Fr::from(1u64),
+        siloed_nullifier: Fr::from_hex(
+            "0xdeadbeef00000000000000000000000000000000000000000000000000000001",
+        )
+        .expect("unique nullifier"),
+        note_data: vec![signing_pk.x, signing_pk.y],
+        nullified: false,
+        is_pending: false,
+        nullification_block_number: None,
+        leaf_index: None,
+        block_number: None,
+        tx_index_in_block: None,
+        note_index_in_tx: None,
+        scopes: vec![complete.address],
+    };
+    pxe.note_store()
+        .add_note(&note)
+        .await
+        .expect("seed signing note");
+
+    let provider = SingleAccountProvider::new(
+        complete.clone(),
+        Box::new(SchnorrAccountContract::new(secret_key)),
+        primary.alias,
+    );
+    let wallet = Arc::new(BaseWallet::new(pxe, node, provider));
+    Some((wallet, complete.address))
+}
+
+/// Creates a wallet for `primary` with `extra` accounts registered in the PXE
+/// (for event decryption), but without authwit contract/note setup.
+pub async fn setup_wallet_with_accounts(
+    primary: ImportedTestAccount,
+    extra: &[ImportedTestAccount],
+) -> Option<(TestWallet, AztecAddress)> {
+    let url = node_url();
+    let node = create_aztec_node_client(&url);
+    if node.get_node_info().await.is_err() {
+        return None;
+    }
+
+    let kv = Arc::new(InMemoryKvStore::new());
+    let pxe = EmbeddedPxe::create(node.clone(), kv).await.ok()?;
+
+    let secret_key = Fr::from_hex(primary.secret_key).expect("valid test account secret key");
+    let complete = imported_complete_address(primary);
+    pxe.key_store()
+        .add_account(&secret_key)
+        .await
+        .expect("seed key store for primary");
+    pxe.address_store()
+        .add(&complete)
+        .await
+        .expect("seed address store for primary");
+
+    for account in extra {
+        let sk = Fr::from_hex(account.secret_key).expect("valid extra account secret key");
+        let ca = imported_complete_address(*account);
+        pxe.key_store()
+            .add_account(&sk)
+            .await
+            .expect("seed key store for extra account");
+        pxe.address_store()
+            .add(&ca)
+            .await
+            .expect("seed address store for extra account");
+    }
+
+    let account_contract = SchnorrAccountContract::new(secret_key);
+    let provider =
+        SingleAccountProvider::new(complete.clone(), Box::new(account_contract), primary.alias);
+    let wallet = BaseWallet::new(pxe, node, provider);
+    Some((wallet, complete.address))
+}
+
+// ---------------------------------------------------------------------------
+// Contract deployment helpers
+// ---------------------------------------------------------------------------
+
+/// Registers a contract class and instance on a PXE.
+pub async fn register_contract_on_pxe(
+    pxe: &impl Pxe,
+    artifact: &ContractArtifact,
+    instance: &ContractInstanceWithAddress,
+) {
+    pxe.register_contract_class(artifact).await.ok();
+    pxe.register_contract(RegisterContractRequest {
+        instance: instance.clone(),
+        artifact: Some(artifact.clone()),
+    })
+    .await
+    .expect("register contract");
+}
+
+/// Deploys a contract and returns its address, artifact, and instance.
+pub async fn deploy_contract(
+    wallet: &(impl Wallet + Send + Sync),
+    artifact: ContractArtifact,
+    constructor_args: Vec<AbiValue>,
+    from: AztecAddress,
+) -> (AztecAddress, ContractArtifact, ContractInstanceWithAddress) {
+    let result = Contract::deploy(wallet, artifact.clone(), constructor_args, None)
+        .expect("deploy builder")
+        .send(
+            &DeployOptions {
+                contract_address_salt: Some(Fr::from(next_unique_salt())),
+                ..Default::default()
+            },
+            SendOptions {
+                from,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("deploy contract");
+
+    (result.instance.address, artifact, result.instance)
+}
+
+/// Constructs a `ContractInstanceWithAddress` locally (without deploying).
+/// Useful for registering pre-existing contracts on a PXE.
+pub fn make_instance(artifact: &ContractArtifact, salt: u64) -> ContractInstanceWithAddress {
+    let class_id = compute_contract_class_id_from_artifact(artifact).expect("compute class id");
+    let inner = ContractInstance {
+        version: 1,
+        salt: Fr::from(salt),
+        deployer: AztecAddress(Fr::zero()),
+        current_contract_class_id: class_id,
+        original_contract_class_id: class_id,
+        initialization_hash: Fr::zero(),
+        public_keys: PublicKeys::default(),
+    };
+    let address = compute_contract_address_from_instance(&inner).expect("compute address");
+    ContractInstanceWithAddress { address, inner }
+}
+
+// ---------------------------------------------------------------------------
+// Contract interaction helpers
+// ---------------------------------------------------------------------------
+
+/// Builds a [`FunctionCall`] by looking up `method_name` in the artifact.
+pub fn build_call(
+    artifact: &ContractArtifact,
+    contract_address: AztecAddress,
+    method_name: &str,
+    args: Vec<AbiValue>,
+) -> FunctionCall {
+    let func = artifact
+        .find_function(method_name)
+        .unwrap_or_else(|_| panic!("function '{method_name}' not found in artifact"));
+    FunctionCall {
+        to: contract_address,
+        selector: func.selector.expect("selector"),
+        args,
+        function_type: func.function_type.clone(),
+        is_static: func.is_static,
+        hide_msg_sender: false,
+    }
+}
+
+/// Sends a single contract method call as a transaction.
+pub async fn send_token_method(
+    wallet: &(impl Wallet + Send + Sync),
+    artifact: &ContractArtifact,
+    token_address: AztecAddress,
+    method_name: &str,
+    args: Vec<AbiValue>,
+    from: AztecAddress,
+) {
+    let call = build_call(artifact, token_address, method_name, args);
+    wallet
+        .send_tx(
+            ExecutionPayload {
+                calls: vec![call],
+                ..Default::default()
+            },
+            SendOptions {
+                from,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("send tx");
+}
+
+/// Sends a single [`FunctionCall`] as a transaction.
+pub async fn send_call(
+    wallet: &(impl Wallet + Send + Sync),
+    call: FunctionCall,
+    from: AztecAddress,
+) {
+    wallet
+        .send_tx(
+            ExecutionPayload {
+                calls: vec![call],
+                ..Default::default()
+            },
+            SendOptions {
+                from,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("send tx");
+}
+
+/// Sends a call and asserts it fails with an error containing one of the
+/// expected fragments (case-insensitive).
+pub async fn send_call_should_fail(
+    wallet: &(impl Wallet + Send + Sync),
+    call: FunctionCall,
+    from: AztecAddress,
+    expected_fragments: &[&str],
+) {
+    let err = wallet
+        .send_tx(
+            ExecutionPayload {
+                calls: vec![call],
+                ..Default::default()
+            },
+            SendOptions {
+                from,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("should fail");
+
+    let err_str = err.to_string().to_lowercase();
+    let matches = expected_fragments
+        .iter()
+        .any(|frag| err_str.contains(&frag.to_lowercase()));
+    assert!(
+        matches,
+        "expected one of {:?}, got: {}",
+        expected_fragments, err
+    );
+}
+
+/// Simulates a call and asserts it fails with an error containing one of the
+/// expected fragments (case-insensitive).
+pub async fn simulate_should_fail(
+    wallet: &(impl Wallet + Send + Sync),
+    call: FunctionCall,
+    from: AztecAddress,
+    expected_fragments: &[&str],
+) {
+    let err = wallet
+        .simulate_tx(
+            ExecutionPayload {
+                calls: vec![call],
+                ..Default::default()
+            },
+            SimulateOptions {
+                from,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("should fail");
+
+    let err_str = err.to_string().to_lowercase();
+    let matches = expected_fragments
+        .iter()
+        .any(|frag| err_str.contains(&frag.to_lowercase()));
+    assert!(
+        matches,
+        "expected one of {:?}, got: {}",
+        expected_fragments, err
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Utility (view) call helpers
+// ---------------------------------------------------------------------------
+
+/// Execute a utility function and return the raw first-field value as `u64`.
+#[allow(clippy::cast_possible_truncation)]
+pub async fn call_utility_u64(
+    wallet: &(impl Wallet + Send + Sync),
+    artifact: &ContractArtifact,
+    contract_address: AztecAddress,
+    method_name: &str,
+    args: Vec<AbiValue>,
+    scope: AztecAddress,
+) -> u64 {
+    let func = artifact
+        .find_function(method_name)
+        .unwrap_or_else(|e| panic!("function '{method_name}' not found: {e}"));
+    let call = FunctionCall {
+        to: contract_address,
+        selector: func.selector.expect("selector"),
+        args,
+        function_type: FunctionType::Utility,
+        is_static: false,
+        hide_msg_sender: false,
+    };
+    let result = wallet
+        .execute_utility(
+            call,
+            ExecuteUtilityOptions {
+                scope,
+                auth_witnesses: vec![],
+            },
+        )
+        .await
+        .unwrap_or_else(|e| panic!("execute {method_name}: {e}"));
+
+    result
+        .result
+        .as_array()
+        .and_then(|arr| arr.first())
+        .and_then(|v| v.as_str())
+        .and_then(|s| Fr::from_hex(s).ok())
+        .map_or(0u64, |f| f.to_usize() as u64)
+}
+
+/// Execute a utility function and return the result as `u128`.
+pub async fn call_utility_u128(
+    wallet: &(impl Wallet + Send + Sync),
+    artifact: &ContractArtifact,
+    contract_address: AztecAddress,
+    method_name: &str,
+    args: Vec<AbiValue>,
+    scope: AztecAddress,
+) -> u128 {
+    u128::from(call_utility_u64(wallet, artifact, contract_address, method_name, args, scope).await)
+}
+
+/// Execute a utility function and return the result as `bool`.
+pub async fn call_utility_bool(
+    wallet: &(impl Wallet + Send + Sync),
+    artifact: &ContractArtifact,
+    contract_address: AztecAddress,
+    method_name: &str,
+    args: Vec<AbiValue>,
+    scope: AztecAddress,
+) -> bool {
+    call_utility_u64(wallet, artifact, contract_address, method_name, args, scope).await != 0
+}
+
+// ---------------------------------------------------------------------------
+// Public storage helpers
+// ---------------------------------------------------------------------------
+
+/// Read a raw `Fr` from public storage at the given slot.
+pub async fn read_public_storage(wallet: &TestWallet, contract: AztecAddress, slot: Fr) -> Fr {
+    wallet
+        .pxe()
+        .node()
+        .get_public_storage_at(0, &contract, &slot)
+        .await
+        .expect("get_public_storage_at")
+}
+
+/// Read a `u128` value from public storage at the given slot.
+pub async fn read_public_u128(wallet: &TestWallet, contract: AztecAddress, slot: Fr) -> u128 {
+    let raw = read_public_storage(wallet, contract, slot).await;
+    let bytes = raw.to_be_bytes();
+    u128::from_be_bytes(bytes[16..32].try_into().expect("16 bytes"))
+}
+
+// ---------------------------------------------------------------------------
+// ABI encoding helpers
+// ---------------------------------------------------------------------------
+
+/// Wrap an [`AztecAddress`] into the ABI struct representation
+/// `{ inner: Field }` expected by contract function arguments.
+pub fn abi_address(address: AztecAddress) -> AbiValue {
+    let mut fields = BTreeMap::new();
+    fields.insert("inner".to_owned(), AbiValue::Field(Fr::from(address)));
+    AbiValue::Struct(fields)
+}
+
+/// Wrap a [`FunctionSelector`] into the ABI struct representation
+/// `{ inner: u32 }` expected by contract function arguments.
+pub fn abi_selector(selector: FunctionSelector) -> AbiValue {
+    let mut fields = BTreeMap::new();
+    fields.insert(
+        "inner".to_owned(),
+        AbiValue::Integer(u32::from_be_bytes(selector.0).into()),
+    );
+    AbiValue::Struct(fields)
+}
+
+/// Build a proxy forwarding call (e.g. `forward_private_N`).
+pub fn build_proxy_call(
+    proxy_artifact: &ContractArtifact,
+    proxy_address: AztecAddress,
+    action: &FunctionCall,
+) -> FunctionCall {
+    let method_name = format!("forward_private_{}", action.args.len());
+    build_call(
+        proxy_artifact,
+        proxy_address,
+        &method_name,
+        vec![
+            abi_address(action.to),
+            abi_selector(action.selector),
+            AbiValue::Array(action.args.clone()),
+        ],
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Token-specific constants
+// ---------------------------------------------------------------------------
+
+/// Storage slot layout for the token contract (matches upstream Noir storage struct).
+pub mod token_storage {
+    /// `public_balances: Map<AztecAddress, PublicMutable<U128>>`
+    pub const PUBLIC_BALANCES_SLOT: u64 = 5;
+}
+
+/// Read the public balance of an account from the token contract.
+pub async fn public_balance(
+    wallet: &TestWallet,
+    token: AztecAddress,
+    account: &AztecAddress,
+) -> u128 {
+    let slot = derive_storage_slot_in_map(token_storage::PUBLIC_BALANCES_SLOT, account);
+    read_public_u128(wallet, token, slot).await
+}
