@@ -315,6 +315,18 @@ pub trait AztecNode: Send + Sync {
         entry_key: &Fr,
     ) -> Result<serde_json::Value, Error>;
 
+    /// Get the checkpoint number at which an L1-to-L2 message becomes available.
+    ///
+    /// Returns `None` if the message is not yet known to the archiver.
+    async fn get_l1_to_l2_message_checkpoint(
+        &self,
+        l1_to_l2_message: &Fr,
+    ) -> Result<Option<u64>, Error> {
+        // Default: not implemented
+        let _ = l1_to_l2_message;
+        Ok(None)
+    }
+
     /// Delegate public call simulation to the node.
     async fn simulate_public_calls(
         &self,
@@ -574,6 +586,20 @@ impl AztecNode for HttpNodeClient {
                 serde_json::json!([block_param_json(block_number), entry_key]),
             )
             .await
+    }
+
+    async fn get_l1_to_l2_message_checkpoint(
+        &self,
+        l1_to_l2_message: &Fr,
+    ) -> Result<Option<u64>, Error> {
+        let result: Option<serde_json::Value> = self
+            .transport
+            .call_optional(
+                "node_getL1ToL2MessageCheckpoint",
+                serde_json::json!([l1_to_l2_message]),
+            )
+            .await?;
+        Ok(result.and_then(|v| v.as_u64()))
     }
 
     async fn simulate_public_calls(
