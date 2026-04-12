@@ -25,69 +25,14 @@
     unused_imports
 )]
 
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+mod common;
+use common::*;
 
-use aztec_rs::abi::{AbiValue, ContractArtifact, FunctionType};
-use aztec_rs::account::AccountContract;
-use aztec_rs::account::{SchnorrAccountContract, SingleAccountProvider};
-use aztec_rs::contract::{BatchCall, Contract};
-use aztec_rs::crypto::complete_address_from_secret_key_and_partial_address;
-use aztec_rs::deployment::DeployOptions;
-use aztec_rs::embedded_pxe::stores::note_store::StoredNote;
-use aztec_rs::embedded_pxe::{EmbeddedPxe, InMemoryKvStore};
-use aztec_rs::hash::compute_contract_class_id_from_artifact;
-use aztec_rs::node::{create_aztec_node_client, AztecNode, HttpNodeClient};
-use aztec_rs::pxe::{Pxe, RegisterContractRequest};
-use aztec_rs::tx::{ExecutionPayload, FunctionCall};
-use aztec_rs::types::{AztecAddress, CompleteAddress, Fr};
-use aztec_rs::types::{ContractInstance, ContractInstanceWithAddress};
-use aztec_rs::wallet::{BaseWallet, ExecuteUtilityOptions, SendOptions, SimulateOptions, Wallet};
-
-use tokio::sync::OnceCell;
+use aztec_rs::contract::BatchCall;
 
 // ---------------------------------------------------------------------------
-// Fixtures
+// File-specific artifact loaders
 // ---------------------------------------------------------------------------
-
-fn load_artifact_from_candidates(display_name: &str, candidates: &[PathBuf]) -> ContractArtifact {
-    for path in candidates {
-        if let Ok(json) = fs::read_to_string(path) {
-            return ContractArtifact::from_nargo_json(&json)
-                .unwrap_or_else(|e| panic!("parse {display_name} from {}: {e}", path.display()));
-        }
-    }
-
-    let searched = candidates
-        .iter()
-        .map(|p| p.display().to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
-    panic!("could not locate {display_name}; searched: {searched}");
-}
-
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
-}
-
-fn load_stateful_test_artifact() -> ContractArtifact {
-    let root = repo_root();
-    load_artifact_from_candidates(
-        "StatefulTestContract artifact",
-        &[
-            root.join("fixtures/stateful_test_contract_compiled.json"),
-            root.join("../aztec-packages/noir-projects/noir-contracts/target/stateful_test_contract-StatefulTest.json"),
-        ],
-    )
-}
-
-fn load_token_artifact() -> ContractArtifact {
-    let json = include_str!("../fixtures/token_contract_compiled.json");
-    ContractArtifact::from_nargo_json(json).expect("parse token_contract_compiled.json")
-}
 
 fn load_counter_artifact() -> Option<ContractArtifact> {
     let json = include_str!("../fixtures/counter_contract.json");
@@ -101,289 +46,6 @@ fn load_counter_artifact() -> Option<ContractArtifact> {
     } else {
         None
     }
-}
-
-fn load_schnorr_account_artifact() -> ContractArtifact {
-    let root = repo_root();
-    load_artifact_from_candidates(
-        "SchnorrAccount artifact",
-        &[
-            root.join("fixtures/schnorr_account_contract_compiled.json"),
-            root.join("../aztec-packages/noir-projects/noir-contracts/target/schnorr_account_contract-SchnorrAccount.json"),
-        ],
-    )
-}
-
-fn load_no_constructor_artifact() -> Option<ContractArtifact> {
-    let root = repo_root();
-    let candidates = [
-        root.join("fixtures/no_constructor_contract_compiled.json"),
-        root.join("../aztec-packages/noir-projects/noir-contracts/target/no_constructor_contract-NoConstructor.json"),
-    ];
-    for path in &candidates {
-        if let Ok(json) = fs::read_to_string(path) {
-            return ContractArtifact::from_nargo_json(&json).ok();
-        }
-    }
-    None
-}
-
-// ---------------------------------------------------------------------------
-// Setup helpers
-// ---------------------------------------------------------------------------
-
-type TestWallet = BaseWallet<EmbeddedPxe<HttpNodeClient>, HttpNodeClient, SingleAccountProvider>;
-
-#[derive(Clone, Copy)]
-struct ImportedTestAccount {
-    alias: &'static str,
-    address: &'static str,
-    secret_key: &'static str,
-    partial_address: &'static str,
-}
-
-const TEST_ACCOUNT_0: ImportedTestAccount = ImportedTestAccount {
-    alias: "test0",
-    address: "0x0a60414ee907527880b7a53d4dacdeb9ef768bb98d9d8d1e7200725c13763331",
-    secret_key: "0x2153536ff6628eee01cf4024889ff977a18d9fa61d0e414422f7681cf085c281",
-    partial_address: "0x140c3a658e105092549c8402f0647fe61d87aba4422b484dfac5d4a87462eeef",
-};
-
-fn node_url() -> String {
-    std::env::var("AZTEC_NODE_URL").unwrap_or_else(|_| "http://localhost:8080".to_owned())
-}
-
-fn serial_guard() -> MutexGuard<'static, ()> {
-    static E2E_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    E2E_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-#[allow(clippy::cast_possible_truncation)]
-fn next_unique_salt() -> u64 {
-    static NEXT_SALT: OnceLock<AtomicU64> = OnceLock::new();
-    let seed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(1);
-    NEXT_SALT
-        .get_or_init(|| AtomicU64::new(seed))
-        .fetch_add(1, Ordering::Relaxed)
-}
-
-fn imported_complete_address(account: ImportedTestAccount) -> CompleteAddress {
-    let expected_address =
-        AztecAddress(Fr::from_hex(account.address).expect("valid test account address"));
-    let secret_key = Fr::from_hex(account.secret_key).expect("valid test account secret key");
-    let partial_address =
-        Fr::from_hex(account.partial_address).expect("valid test account partial address");
-    let complete =
-        complete_address_from_secret_key_and_partial_address(&secret_key, &partial_address)
-            .expect("derive complete address");
-    assert_eq!(
-        complete.address, expected_address,
-        "imported fixture address does not match for {}",
-        account.alias
-    );
-    complete
-}
-
-async fn setup_wallet(account: ImportedTestAccount) -> Option<(TestWallet, AztecAddress)> {
-    let url = node_url();
-    let node = create_aztec_node_client(&url);
-    if node.get_node_info().await.is_err() {
-        return None;
-    }
-
-    let kv = Arc::new(InMemoryKvStore::new());
-    let pxe = EmbeddedPxe::create(node.clone(), kv).await.ok()?;
-
-    let secret_key = Fr::from_hex(account.secret_key).expect("valid sk");
-    let complete = imported_complete_address(account);
-
-    pxe.key_store().add_account(&secret_key).await.ok()?;
-    pxe.address_store().add(&complete).await.ok()?;
-
-    let account_contract = SchnorrAccountContract::new(secret_key);
-
-    // Register the Schnorr account contract artifact + instance + signing key
-    // note in the PXE so that execute_entrypoint_via_acvm can run the real Noir
-    // entrypoint circuit for public function calls.
-    let compiled_account_artifact = load_schnorr_account_artifact();
-    let dynamic_artifact = account_contract.contract_artifact().await.ok()?;
-    let dynamic_class_id = compute_contract_class_id_from_artifact(&dynamic_artifact).ok()?;
-
-    pxe.contract_store()
-        .add_artifact(&dynamic_class_id, &compiled_account_artifact)
-        .await
-        .ok()?;
-
-    let account_instance = ContractInstanceWithAddress {
-        address: complete.address,
-        inner: ContractInstance {
-            version: 1,
-            salt: Fr::from(0u64),
-            deployer: AztecAddress::zero(),
-            current_contract_class_id: dynamic_class_id,
-            original_contract_class_id: dynamic_class_id,
-            initialization_hash: Fr::zero(),
-            public_keys: complete.public_keys.clone(),
-        },
-    };
-    pxe.contract_store()
-        .add_instance(&account_instance)
-        .await
-        .ok()?;
-
-    let signing_pk = account_contract.signing_public_key();
-    let note = StoredNote {
-        contract_address: complete.address,
-        owner: complete.address,
-        storage_slot: Fr::from(1u64),
-        randomness: Fr::zero(),
-        note_nonce: Fr::from(1u64),
-        note_hash: Fr::from(1u64),
-        siloed_nullifier: Fr::from_hex(
-            "0xdeadbeef00000000000000000000000000000000000000000000000000000001",
-        )
-        .expect("unique nullifier"),
-        note_data: vec![signing_pk.x, signing_pk.y],
-        nullified: false,
-        is_pending: false,
-        nullification_block_number: None,
-        leaf_index: None,
-        block_number: None,
-        tx_index_in_block: None,
-        note_index_in_tx: None,
-        scopes: vec![complete.address],
-    };
-    pxe.note_store()
-        .add_note(&note)
-        .await
-        .expect("seed signing key note");
-
-    let provider =
-        SingleAccountProvider::new(complete.clone(), Box::new(account_contract), account.alias);
-    let wallet = BaseWallet::new(pxe, node, provider);
-    Some((wallet, complete.address))
-}
-
-// ---------------------------------------------------------------------------
-// Contract interaction helpers
-// ---------------------------------------------------------------------------
-
-/// Build an AbiValue representing an AztecAddress struct `{ inner: Field }`.
-/// Required for `encode_arguments` which type-checks against the artifact ABI.
-fn abi_address(addr: AztecAddress) -> AbiValue {
-    let mut fields = std::collections::BTreeMap::new();
-    fields.insert("inner".to_owned(), AbiValue::Field(Fr::from(addr)));
-    AbiValue::Struct(fields)
-}
-
-fn make_call(
-    artifact: &ContractArtifact,
-    contract_address: AztecAddress,
-    method_name: &str,
-    args: Vec<AbiValue>,
-) -> FunctionCall {
-    let func = artifact
-        .find_function(method_name)
-        .unwrap_or_else(|e| panic!("function '{method_name}' not found: {e}"));
-    FunctionCall {
-        to: contract_address,
-        selector: func.selector.expect("selector"),
-        args,
-        function_type: func.function_type.clone(),
-        is_static: false,
-        hide_msg_sender: false,
-    }
-}
-
-async fn send_call(wallet: &TestWallet, call: FunctionCall, from: AztecAddress) {
-    wallet
-        .send_tx(
-            ExecutionPayload {
-                calls: vec![call],
-                ..Default::default()
-            },
-            SendOptions {
-                from,
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("send tx");
-}
-
-async fn call_utility_u64(
-    wallet: &TestWallet,
-    artifact: &ContractArtifact,
-    contract_address: AztecAddress,
-    method_name: &str,
-    args: Vec<AbiValue>,
-    scope: AztecAddress,
-) -> u64 {
-    let func = artifact.find_function(method_name).expect("find function");
-    let call = FunctionCall {
-        to: contract_address,
-        selector: func.selector.expect("selector"),
-        args,
-        function_type: FunctionType::Utility,
-        is_static: false,
-        hide_msg_sender: false,
-    };
-    let result = wallet
-        .execute_utility(
-            call,
-            ExecuteUtilityOptions {
-                scope,
-                auth_witnesses: vec![],
-            },
-        )
-        .await
-        .unwrap_or_else(|e| panic!("execute {method_name}: {e}"));
-
-    #[allow(clippy::cast_possible_truncation)]
-    result
-        .result
-        .as_array()
-        .and_then(|arr| arr.first())
-        .and_then(|v| v.as_str())
-        .and_then(|s| Fr::from_hex(s).ok())
-        .map_or(0u64, |f| f.to_usize() as u64)
-}
-
-async fn call_utility_bool(
-    wallet: &TestWallet,
-    artifact: &ContractArtifact,
-    contract_address: AztecAddress,
-    method_name: &str,
-    args: Vec<AbiValue>,
-    scope: AztecAddress,
-) -> bool {
-    call_utility_u64(wallet, artifact, contract_address, method_name, args, scope).await != 0
-}
-
-/// Read a public value via public storage (for Brillig view functions).
-async fn read_public_u128(wallet: &TestWallet, contract: AztecAddress, slot: Fr) -> u128 {
-    let raw = wallet
-        .pxe()
-        .node()
-        .get_public_storage_at(0, &contract, &slot)
-        .await
-        .expect("get_public_storage_at");
-    let bytes = raw.to_be_bytes();
-    u128::from_be_bytes(bytes[16..32].try_into().expect("16 bytes"))
-}
-
-fn derive_storage_slot_in_map(base_slot: u64, key: &AztecAddress) -> Fr {
-    const DOM_SEP_PUBLIC_STORAGE_MAP_SLOT: u32 = 4_015_149_901;
-    aztec_rs::hash::poseidon2_hash_with_separator(
-        &[Fr::from(base_slot), Fr::from(*key)],
-        DOM_SEP_PUBLIC_STORAGE_MAP_SLOT,
-    )
 }
 
 // ---------------------------------------------------------------------------
@@ -506,7 +168,7 @@ async fn publicly_deploys_and_initializes() {
     assert_eq!(summed, 42, "summed_values should be 42");
 
     // Verify public interaction: increment_public_value then read
-    let call = make_call(
+    let call = build_call(
         &artifact,
         contract_address,
         "increment_public_value",
@@ -577,7 +239,7 @@ async fn publicly_universally_deploys_and_initializes() {
     .await;
     assert_eq!(summed, 42, "summed_values should be 42");
 
-    let call = make_call(
+    let call = build_call(
         &artifact,
         contract_address,
         "increment_public_value",
@@ -679,7 +341,7 @@ async fn publicly_deploys_via_public_constructor() {
     );
 
     // Call a private function and verify
-    let call = make_call(
+    let call = build_call(
         &artifact,
         contract_address,
         "create_note",
@@ -739,7 +401,7 @@ async fn deploys_with_default_initializer_not_named_constructor() {
     let contract_address = result.instance.address;
 
     // Increment twice
-    let call = make_call(
+    let call = build_call(
         &artifact,
         contract_address,
         "increment_twice",
@@ -793,7 +455,7 @@ async fn publicly_deploys_no_constructor() {
     let contract_address = result.instance.address;
 
     // Call emit_public(42) and verify via logs
-    let call = make_call(
+    let call = build_call(
         &artifact,
         contract_address,
         "emit_public",
@@ -875,7 +537,7 @@ async fn batch_deploy_and_public_call() {
         .expect("register class locally");
     s.wallet
         .pxe()
-        .register_contract(aztec_rs::pxe::RegisterContractRequest {
+        .register_contract(RegisterContractRequest {
             instance: instance.clone(),
             artifact: Some(artifact.clone()),
         })
@@ -884,7 +546,7 @@ async fn batch_deploy_and_public_call() {
 
     // Build deploy payload and public call payload
     let deploy_payload = deploy.request(&deploy_opts).await.expect("deploy request");
-    let public_call = make_call(
+    let public_call = build_call(
         &artifact,
         contract_address,
         "increment_public_value",

@@ -20,36 +20,16 @@
 
 mod common;
 
-use aztec_rs::abi::AbiValue;
 use aztec_rs::constants::protocol_contract_address;
 use aztec_rs::contract::BatchCall;
 use aztec_rs::fee::GasSettings;
+use aztec_rs::node::AztecNode;
 
 use common::*;
-use tokio::sync::OnceCell;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn make_call(
-    artifact: &ContractArtifact,
-    contract_address: AztecAddress,
-    method_name: &str,
-    args: Vec<AbiValue>,
-) -> FunctionCall {
-    let func = artifact
-        .find_function(method_name)
-        .unwrap_or_else(|e| panic!("function '{method_name}' not found: {e}"));
-    FunctionCall {
-        to: contract_address,
-        selector: func.selector.expect("selector"),
-        args,
-        function_type: func.function_type.clone(),
-        is_static: false,
-        hide_msg_sender: false,
-    }
-}
 
 async fn get_fee_juice_balance(wallet: &TestWallet, address: AztecAddress) -> u128 {
     let fee_juice_address = protocol_contract_address::fee_juice();
@@ -72,7 +52,9 @@ struct PrivateFeeState {
     bob_address: AztecAddress,
     token_artifact: ContractArtifact,
     token_address: AztecAddress,
+    #[allow(dead_code)]
     fpc_artifact: Option<ContractArtifact>,
+    #[allow(dead_code)]
     fpc_address: Option<AztecAddress>,
 }
 
@@ -158,7 +140,7 @@ async fn init_shared_state() -> Option<PrivateFeeState> {
 
     // Mint public bananas to Alice
     let mint_amount: i128 = 10_000_000_000_000_000_000_000; // 1e22
-    let mint_public = make_call(
+    let mint_public = build_call(
         &token_artifact,
         token_address,
         "mint_to_public",
@@ -211,7 +193,7 @@ async fn pays_fees_no_public_app_logic() {
     let initial_fee_balance = get_fee_juice_balance(&s.wallet, s.alice_address).await;
 
     // Use public transfer (private notes require full sync infrastructure)
-    let call = make_call(
+    let call = build_call(
         &s.token_artifact,
         s.token_address,
         "transfer_in_public",
@@ -271,7 +253,7 @@ async fn pays_fees_creates_notes_public() {
     let initial_balance = read_public_u128(&s.wallet, s.token_address, slot).await;
     let initial_fee = get_fee_juice_balance(&s.wallet, s.alice_address).await;
 
-    let call = make_call(
+    let call = build_call(
         &s.token_artifact,
         s.token_address,
         "mint_to_public",
@@ -322,7 +304,7 @@ async fn pays_fees_runs_public_app_logic() {
     let initial_bob = read_public_u128(&s.wallet, s.token_address, bob_slot).await;
     let initial_fee = get_fee_juice_balance(&s.wallet, s.alice_address).await;
 
-    let call = make_call(
+    let call = build_call(
         &s.token_artifact,
         s.token_address,
         "transfer_in_public",
@@ -382,7 +364,7 @@ async fn pays_fees_batched_public() {
     let initial_alice = read_public_u128(&s.wallet, s.token_address, alice_slot).await;
     let initial_fee = get_fee_juice_balance(&s.wallet, s.alice_address).await;
 
-    let transfer_call = make_call(
+    let transfer_call = build_call(
         &s.token_artifact,
         s.token_address,
         "transfer_in_public",
@@ -393,7 +375,7 @@ async fn pays_fees_batched_public() {
             AbiValue::Integer(0),
         ],
     );
-    let mint_call = make_call(
+    let mint_call = build_call(
         &s.token_artifact,
         s.token_address,
         "mint_to_public",
@@ -448,7 +430,7 @@ async fn rejects_insufficient_fee_payer() {
         return;
     }
 
-    let call = make_call(
+    let call = build_call(
         &s.token_artifact,
         s.token_address,
         "transfer_in_public",
@@ -495,7 +477,7 @@ async fn insufficient_token_balance_reverts() {
     };
 
     // Transfer more bananas than Alice has
-    let call = make_call(
+    let call = build_call(
         &s.token_artifact,
         s.token_address,
         "transfer_in_public",

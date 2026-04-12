@@ -19,320 +19,18 @@
     unused_imports
 )]
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use aztec_rs::abi::{AbiValue, ContractArtifact, FunctionType};
-use aztec_rs::account::{SchnorrAccountContract, SingleAccountProvider};
-use aztec_rs::contract::Contract;
-use aztec_rs::crypto::complete_address_from_secret_key_and_partial_address;
-use aztec_rs::deployment::DeployOptions;
-use aztec_rs::embedded_pxe::{EmbeddedPxe, InMemoryKvStore};
-use aztec_rs::hash::poseidon2_hash_with_separator;
-use aztec_rs::node::{create_aztec_node_client, AztecNode, HttpNodeClient};
-use aztec_rs::pxe::{Pxe, RegisterContractRequest};
-use aztec_rs::tx::{ExecutionPayload, FunctionCall};
-use aztec_rs::types::{AztecAddress, CompleteAddress, ContractInstanceWithAddress, Fr};
-use aztec_rs::wallet::{BaseWallet, ExecuteUtilityOptions, SendOptions, SimulateOptions, Wallet};
-
-use tokio::sync::OnceCell;
+mod common;
+use common::*;
 
 // ---------------------------------------------------------------------------
-// Fixtures
+// Constants
 // ---------------------------------------------------------------------------
 
-fn load_compiled_token_artifact() -> ContractArtifact {
-    let json = include_str!("../fixtures/token_contract_compiled.json");
-    ContractArtifact::from_nargo_json(json).expect("parse token_contract_compiled.json")
-}
-
-// ---------------------------------------------------------------------------
-// Constants (mirrors upstream fixtures/fixtures.ts)
-// ---------------------------------------------------------------------------
-
-/// Upstream: `export const U128_UNDERFLOW_ERROR = 'Assertion failed: attempt to subtract with overflow'`
-const U128_UNDERFLOW_ERROR: &str = "attempt to subtract with overflow";
-
-/// Mint amount used by setup (mirrors upstream `const amount = 10000n`).
 const MINT_AMOUNT: u64 = 10000;
 
 // ---------------------------------------------------------------------------
-// Setup helpers
+// Local helpers
 // ---------------------------------------------------------------------------
-
-type TestWallet = BaseWallet<EmbeddedPxe<HttpNodeClient>, HttpNodeClient, SingleAccountProvider>;
-
-#[derive(Clone, Copy)]
-struct ImportedTestAccount {
-    alias: &'static str,
-    address: &'static str,
-    secret_key: &'static str,
-    partial_address: &'static str,
-}
-
-const TEST_ACCOUNT_0: ImportedTestAccount = ImportedTestAccount {
-    alias: "test0",
-    address: "0x0a60414ee907527880b7a53d4dacdeb9ef768bb98d9d8d1e7200725c13763331",
-    secret_key: "0x2153536ff6628eee01cf4024889ff977a18d9fa61d0e414422f7681cf085c281",
-    partial_address: "0x140c3a658e105092549c8402f0647fe61d87aba4422b484dfac5d4a87462eeef",
-};
-
-const TEST_ACCOUNT_1: ImportedTestAccount = ImportedTestAccount {
-    alias: "test1",
-    address: "0x00cedf87a800bd88274762d77ffd93e97bc881d1fc99570d62ba97953597914d",
-    secret_key: "0x0aebd1b4be76efa44f5ee655c20bf9ea60f7ae44b9a7fd1fd9f189c7a0b0cdae",
-    partial_address: "0x0325ee1689daec508c6adef0df4a1e270ac1fcf971fed1f893b2d98ad12d6bb8",
-};
-
-fn node_url() -> String {
-    std::env::var("AZTEC_NODE_URL").unwrap_or_else(|_| "http://localhost:8080".to_owned())
-}
-
-fn serial_guard() -> MutexGuard<'static, ()> {
-    static E2E_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    E2E_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-#[allow(clippy::cast_possible_truncation)]
-fn next_unique_salt() -> u64 {
-    static NEXT_SALT: OnceLock<AtomicU64> = OnceLock::new();
-    let seed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(1);
-    NEXT_SALT
-        .get_or_init(|| AtomicU64::new(seed))
-        .fetch_add(1, Ordering::Relaxed)
-}
-
-fn imported_complete_address(account: ImportedTestAccount) -> CompleteAddress {
-    let expected_address =
-        AztecAddress(Fr::from_hex(account.address).expect("valid test account address"));
-    let secret_key = Fr::from_hex(account.secret_key).expect("valid test account secret key");
-    let partial_address =
-        Fr::from_hex(account.partial_address).expect("valid test account partial address");
-    let complete =
-        complete_address_from_secret_key_and_partial_address(&secret_key, &partial_address)
-            .expect("derive complete address");
-    assert_eq!(
-        complete.address, expected_address,
-        "imported fixture address does not match derived complete address for {}",
-        account.alias
-    );
-    complete
-}
-
-async fn setup_wallet(account: ImportedTestAccount) -> Option<(TestWallet, AztecAddress)> {
-    let url = node_url();
-    let node = create_aztec_node_client(&url);
-    if let Err(_err) = node.get_node_info().await {
-        return None;
-    }
-
-    let kv = Arc::new(InMemoryKvStore::new());
-    let pxe = match EmbeddedPxe::create(node.clone(), kv).await {
-        Ok(pxe) => pxe,
-        Err(_err) => {
-            return None;
-        }
-    };
-
-    let secret_key = Fr::from_hex(account.secret_key).expect("valid test account secret key");
-    let complete = imported_complete_address(account);
-
-    if let Err(_err) = pxe.key_store().add_account(&secret_key).await {
-        return None;
-    }
-    if let Err(_err) = pxe.address_store().add(&complete).await {
-        return None;
-    }
-
-    let account_contract = SchnorrAccountContract::new(secret_key);
-    let provider =
-        SingleAccountProvider::new(complete.clone(), Box::new(account_contract), account.alias);
-    let wallet = BaseWallet::new(pxe, node, provider);
-    Some((wallet, complete.address))
-}
-
-// ---------------------------------------------------------------------------
-// Contract interaction helpers
-// ---------------------------------------------------------------------------
-
-async fn deploy_token(
-    wallet: &TestWallet,
-    admin: AztecAddress,
-) -> (AztecAddress, ContractArtifact, ContractInstanceWithAddress) {
-    let artifact = load_compiled_token_artifact();
-    let deploy = Contract::deploy(
-        wallet,
-        artifact.clone(),
-        vec![
-            AbiValue::Field(Fr::from(admin)),
-            AbiValue::String("TestToken".to_owned()),
-            AbiValue::String("TT".to_owned()),
-            AbiValue::Integer(18),
-        ],
-        None,
-    )
-    .expect("token deploy builder");
-    let result = deploy
-        .send(
-            &DeployOptions {
-                contract_address_salt: Some(Fr::from(next_unique_salt())),
-                ..Default::default()
-            },
-            SendOptions {
-                from: admin,
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("deploy token");
-
-    let instance = result.instance;
-    let token_address = instance.address;
-    (token_address, artifact, instance)
-}
-
-async fn register_contract_on_pxe(
-    pxe: &impl Pxe,
-    artifact: &ContractArtifact,
-    instance: &ContractInstanceWithAddress,
-) {
-    pxe.register_contract_class(artifact).await.ok();
-    pxe.register_contract(RegisterContractRequest {
-        instance: instance.clone(),
-        artifact: Some(artifact.clone()),
-    })
-    .await
-    .expect("register contract");
-}
-
-fn build_call(
-    artifact: &ContractArtifact,
-    token_address: AztecAddress,
-    method_name: &str,
-    args: Vec<AbiValue>,
-) -> FunctionCall {
-    let func = artifact
-        .find_function(method_name)
-        .unwrap_or_else(|e| panic!("function '{method_name}' not found: {e}"));
-    FunctionCall {
-        to: token_address,
-        selector: func.selector.expect("selector"),
-        args,
-        function_type: func.function_type.clone(),
-        is_static: false,
-        hide_msg_sender: false,
-    }
-}
-
-async fn send_token_method(
-    wallet: &TestWallet,
-    artifact: &ContractArtifact,
-    token_address: AztecAddress,
-    method_name: &str,
-    args: Vec<AbiValue>,
-    from: AztecAddress,
-) {
-    let call = build_call(artifact, token_address, method_name, args);
-    wallet
-        .send_tx(
-            ExecutionPayload {
-                calls: vec![call],
-                ..Default::default()
-            },
-            SendOptions {
-                from,
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("send tx");
-}
-
-/// Call a utility (view) function and parse the result as a `u128`.
-async fn call_utility_u128(
-    wallet: &TestWallet,
-    artifact: &ContractArtifact,
-    token_address: AztecAddress,
-    method_name: &str,
-    args: Vec<AbiValue>,
-    scope: AztecAddress,
-) -> u128 {
-    let func = artifact
-        .find_function(method_name)
-        .unwrap_or_else(|e| panic!("function '{method_name}' not found: {e}"));
-    let call = FunctionCall {
-        to: token_address,
-        selector: func.selector.expect("selector"),
-        args,
-        function_type: FunctionType::Utility,
-        is_static: false,
-        hide_msg_sender: false,
-    };
-
-    let result = wallet
-        .execute_utility(
-            call,
-            ExecuteUtilityOptions {
-                scope,
-                auth_witnesses: vec![],
-            },
-        )
-        .await
-        .unwrap_or_else(|e| panic!("execute {method_name}: {e}"));
-
-    #[allow(clippy::cast_possible_truncation)]
-    let val = result
-        .result
-        .as_array()
-        .and_then(|arr| arr.first())
-        .and_then(|v| v.as_str())
-        .and_then(|s| Fr::from_hex(s).ok())
-        .map_or(0u64, |f| f.to_usize() as u64);
-    u128::from(val)
-}
-
-// ---------------------------------------------------------------------------
-// Public storage helpers
-// ---------------------------------------------------------------------------
-
-mod token_storage {
-    /// public_balances: Map<AztecAddress, PublicMutable<U128>>
-    pub const PUBLIC_BALANCES_SLOT: u64 = 5;
-}
-
-/// Read a `U128` value from public storage at the given slot.
-async fn read_public_u128(wallet: &TestWallet, contract: AztecAddress, slot: Fr) -> u128 {
-    let raw = wallet
-        .pxe()
-        .node()
-        .get_public_storage_at(0, &contract, &slot)
-        .await
-        .expect("get_public_storage_at");
-    let bytes = raw.to_be_bytes();
-    u128::from_be_bytes(bytes[16..32].try_into().expect("16 bytes"))
-}
-
-/// Derive the storage slot for a map entry.
-fn derive_storage_slot_in_map(base_slot: u64, key: &AztecAddress) -> Fr {
-    const DOM_SEP_PUBLIC_STORAGE_MAP_SLOT: u32 = 4_015_149_901;
-    poseidon2_hash_with_separator(
-        &[Fr::from(base_slot), Fr::from(*key)],
-        DOM_SEP_PUBLIC_STORAGE_MAP_SLOT,
-    )
-}
-
-/// Read the public balance of an account.
-async fn public_balance(wallet: &TestWallet, token: AztecAddress, account: &AztecAddress) -> u128 {
-    let slot = derive_storage_slot_in_map(token_storage::PUBLIC_BALANCES_SLOT, account);
-    read_public_u128(wallet, token, slot).await
-}
 
 /// Wait for the next block to ensure post-TX state is committed.
 async fn wait_for_next_block(wallet: &TestWallet) {
@@ -378,86 +76,16 @@ async fn assert_sim_revert(
 }
 
 // ---------------------------------------------------------------------------
-// Shared test state (mirrors beforeAll in upstream TokenContractTest)
+// Shared test state
 // ---------------------------------------------------------------------------
 
-struct TestState {
-    admin_wallet: TestWallet,
-    account1_wallet: TestWallet,
-    admin_address: AztecAddress,
-    account1_address: AztecAddress,
-    token_address: AztecAddress,
-    token_artifact: ContractArtifact,
-}
+static SHARED_STATE: OnceCell<Option<TokenTestState>> = OnceCell::const_new();
 
-static SHARED_STATE: OnceCell<Option<TestState>> = OnceCell::const_new();
-
-async fn get_shared_state() -> Option<&'static TestState> {
-    let state = SHARED_STATE
-        .get_or_init(|| async { init_shared_state().await })
-        .await;
-    state.as_ref()
-}
-
-async fn init_shared_state() -> Option<TestState> {
-    let (admin_wallet, admin_address) = setup_wallet(TEST_ACCOUNT_0).await?;
-    let (account1_wallet, account1_address) = setup_wallet(TEST_ACCOUNT_1).await?;
-
-    // Register senders across wallets for tag discovery
-    admin_wallet
-        .pxe()
-        .register_sender(&account1_address)
+async fn get_shared_state() -> Option<&'static TokenTestState> {
+    SHARED_STATE
+        .get_or_init(|| async { init_token_test_state(MINT_AMOUNT, MINT_AMOUNT).await })
         .await
-        .expect("admin registers account1");
-    account1_wallet
-        .pxe()
-        .register_sender(&admin_address)
-        .await
-        .expect("account1 registers admin");
-
-    // Deploy token with admin as the admin/minter
-    let (token_address, token_artifact, token_instance) =
-        deploy_token(&admin_wallet, admin_address).await;
-
-    // Register token on account1's PXE
-    register_contract_on_pxe(account1_wallet.pxe(), &token_artifact, &token_instance).await;
-
-    // ── Mint public tokens to admin (mirrors upstream applyMintSnapshot) ──
-    send_token_method(
-        &admin_wallet,
-        &token_artifact,
-        token_address,
-        "mint_to_public",
-        vec![
-            AbiValue::Field(Fr::from(admin_address)),
-            AbiValue::Integer(i128::from(MINT_AMOUNT)),
-        ],
-        admin_address,
-    )
-    .await;
-
-    // ── Mint private tokens to admin ──
-    send_token_method(
-        &admin_wallet,
-        &token_artifact,
-        token_address,
-        "mint_to_private",
-        vec![
-            AbiValue::Field(Fr::from(admin_address)),
-            AbiValue::Integer(i128::from(MINT_AMOUNT)),
-        ],
-        admin_address,
-    )
-    .await;
-
-    Some(TestState {
-        admin_wallet,
-        account1_wallet,
-        admin_address,
-        account1_address,
-        token_address,
-        token_artifact,
-    })
+        .as_ref()
 }
 
 // ===========================================================================
@@ -586,8 +214,8 @@ async fn transfer_to_private_to_self_more_than_balance() {
         return;
     };
 
-    let pub_balance = public_balance(&s.admin_wallet, s.token_address, &s.admin_address).await;
-    let amount = pub_balance + 1;
+    let pub_bal = public_balance(&s.admin_wallet, s.token_address, &s.admin_address).await;
+    let amount = pub_bal + 1;
     assert!(amount > 0, "amount should be positive");
 
     let call = build_call(

@@ -20,14 +20,12 @@
 
 mod common;
 
-use aztec_rs::abi::AbiValue;
 use aztec_rs::constants::protocol_contract_address;
 use aztec_rs::fee::{FeeJuicePaymentMethodWithClaim, FeePaymentMethod, GasSettings, L2AmountClaim};
 use aztec_rs::node::AztecNode;
-use aztec_rs::wallet::{SimulateOptions, Wallet};
+use aztec_rs::wallet::Wallet;
 
 use common::*;
-use tokio::sync::OnceCell;
 
 // ---------------------------------------------------------------------------
 // Fixture loaders
@@ -44,25 +42,6 @@ fn load_fee_juice_artifact() -> Option<ContractArtifact> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn make_call(
-    artifact: &ContractArtifact,
-    contract_address: AztecAddress,
-    method_name: &str,
-    args: Vec<AbiValue>,
-) -> FunctionCall {
-    let func = artifact
-        .find_function(method_name)
-        .unwrap_or_else(|e| panic!("function '{method_name}' not found: {e}"));
-    FunctionCall {
-        to: contract_address,
-        selector: func.selector.expect("selector"),
-        args,
-        function_type: func.function_type.clone(),
-        is_static: false,
-        hide_msg_sender: false,
-    }
-}
 
 async fn get_fee_juice_balance(wallet: &TestWallet, address: AztecAddress) -> u128 {
     let fee_juice_address = protocol_contract_address::fee_juice();
@@ -153,7 +132,7 @@ async fn init_shared_state() -> Option<FeeJuiceState> {
 
     // Mint public bananas
     let mint_amount: i128 = 1_000_000_000_000_000_000_000;
-    let mint_call = make_call(
+    let mint_call = build_call(
         &token_artifact,
         token_address,
         "mint_to_public",
@@ -204,7 +183,7 @@ async fn fails_to_send_without_funds() {
         return;
     };
 
-    let call = make_call(
+    let call = build_call(
         fee_juice_artifact,
         s.fee_juice_address,
         "check_balance",
@@ -265,7 +244,7 @@ async fn claims_bridged_funds_and_pays() {
         .await
         .expect("fee payload");
 
-    let call = make_call(
+    let call = build_call(
         fee_juice_artifact,
         s.fee_juice_address,
         "check_balance",
@@ -326,7 +305,7 @@ async fn pays_fee_juice_with_public_calls() {
 
     let initial_balance = get_fee_juice_balance(&s.wallet, s.alice_address).await;
 
-    let call = make_call(
+    let call = build_call(
         &s.token_artifact,
         s.token_address,
         "transfer_in_public",
@@ -388,7 +367,7 @@ async fn pays_fee_juice_no_public_calls() {
     // Uses mint_to_public + transfer_in_public as a private-note-free
     // alternative, since private note discovery after mint_to_private
     // requires full sync infrastructure not yet available.
-    let call = make_call(
+    let call = build_call(
         &s.token_artifact,
         s.token_address,
         "transfer_in_public",

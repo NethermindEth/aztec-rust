@@ -20,26 +20,9 @@
     unused_imports
 )]
 
-use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+mod common;
 
-use aztec_rs::abi::{AbiValue, ContractArtifact};
-use aztec_rs::account::{SchnorrAccountContract, SingleAccountProvider};
-use aztec_rs::contract::Contract;
-use aztec_rs::crypto::complete_address_from_secret_key_and_partial_address;
-use aztec_rs::deployment::DeployOptions;
-use aztec_rs::embedded_pxe::{EmbeddedPxe, InMemoryKvStore};
-use aztec_rs::node::{create_aztec_node_client, AztecNode, HttpNodeClient};
-use aztec_rs::pxe::{Pxe, RegisterContractRequest};
-use aztec_rs::tx::{ExecutionPayload, FunctionCall};
-use aztec_rs::types::{AztecAddress, CompleteAddress, Fr};
-use aztec_rs::wallet::{
-    BaseWallet, ExecuteUtilityOptions, SendOptions, SimulateOptions, TxSimulationResult,
-    UtilityExecutionResult, Wallet,
-};
-
+use common::*;
 use tokio::sync::OnceCell;
 
 // ---------------------------------------------------------------------------
@@ -50,179 +33,13 @@ const ALICE_NOTE_VALUE: u64 = 42;
 const BOB_NOTE_VALUE: u64 = 100;
 
 // ---------------------------------------------------------------------------
-// Fixtures
+// Extraction helpers (unique to scope tests)
 // ---------------------------------------------------------------------------
-
-fn load_scope_test_artifact() -> ContractArtifact {
-    let json = include_str!("../fixtures/scope_test_contract_compiled.json");
-    ContractArtifact::from_nargo_json(json).expect("parse scope_test_contract_compiled.json")
-}
-
-// ---------------------------------------------------------------------------
-// Setup helpers (mirrors upstream fixtures/utils.ts)
-// ---------------------------------------------------------------------------
-
-type TestWallet = BaseWallet<EmbeddedPxe<HttpNodeClient>, HttpNodeClient, SingleAccountProvider>;
-
-#[derive(Clone, Copy)]
-struct ImportedTestAccount {
-    alias: &'static str,
-    address: &'static str,
-    secret_key: &'static str,
-    partial_address: &'static str,
-}
-
-const TEST_ACCOUNT_0: ImportedTestAccount = ImportedTestAccount {
-    alias: "test0",
-    address: "0x0a60414ee907527880b7a53d4dacdeb9ef768bb98d9d8d1e7200725c13763331",
-    secret_key: "0x2153536ff6628eee01cf4024889ff977a18d9fa61d0e414422f7681cf085c281",
-    partial_address: "0x140c3a658e105092549c8402f0647fe61d87aba4422b484dfac5d4a87462eeef",
-};
-
-const TEST_ACCOUNT_1: ImportedTestAccount = ImportedTestAccount {
-    alias: "test1",
-    address: "0x00cedf87a800bd88274762d77ffd93e97bc881d1fc99570d62ba97953597914d",
-    secret_key: "0x0aebd1b4be76efa44f5ee655c20bf9ea60f7ae44b9a7fd1fd9f189c7a0b0cdae",
-    partial_address: "0x0325ee1689daec508c6adef0df4a1e270ac1fcf971fed1f893b2d98ad12d6bb8",
-};
-
-const TEST_ACCOUNT_2: ImportedTestAccount = ImportedTestAccount {
-    alias: "test2",
-    address: "0x1dd551228da3a56b5da5f5d73728e08d8114f59897c27136f1bcdd4c05028905",
-    secret_key: "0x0f6addf0da06c33293df974a565b03d1ab096090d907d98055a8b7f4954e120c",
-    partial_address: "0x17604ccd69bd09d8df02c4a345bc4232e5d24b568536c55407b3e4e4e3354c4c",
-};
-
-fn node_url() -> String {
-    std::env::var("AZTEC_NODE_URL").unwrap_or_else(|_| "http://localhost:8080".to_owned())
-}
-
-fn serial_guard() -> MutexGuard<'static, ()> {
-    static E2E_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    E2E_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-#[allow(clippy::cast_possible_truncation)]
-fn next_unique_salt() -> u64 {
-    static NEXT_SALT: OnceLock<AtomicU64> = OnceLock::new();
-    let seed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(1);
-    NEXT_SALT
-        .get_or_init(|| AtomicU64::new(seed))
-        .fetch_add(1, Ordering::Relaxed)
-}
-
-fn imported_complete_address(account: ImportedTestAccount) -> CompleteAddress {
-    let expected_address =
-        AztecAddress(Fr::from_hex(account.address).expect("valid test account address"));
-    let secret_key = Fr::from_hex(account.secret_key).expect("valid test account secret key");
-    let partial_address =
-        Fr::from_hex(account.partial_address).expect("valid test account partial address");
-    let complete =
-        complete_address_from_secret_key_and_partial_address(&secret_key, &partial_address)
-            .expect("derive complete address");
-    assert_eq!(
-        complete.address, expected_address,
-        "imported fixture address does not match derived complete address for {}",
-        account.alias
-    );
-    complete
-}
-
-/// Create a wallet for `primary` account with `extra` accounts registered
-/// in the PXE key store (so it can discover notes for those accounts).
-async fn create_wallet(
-    primary: ImportedTestAccount,
-    extra: &[ImportedTestAccount],
-) -> Option<(TestWallet, AztecAddress)> {
-    let url = node_url();
-    let node = create_aztec_node_client(&url);
-    if let Err(_err) = node.get_node_info().await {
-        return None;
-    }
-
-    let kv = Arc::new(InMemoryKvStore::new());
-    let pxe = match EmbeddedPxe::create(node.clone(), kv).await {
-        Ok(pxe) => pxe,
-        Err(_err) => {
-            return None;
-        }
-    };
-
-    // Register primary account
-    let secret_key = Fr::from_hex(primary.secret_key).expect("valid secret key");
-    let complete = imported_complete_address(primary);
-    pxe.key_store()
-        .add_account(&secret_key)
-        .await
-        .expect("seed key store for primary");
-    pxe.address_store()
-        .add(&complete)
-        .await
-        .expect("seed address store for primary");
-
-    // Register extra accounts (so PXE can discover their notes)
-    for account in extra {
-        let sk = Fr::from_hex(account.secret_key).expect("valid extra secret key");
-        let ca = imported_complete_address(*account);
-        pxe.key_store()
-            .add_account(&sk)
-            .await
-            .expect("seed key store for extra");
-        pxe.address_store()
-            .add(&ca)
-            .await
-            .expect("seed address store for extra");
-    }
-
-    let account_contract = SchnorrAccountContract::new(secret_key);
-    let provider =
-        SingleAccountProvider::new(complete.clone(), Box::new(account_contract), primary.alias);
-    let wallet = BaseWallet::new(pxe, node, provider);
-    Some((wallet, complete.address))
-}
-
-// ---------------------------------------------------------------------------
-// Contract interaction helpers
-// ---------------------------------------------------------------------------
-
-/// Build an AztecAddress AbiValue (struct with inner field).
-fn abi_address(address: AztecAddress) -> AbiValue {
-    let mut fields = BTreeMap::new();
-    fields.insert("inner".to_owned(), AbiValue::Field(Fr::from(address)));
-    AbiValue::Struct(fields)
-}
-
-/// Look up a function by name and build a FunctionCall.
-fn build_call(
-    artifact: &ContractArtifact,
-    contract_address: AztecAddress,
-    method_name: &str,
-    args: Vec<AbiValue>,
-) -> FunctionCall {
-    let func = artifact
-        .find_function(method_name)
-        .unwrap_or_else(|_| panic!("function '{method_name}' not found in artifact"));
-    let selector = func.selector.expect("selector");
-    FunctionCall {
-        to: contract_address,
-        selector,
-        args,
-        function_type: func.function_type.clone(),
-        is_static: func.is_static,
-        hide_msg_sender: false,
-    }
-}
 
 /// Try to extract a Field return value from a simulate result.
 /// Returns `None` if the return values are empty (e.g. PCPI-encoded returns
 /// that the PXE doesn't yet surface as ACIR return values).
-fn try_extract_simulate_value(result: &TxSimulationResult) -> Option<u64> {
+fn try_extract_simulate_value(result: &aztec_rs::wallet::TxSimulationResult) -> Option<u64> {
     let rv = result
         .return_values
         .get("returnValues")
@@ -236,7 +53,7 @@ fn try_extract_simulate_value(result: &TxSimulationResult) -> Option<u64> {
 }
 
 /// Extract a Field return value (as u64) from a utility execution result.
-fn extract_utility_value(result: &UtilityExecutionResult) -> u64 {
+fn extract_utility_value(result: &aztec_rs::wallet::UtilityExecutionResult) -> u64 {
     extract_field_value(&result.result)
 }
 
@@ -288,9 +105,9 @@ async fn get_shared_state() -> Option<&'static TestState> {
 async fn init_shared_state() -> Option<TestState> {
     // setup(3) → alice, bob, charlie
     let (alice_wallet, alice) =
-        create_wallet(TEST_ACCOUNT_0, &[TEST_ACCOUNT_1, TEST_ACCOUNT_2]).await?;
+        setup_wallet_with_accounts(TEST_ACCOUNT_0, &[TEST_ACCOUNT_1, TEST_ACCOUNT_2]).await?;
     let (bob_wallet, bob) =
-        create_wallet(TEST_ACCOUNT_1, &[TEST_ACCOUNT_0, TEST_ACCOUNT_2]).await?;
+        setup_wallet_with_accounts(TEST_ACCOUNT_1, &[TEST_ACCOUNT_0, TEST_ACCOUNT_2]).await?;
     let charlie =
         AztecAddress(Fr::from_hex(TEST_ACCOUNT_2.address).expect("valid charlie address"));
 
@@ -315,19 +132,7 @@ async fn init_shared_state() -> Option<TestState> {
     let contract_address = deploy_result.instance.address;
 
     // Register contract on bob's PXE so he can interact with it
-    bob_wallet
-        .pxe()
-        .register_contract_class(&artifact)
-        .await
-        .expect("register class on bob PXE");
-    bob_wallet
-        .pxe()
-        .register_contract(RegisterContractRequest {
-            instance: deploy_result.instance.clone(),
-            artifact: Some(artifact.clone()),
-        })
-        .await
-        .expect("register contract on bob PXE");
+    register_contract_on_pxe(bob_wallet.pxe(), &artifact, &deploy_result.instance).await;
 
     // Alice creates a note for herself
     let create_alice = build_call(
