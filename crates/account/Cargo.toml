@@ -1,6 +1,6 @@
 [package]
 name = "aztec-account"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 description = "Account abstraction, AccountManager, and authorization for the Aztec Rust SDK"
 license = "Apache-2.0"
@@ -8,12 +8,12 @@ license = "Apache-2.0"
 publish = false
 
 [dependencies]
-aztec-core = { path = "../core", version = "0.4.0" }
-aztec-contract = { path = "../contract", version = "0.4.0" }
-aztec-crypto = { path = "../crypto", version = "0.4.0" }
-aztec-fee = { path = "../fee", version = "0.4.0" }
-aztec-wallet = { path = "../wallet", version = "0.4.0" }
-aztec-pxe-client = { path = "../pxe-client", version = "0.4.0" }
+aztec-core = { path = "../core", version = "0.5.0" }
+aztec-contract = { path = "../contract", version = "0.5.0" }
+aztec-crypto = { path = "../crypto", version = "0.5.0" }
+aztec-fee = { path = "../fee", version = "0.5.0" }
+aztec-wallet = { path = "../wallet", version = "0.5.0" }
+aztec-pxe-client = { path = "../pxe-client", version = "0.5.0" }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

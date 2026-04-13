@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-04-13
+
+### Added
+
+- **L1 Fee Juice bridge** (`aztec-ethereum`)
+  - `prepare_fee_juice_on_l1` — mints Fee Juice via the FeeAssetHandler, approves the Fee Juice Portal, calls `depositToAztecPublic`, and parses the Inbox `MessageSent` event for the L1→L2 message hash and leaf index
+  - `FeeJuiceBridgeResult` carrying `claim_amount`, `claim_secret`, `message_leaf_index`, and `message_hash` for use with `FeeJuicePaymentMethodWithClaim`
+  - `L1ContractAddresses.fee_juice` and `fee_asset_handler` optional fields parsed from node info
+  - `EthClient::rpc_call` made public for direct JSON-RPC access
+- Fee execution payload merging in `BaseWallet::send_tx` and `simulate_tx` — `SendOptions.fee_execution_payload` / `SimulateOptions.fee_execution_payload` calls, auth witnesses, capsules, extra hashed args, and fee payer are merged into the outgoing tx; fee payment method auto-selects `FeeJuiceWithClaim` when a fee payload is present (`aztec-wallet`)
+- `AccountProvider::create_tx_execution_request` now accepts an optional fee payment method id so account entrypoints can encode the correct fee flow (`aztec-wallet`, `aztec-account`)
+- Capsule seeding from the tx request in `EmbeddedPxe::execute_tx` — protocol contract handlers (e.g., contract class registerer) can now access bytecode capsules carried on the request (`aztec-pxe`)
+- Tier 5 fee e2e test suite mirroring upstream `e2e_fees/` (13 tests across 5 files): `e2e_fee_public_payments` (FPC public fees), `e2e_fee_sponsored_payments` (`SponsoredFeePaymentMethod`), `e2e_fee_account_init` (fee payment during account deployment), `e2e_fee_failures` (reverts, setup/teardown failures), `e2e_fee_settings` (gas settings, max/priority fees)
+- `e2e_fee_public_payments` bridges Fee Juice to the FPC via `prepare_fee_juice_on_l1`, waits for L1→L2 readiness, and claims with `FeeJuicePaymentMethodWithClaim` — mirrors upstream `feeJuiceBridgeTestHarness.bridgeFromL1ToL2`
+- `e2e_fee_juice_payments` reworked to deploy a dedicated Bob Schnorr account with `fails_to_simulate_without_funds` coverage and explicit `gas_settings`
+
+### Changed
+
+- `AztecNode::get_l1_to_l2_message_membership_witness` now returns `Result<Option<serde_json::Value>, Error>` via `call_optional`, matching the node's nullable response (`aztec-node-client`)
+- Contract class log fields in PXE execution results are now constructed via `ContractClassLogFields::from_emitted_fields` rather than direct struct initialization (`aztec-pxe`)
+- `SchnorrAccountContract` constructor now uses flat `signing_pub_key_x` / `signing_pub_key_y` fields instead of a `PublicKey` struct, matching the compiled Noir artifact and fixing PXE selector computation (`aztec-account`)
+
+### Fixed
+
+- `FunctionSelector` ABI encoding accepts `AbiValue::Integer` in addition to `AbiValue::Field`, since the Noir artifact can express the inner value either way (`aztec-core`)
+- Integer authwit args are now hashed as full u128 right-padded into 32 bytes, preserving values above `u64::MAX` (previously truncated via `as u64`) (`aztec-core`)
+- PXE L1→L2 membership witness oracle now:
+  - Handles the `utilityGetL1ToL2MembershipWitness` oracle alias alongside the canonical name
+  - Parses `leafIndex` as either hex string or decimal
+  - Supports base64-encoded sibling paths (4-byte count prefix + 32-byte Fr elements) in addition to JSON arrays
+- Account entrypoint encoding, Schnorr key handling, and deployment option defaults cleaned up for artifact parity (`aztec-account`, `aztec-contract`)
+
 ## [0.4.0] - 2026-04-12
 
 ### Added
@@ -364,7 +396,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Implementation plan and spec documents
 
-[Unreleased]: https://github.com/NethermindEth/aztec-rust/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/NethermindEth/aztec-rust/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/NethermindEth/aztec-rust/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/NethermindEth/aztec-rust/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/NethermindEth/aztec-rust/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/NethermindEth/aztec-rust/compare/v0.3.0...v0.3.1

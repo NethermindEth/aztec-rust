@@ -1,6 +1,6 @@
 [package]
 name = "aztec-pxe"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 description = "Embedded PXE (Private eXecution Environment) for the Aztec Rust SDK"
 license = "Apache-2.0"
@@ -8,10 +8,10 @@ license = "Apache-2.0"
 publish = false
 
 [dependencies]
-aztec-core = { path = "../core", version = "0.4.0" }
-aztec-crypto = { path = "../crypto", version = "0.4.0" }
-aztec-node-client = { path = "../node-client", version = "0.4.0" }
-aztec-pxe-client = { path = "../pxe-client", version = "0.4.0" }
+aztec-core = { path = "../core", version = "0.5.0" }
+aztec-crypto = { path = "../crypto", version = "0.5.0" }
+aztec-node-client = { path = "../node-client", version = "0.5.0" }
+aztec-pxe-client = { path = "../pxe-client", version = "0.5.0" }
 aes = "0.8"
 cbc = { version = "0.1", features = ["alloc"] }
 async-trait = "0.1"
