@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Tier 6 e2e test suite mirroring upstream token-completeness, events, and common-contract tests (20 tests across 5 files):
+  - `e2e_token_contract_transfer` — unified `transfer` patterns (less-than-balance with `Transfer` private event decode, non-deployed recipient, self-transfer, over-balance simulation failure)
+  - `e2e_token_contract_reading_constants` — private/public `name`, `symbol`, `decimals` getters verified via direct `PublicImmutable` slot reads (both dispatch paths back the same storage)
+  - `e2e_nft` — full NFT lifecycle in a single sequential test: `set_minter`, `mint`, `transfer_to_private`, `transfer_in_private`, `transfer_to_public`, `transfer_in_public`, with `owner_of`/`is_minter` read directly from the `public_owners` and `minters` maps since the contract's public views ship as AVM bytecode
+  - `e2e_escrow_contract` — escrow with a custom keypair via `Contract::deploy_with_public_keys`, explicit PXE registration of the escrow's secret key + complete address + instance on both wallets (mirroring upstream `wallet.registerContract(instance, artifact, secretKey)`), withdraw, non-owner reject, and a batched transfer+withdraw tx proving multiple keys work in a single payload
+  - `e2e_event_only` — emits and retrieves a private `TestEvent` for a contract with no notes
+- `load_escrow_compiled_artifact`, `load_nft_artifact`, `load_event_only_artifact` loaders in `tests/common/` (fall back to upstream `noir-contracts/target/` paths when local fixtures are missing)
+- `fixtures/escrow_contract_compiled.json`, `fixtures/event_only_contract_compiled.json`, `fixtures/nft_contract_compiled.json` compiled contract fixtures
+- `E2E_TEST_COVERAGE.md` refreshed to reflect Tier 6 completion (47 implemented files)
+
 ## [0.5.0] - 2026-04-13
 
 ### Added

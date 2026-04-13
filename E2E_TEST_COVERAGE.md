@@ -9,7 +9,7 @@ P2P, L1 publishing, or multi-validator infrastructure are **out of scope**.
 
 ---
 
-## Implemented Tests (42 files)
+## Implemented Tests (47 files)
 
 | File | Tests | What it covers |
 |------|-------|----------------|
@@ -22,6 +22,8 @@ P2P, L1 publishing, or multi-validator infrastructure are **out of scope**.
 | `e2e_cross_chain_l2_to_l1.rs` | — | L2 to L1 message creation |
 | `e2e_cross_chain_token_bridge_private.rs` | — | Private side of token bridge |
 | `e2e_deploy_contract_class_registration.rs` | 14 | On-chain class registration, instance deployment |
+| `e2e_escrow_contract.rs` | 3 | Escrow custom keypair, withdraw, batched multi-key tx |
+| `e2e_event_only.rs` | 1 | Private event for contract with no notes |
 | `e2e_deploy_method.rs` | 10 | Constructor/deploy patterns, batch deploy |
 | `e2e_deploy_private_initialization.rs` | 8 | Private init, batch init, wrong args, deployer check |
 | `e2e_double_spend.rs` | — | Duplicate nullifier detection |
@@ -36,6 +38,7 @@ P2P, L1 publishing, or multi-validator infrastructure are **out of scope**.
 | `e2e_fee_sponsored_payments.rs` | 1 | SponsoredFeePaymentMethod, sponsor pays unconditionally |
 | `e2e_keys.rs` | — | Key derivation, nullifier hiding keys, outgoing viewing keys |
 | `e2e_multiple_accounts_1_enc_key.rs` | — | Shared encryption key, different signing keys |
+| `e2e_nft.rs` | 6 | NFT set_minter, mint, transfer_to/in private/public |
 | `e2e_nested_contract_manual_private_call.rs` | — | Nested private function execution |
 | `e2e_nested_contract_manual_private_enqueue.rs` | — | Enqueueing public calls from private |
 | `e2e_note_getter.rs` | — | Note retrieval with comparators/filtering |
@@ -49,6 +52,8 @@ P2P, L1 publishing, or multi-validator infrastructure are **out of scope**.
 | `e2e_static_calls.rs` | — | View-only private function calls |
 | `e2e_token_access_control.rs` | — | Token access control (minter/admin roles) |
 | `e2e_token_burn.rs` | — | Token burning |
+| `e2e_token_contract_reading_constants.rs` | 6 | Private/public name, symbol, decimals getters |
+| `e2e_token_contract_transfer.rs` | 4 | Unified transfer, self, non-deployed, overspend |
 | `e2e_token_minting.rs` | — | Token minting operations |
 | `e2e_token_transfer_private.rs` | — | Private-to-private token transfers |
 | `e2e_token_transfer_public.rs` | — | Public-to-public transfers |
@@ -59,16 +64,6 @@ P2P, L1 publishing, or multi-validator infrastructure are **out of scope**.
 ---
 
 ## Tests to Add
-
-### Tier 6 — Token completeness, events, and common contracts
-
-| Test | Source file | What it tests |
-|------|-----------|---------------|
-| Token transfer (unified) | `e2e_token_contract/transfer.test.ts` | Combined transfer patterns |
-| Reading constants | `e2e_token_contract/reading_constants.test.ts` | Reading contract constants/metadata |
-| NFT contract | `e2e_nft.test.ts` | NFT mint, transfer, ownership patterns |
-| Escrow contract | `e2e_escrow_contract.test.ts` | Escrow with authwit approval flows |
-| Event-only tx | `e2e_event_only.test.ts` | Transactions that only emit events |
 
 ### Tier 7 — ABI, encoding, and edge cases
 
