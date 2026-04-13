@@ -305,8 +305,27 @@ fn flatten_abi_value(value: &AbiValue, out: &mut Vec<Fr>) {
         AbiValue::Field(f) => out.push(*f),
         AbiValue::Boolean(b) => out.push(if *b { Fr::one() } else { Fr::zero() }),
         AbiValue::Integer(i) => {
-            // Integers are encoded as unsigned field elements.
-            let bytes = (*i as u128).to_be_bytes();
+            // Integers are encoded as unsigned field elements using Noir's
+            // two's-complement-in-width convention.  For negative values the
+            // circuit expects the bits wrapped to the declared width, not to
+            // u128 — otherwise this hash (computed over the flattened
+            // AbiValues in the SDK's account-entrypoint args hash) diverges
+            // from the hash the target circuit computes over its witness
+            // (which the ABI encoder correctly wraps to the declared width in
+            // `encoder.rs`).
+            //
+            // `flatten_abi_value` has no ABI type info.  We assume i64 for
+            // anything in i64 range — Noir's canonical signed integer type —
+            // and fall through to u128 two's-complement for the outer range,
+            // matching the encoder's `width >= 128` path.
+            let u_val: u128 = if *i >= 0 {
+                *i as u128
+            } else if *i >= -(1i128 << 63) {
+                (*i + (1i128 << 64)) as u128
+            } else {
+                *i as u128
+            };
+            let bytes = u_val.to_be_bytes();
             let mut padded = [0u8; 32];
             padded[16..].copy_from_slice(&bytes);
             out.push(Fr::from(padded));
