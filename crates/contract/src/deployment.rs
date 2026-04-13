@@ -587,7 +587,14 @@ impl<W: Wallet> DeployMethod<'_, W> {
             &send_opts.fee_execution_payload,
         )?;
         let send_result = self.wallet.send_tx(payload, send_opts).await?;
-        self.wallet.wait_for_contract(instance.address).await?;
+        // `wait_for_contract` polls the node for the contract instance.  When
+        // the caller opts out of instance publication, the instance will
+        // never appear on the node, so waiting would always time out.  This
+        // matches upstream TS, which only polls for node-visibility when the
+        // instance is actually published.
+        if !effective_opts.skip_instance_publication {
+            self.wallet.wait_for_contract(instance.address).await?;
+        }
         Ok(DeployResult {
             send_result,
             instance,
