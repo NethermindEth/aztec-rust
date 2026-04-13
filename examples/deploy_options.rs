@@ -1,6 +1,6 @@
 //! Inspect and compare `DeployOptions`.
 
-#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stdout, clippy::wildcard_imports)]
 
 mod common;
 

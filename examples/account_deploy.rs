@@ -1,6 +1,6 @@
 //! Deploy a fresh Schnorr account and then use it with its own wallet.
 
-#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stdout, clippy::wildcard_imports)]
 
 mod common;
 

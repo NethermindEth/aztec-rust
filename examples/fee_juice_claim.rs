@@ -1,6 +1,6 @@
-//! Bridge FeeJuice from L1, claim it, and use it as a fee payment payload.
+//! Bridge `FeeJuice` from L1, claim it, and use it as a fee payment payload.
 
-#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stdout, clippy::wildcard_imports)]
 
 mod common;
 

@@ -1,6 +1,6 @@
 //! Deploy a contract against the local network, then verify wallet and node state.
 
-#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stdout, clippy::wildcard_imports)]
 
 mod common;
 

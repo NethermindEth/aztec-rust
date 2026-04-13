@@ -1,6 +1,6 @@
 //! Private token transfer with one PXE and two registered accounts.
 
-#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stdout, clippy::wildcard_imports)]
 
 mod common;
 

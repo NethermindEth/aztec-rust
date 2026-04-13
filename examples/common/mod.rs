@@ -100,6 +100,8 @@ pub fn next_unique_salt() -> Fr {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static NEXT_SALT: OnceLock<AtomicU64> = OnceLock::new();
+    // Nanos since epoch are wrapped into a u64 for salt seeding; truncation is fine here.
+    #[allow(clippy::cast_possible_truncation)]
     let seed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
@@ -658,7 +660,8 @@ pub fn parse_eth_address(hex_str: &str) -> EthAddress {
     let mut bytes = [0u8; 20];
     let nibbles: Vec<u8> = hex_str
         .chars()
-        .filter_map(|c| c.to_digit(16).map(|d| d as u8))
+        // `to_digit(16)` returns a value in 0..=15, so the cast to u8 cannot truncate.
+        .filter_map(|c| c.to_digit(16).map(|d| u8::try_from(d).unwrap_or(0)))
         .collect();
     let len = nibbles.len() / 2;
     let start = 20usize.saturating_sub(len);
@@ -782,5 +785,7 @@ pub fn event_selector_from_signature(signature: &str) -> EventSelector {
 }
 
 pub fn tx_hash_block_number(receipt: &serde_json::Value) -> Option<u64> {
-    receipt.get("blockNumber").and_then(|value| value.as_u64())
+    receipt
+        .get("blockNumber")
+        .and_then(serde_json::Value::as_u64)
 }

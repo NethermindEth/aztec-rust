@@ -1,6 +1,6 @@
 //! Send an L1 to L2 message and consume it on L2.
 
-#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stdout, clippy::wildcard_imports)]
 
 mod common;
 

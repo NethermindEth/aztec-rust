@@ -1,6 +1,6 @@
 //! Write and read public storage directly.
 
-#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stdout, clippy::wildcard_imports)]
 
 mod common;
 

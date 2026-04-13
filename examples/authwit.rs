@@ -1,6 +1,6 @@
 //! Create, validate, and consume an auth witness.
 
-#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stdout, clippy::wildcard_imports)]
 
 mod common;
 
@@ -59,9 +59,9 @@ async fn main() -> Result<(), aztec_rs::Error> {
     println!("Auth contract:      {auth_address}");
     println!("Proxy contract:     {proxy_address}");
     println!("Witness hash:       {}", witness.request_hash);
-    println!("Validity before:    {:?}", before);
+    println!("Validity before:    {before:?}");
     println!("Consume tx hash:    {tx_hash}");
-    println!("Validity after:     {:?}", after);
+    println!("Validity after:     {after:?}");
 
     Ok(())
 }

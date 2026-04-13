@@ -1,6 +1,6 @@
 //! Emit and read public and private events.
 
-#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stdout, clippy::wildcard_imports)]
 
 mod common;
 
@@ -118,13 +118,13 @@ async fn main() -> Result<(), aztec_rs::Error> {
         .get_tx_receipt(&private_tx)
         .await?
         .block_number
-        .expect("block number");
+        .ok_or_else(|| aztec_rs::Error::InvalidData("tx missing block number".into()))?;
     let public_block = wallet
         .node()
         .get_tx_receipt(&public_tx)
         .await?
         .block_number
-        .expect("block number");
+        .ok_or_else(|| aztec_rs::Error::InvalidData("tx missing block number".into()))?;
 
     let private_events = wallet
         .get_private_events(

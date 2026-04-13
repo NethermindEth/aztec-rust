@@ -1,6 +1,6 @@
 //! Transfer private state across two embedded PXEs.
 
-#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stdout, clippy::wildcard_imports)]
 
 mod common;
 

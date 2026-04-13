@@ -1,6 +1,13 @@
 //! Show how PXE scopes affect note visibility.
 
-#![allow(clippy::print_stdout)]
+#![allow(
+    clippy::print_stdout,
+    clippy::wildcard_imports,
+    // `main` is long because the scope demo has many sequential steps.
+    clippy::too_many_lines,
+    // An expect_err inside main asserts that the blocked-read branch really errors.
+    clippy::expect_used,
+)]
 
 mod common;
 

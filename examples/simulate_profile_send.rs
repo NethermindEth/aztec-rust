@@ -1,6 +1,6 @@
 //! Compare simulation, profiling, and sending for the same call.
 
-#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stdout, clippy::wildcard_imports)]
 
 mod common;
 

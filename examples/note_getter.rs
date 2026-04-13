@@ -1,6 +1,6 @@
 //! Compare note getter utility and simulation paths.
 
-#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stdout, clippy::wildcard_imports)]
 
 mod common;
 

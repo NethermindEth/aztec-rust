@@ -1,6 +1,6 @@
 //! Send multiple transactions and inspect the resulting block state.
 
-#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stdout, clippy::wildcard_imports)]
 
 mod common;
 

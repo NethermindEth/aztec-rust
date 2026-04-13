@@ -1,6 +1,6 @@
 //! Create private and public L2 to L1 messages in one transaction.
 
-#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stdout, clippy::wildcard_imports)]
 
 mod common;
 
@@ -66,7 +66,7 @@ async fn main() -> Result<(), aztec_rs::Error> {
         .tx_hash;
 
     println!("Test contract:      {test_address}");
-    println!("Recipient:          {:?}", eth_account);
+    println!("Recipient:          {eth_account:?}");
     println!("L1 chain ID:        {l1_chain_id}");
     println!("Rollup version:     {rollup_version}");
     println!("Batch tx hash:      {tx_hash}");

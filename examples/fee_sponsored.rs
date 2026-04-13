@@ -1,6 +1,6 @@
 //! Build a sponsored fee payload against a local network.
 
-#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stdout, clippy::wildcard_imports)]
 
 mod common;
 

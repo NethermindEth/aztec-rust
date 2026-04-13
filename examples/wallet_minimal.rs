@@ -1,6 +1,6 @@
 //! Create a minimal embedded wallet against the local Aztec network.
 
-#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stdout, clippy::wildcard_imports)]
 
 mod common;
 
@@ -36,11 +36,10 @@ async fn main() -> Result<(), aztec_rs::Error> {
     println!("PXE senders:        {}", senders.len());
     println!(
         "Synced header keys: {}",
-        header
-            .data
-            .as_object()
-            .map(|obj| obj.keys().cloned().collect::<Vec<_>>().join(", "))
-            .unwrap_or_else(|| "<opaque>".to_owned())
+        header.data.as_object().map_or_else(
+            || "<opaque>".to_owned(),
+            |obj| obj.keys().cloned().collect::<Vec<_>>().join(", ")
+        )
     );
 
     Ok(())

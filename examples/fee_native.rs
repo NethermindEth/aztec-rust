@@ -1,6 +1,6 @@
 //! Send a transaction with an explicit native fee payload.
 
-#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stdout, clippy::wildcard_imports)]
 
 mod common;
 

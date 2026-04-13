@@ -6,7 +6,7 @@
 //! cargo run --example node_info
 //! ```
 
-#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stdout, clippy::wildcard_imports)]
 
 mod common;
 

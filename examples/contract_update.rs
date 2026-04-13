@@ -1,6 +1,6 @@
 //! Publish a new class and schedule a contract update.
 
-#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stdout, clippy::wildcard_imports)]
 
 mod common;
 
@@ -83,9 +83,7 @@ async fn main() -> Result<(), aztec_rs::Error> {
     println!("Published class:    {updated_class_id}");
     println!(
         "Publish tx hash:    {}",
-        publish_tx
-            .map(|hash| hash.to_string())
-            .unwrap_or_else(|| "<already published>".to_owned())
+        publish_tx.map_or_else(|| "<already published>".to_owned(), |hash| hash.to_string())
     );
     println!("Update tx hash:     {update_tx}");
 

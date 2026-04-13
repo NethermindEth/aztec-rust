@@ -1,6 +1,11 @@
 //! Use two Schnorr accounts that share one encryption key but have different signing keys.
 
-#![allow(clippy::print_stdout)]
+#![allow(
+    clippy::print_stdout,
+    clippy::wildcard_imports,
+    // `compute_account_config` cannot fail for the canned inputs used in this example.
+    clippy::expect_used,
+)]
 
 mod common;
 
