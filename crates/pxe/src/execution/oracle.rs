@@ -828,7 +828,9 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             "getNullifierMembershipWitness" => self.get_nullifier_membership_witness(&args).await,
             "getPublicDataWitness" => self.get_public_data_witness(&args).await,
             "getBlockHashMembershipWitness" => self.get_block_hash_membership_witness(&args).await,
-            "getL1ToL2MembershipWitness" => self.get_l1_to_l2_membership_witness(&args).await,
+            "getL1ToL2MembershipWitness" | "utilityGetL1ToL2MembershipWitness" => {
+                self.get_l1_to_l2_membership_witness(&args).await
+            }
 
             // Note discovery
             "fetchTaggedLogs" | "bulkRetrieveLogs" => Ok(vec![]),
@@ -1534,8 +1536,9 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             .and_then(|v| v.first())
             .ok_or_else(|| Error::InvalidData("missing L1→L2 message hash".into()))?;
 
-        // Use the anchor block number from the execution context (matching
-        // upstream PXE which uses the historical block header's block number).
+        // Use the anchor block number from the execution context so the
+        // sibling path matches the L1-to-L2 message tree root in the block
+        // header that the Noir circuit will verify against.
         let block_number = self
             .block_header
             .pointer("/globalVariables/blockNumber")
@@ -1556,18 +1559,26 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
                 ))
             })?;
 
-        // The node returns: [leafIndex, siblingPathArray]
+        // The node returns: [leafIndex, siblingPathBase64OrArray]
         // We need to return: [[leafIndex], [path[0]], [path[1]], ..., [path[height-1]]]
         let leaf_index = witness_json
             .get(0)
             .and_then(|v| v.as_str())
-            .and_then(|s| Fr::from_hex(s).ok())
+            .and_then(|s| {
+                // Try hex first, then decimal
+                Fr::from_hex(s)
+                    .ok()
+                    .or_else(|| s.parse::<u64>().ok().map(Fr::from))
+            })
             .or_else(|| witness_json.get(0).and_then(|v| v.as_u64()).map(Fr::from))
             .unwrap_or(Fr::zero());
 
-        // Parse sibling path into a flat Vec<Fr>
+        // Parse sibling path — the node may return either:
+        // - A JSON array of hex strings: ["0xabc...", "0xdef...", ...]
+        // - A base64-encoded binary blob containing 32-byte Fr elements
         let mut sibling_path = Vec::with_capacity(aztec_core::constants::L1_TO_L2_MSG_TREE_HEIGHT);
         if let Some(path_arr) = witness_json.get(1).and_then(|v| v.as_array()) {
+            // JSON array of hex strings
             for node in path_arr {
                 let fr = if let Some(s) = node.as_str() {
                     Fr::from_hex(s).unwrap_or(Fr::zero())
@@ -1576,11 +1587,29 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
                 };
                 sibling_path.push(fr);
             }
+        } else if let Some(b64_str) = witness_json.get(1).and_then(|v| v.as_str()) {
+            // Base64-encoded sibling path: 4-byte BE count prefix + count×32-byte Fr elements
+            use base64::Engine;
+            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64_str) {
+                // Skip the 4-byte count prefix
+                let data = if bytes.len() >= 4 {
+                    &bytes[4..]
+                } else {
+                    &bytes
+                };
+                for chunk in data.chunks(32) {
+                    if chunk.len() == 32 {
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(chunk);
+                        sibling_path.push(Fr::from(arr));
+                    }
+                }
+            }
         }
         // Pad to tree height
         sibling_path.resize(aztec_core::constants::L1_TO_L2_MSG_TREE_HEIGHT, Fr::zero());
 
-        // Return as 2 ACVM slots: [leafIndex] and [path[0..36]]
+        // Return as 2 ACVM slots: [leafIndex] and [path[0..height]]
         Ok(vec![vec![leaf_index], sibling_path])
     }
 
