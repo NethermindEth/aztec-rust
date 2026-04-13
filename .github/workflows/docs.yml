@@ -1,0 +1,69 @@
+name: docs
+
+on:
+  push:
+    branches: [main]
+    # Any change that can affect the rendered site: the book sources, the
+    # referenced examples, or public API surface shown in the per-crate
+    # reference pages.
+    paths:
+      - 'docs/**'
+      - '.github/workflows/docs.yml'
+      - 'examples/**'
+      - 'crates/**'
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  pull_request:
+    paths:
+      - 'docs/**'
+      - '.github/workflows/docs.yml'
+      - 'examples/**'
+      - 'crates/**'
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build mdBook + rustdoc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo-installed binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin
+          key: ${{ runner.os }}-mdbook-tools-v3
+
+      - name: Cache cargo registry + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-docs-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-docs-
+
+      - name: Install mdBook + plugins
+        run: |
+          cargo install mdbook          --locked || true
+          cargo install mdbook-mermaid  --locked || true
+          # mdbook-linkcheck 0.7.x / mdbook-admonish 1.20 are not yet compatible
+          # with mdbook 0.5.x. Re-enable once upstream updates.
+          # cargo install mdbook-linkcheck --locked || true
+          # cargo install mdbook-admonish  --locked || true
+
+      - name: Build book + rustdoc
+        run: ./docs/build.sh
+
+      - name: Verify output
+        run: |
+          test -f docs/book/index.html
+          test -f docs/book/api/aztec_rs/index.html

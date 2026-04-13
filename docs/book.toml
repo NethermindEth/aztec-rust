@@ -1,0 +1,51 @@
+[book]
+title = "aztec-rs — Rust Runtime & Client Workspace for Aztec"
+authors = ["aztec-rs contributors"]
+language = "en"
+src = "src"
+description = """
+Documentation for aztec-rs, the Rust workspace providing an embedded PXE runtime,
+wallets, accounts, contract tooling, node client, and Ethereum/L1 helpers for the
+Aztec Network.
+"""
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/NethermindEth/aztec-rs"
+edit-url-template = "https://github.com/NethermindEth/aztec-rs/edit/main/docs/{path}"
+additional-css = ["mdbook-admonish.css"]
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
+
+[output.html.search]
+enable = true
+limit-results = 20
+use-boolean-and = true
+boost-title = 2
+boost-hierarchy = 2
+boost-paragraph = 1
+expand = true
+heading-split-level = 2
+
+[output.html.fold]
+enable = true
+level = 1
+
+# mdbook-linkcheck 0.7.7 is not yet compatible with mdbook 0.5.2 — re-enable when fixed.
+# [output.linkcheck]
+# follow-web-links = false
+# warning-policy = "error"
+# exclude = []
+
+# Enable when mdbook-mermaid is installed.
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+# mdbook-admonish 1.20 is not yet compatible with mdbook 0.5.2 — re-enable when fixed.
+# [preprocessor.admonish]
+# command = "mdbook-admonish"
+# assets_version = "3.1.0" # do not edit: managed by `mdbook-admonish install`
