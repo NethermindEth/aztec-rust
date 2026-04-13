@@ -623,8 +623,9 @@ pub async fn register_account_for_authwit(
         .expect("register account instance");
 }
 
-/// Creates a wallet for `primary` with `extra` accounts also registered,
-/// including authwit contract registration and signing key note injection.
+/// Creates a wallet for `primary` with `extra` accounts also registered.
+///
+/// Includes authwit contract registration and signing key note injection.
 /// This is the full-featured variant used by token tests that need authwit.
 pub async fn create_wallet(
     primary: ImportedTestAccount,
@@ -1198,9 +1199,11 @@ pub async fn expect_token_balance(
 // Common token test state (shared across many token e2e tests)
 // ---------------------------------------------------------------------------
 
-/// Common shared state for token e2e tests: two wallets with a deployed token
-/// contract and initial minting done.  Tests that need extra state (proxy,
-/// bad_account, etc.) can embed this and add their own fields.
+/// Common shared state for token e2e tests.
+///
+/// Two wallets with a deployed token contract and initial minting done.
+/// Tests that need extra state (proxy, bad_account, etc.) can embed this
+/// and add their own fields.
 pub struct TokenTestState {
     pub admin_wallet: TestWallet,
     pub account1_wallet: TestWallet,
