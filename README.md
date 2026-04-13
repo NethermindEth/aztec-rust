@@ -104,15 +104,32 @@ Run examples with a local Aztec node (defaults to `http://localhost:8080`):
 # Connect to a node and display info
 cargo run --example node_info
 
-# Make a contract function call with an embedded wallet/PXE
-cargo run --example contract_call
+# Create a minimal embedded wallet/PXE against the local network
+cargo run --example wallet_minimal
 
-# Deploy a contract with an embedded wallet/PXE
+# Deploy a contract and verify wallet/node state
 cargo run --example deploy_contract
 
-# Full account lifecycle with account manager + embedded PXE
-cargo run --example account_flow
+# Private token transfer with PXE-backed note discovery
+cargo run --example private_token_transfer
+
+# Compare simulate/profile/send for the same call
+cargo run --example simulate_profile_send
+
+# Emit and query public + private events
+cargo run --example event_logs
+
+# Deploy a fresh Schnorr account
+cargo run --example account_deploy
 ```
+
+These are the core onboarding examples. The full example inventory and implementation notes live in `examples/ROADMAP.md`, including:
+
+- PXE-focused examples such as `scope_isolation`, `two_pxes`, and `note_getter`
+- contract and wallet examples such as `authwit`, `deploy_options`, `public_storage`, and `contract_update`
+- fee and cross-chain examples such as `fee_native`, `fee_sponsored`, `fee_juice_claim`, `l1_to_l2_message`, and `l2_to_l1_message`
+
+All examples are intended to run against `aztec start --local-network`. The cross-chain examples assume the local L1 side of that network is available, and `fee_sponsored` uses the vendored `SponsoredFPC` artifact under `fixtures/`.
 
 Override the node URL with the `AZTEC_NODE_URL` environment variable:
 
