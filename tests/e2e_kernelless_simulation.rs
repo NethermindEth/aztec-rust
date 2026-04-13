@@ -33,6 +33,8 @@
 mod common;
 use common::*;
 
+use aztec_rs::hash::MessageHashOrIntent;
+
 const INITIAL_TOKEN_BALANCE: u64 = 1_000_000_000;
 
 // ---------------------------------------------------------------------------
@@ -280,7 +282,6 @@ async fn adds_liquidity_without_authwits() {
     // Pre-create both authwits (the AMM will consume these for the two
     // transfer_to_public_and_prepare_private_balance_increase calls that
     // `add_liquidity` fans out to token0 and token1).
-    use aztec_rs::hash::MessageHashOrIntent;
     let token0_action = build_call(
         &s.token_artifact,
         s.token0_address,

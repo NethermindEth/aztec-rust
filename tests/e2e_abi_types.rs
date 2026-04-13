@@ -18,6 +18,9 @@
     clippy::print_stderr,
     clippy::similar_names,
     clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::many_single_char_names,
+    clippy::too_many_arguments,
     clippy::too_many_lines,
     dead_code,
     unused_imports
@@ -206,7 +209,7 @@ fn extract_return_fields(v: &serde_json::Value, method_name: &str) -> Vec<Fr> {
 
 /// Convert a signed i64 to its field-level u64 representation (two's complement
 /// mod 2^64), mirroring how Noir serialises `i64`.
-fn i64_as_u64(value: i64) -> u64 {
+const fn i64_as_u64(value: i64) -> u64 {
     value as u64
 }
 

@@ -18,6 +18,7 @@
     clippy::print_stderr,
     clippy::similar_names,
     clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
     clippy::too_many_lines,
     dead_code,
     unused_imports

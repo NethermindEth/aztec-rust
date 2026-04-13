@@ -98,13 +98,10 @@ async fn latest_block_timestamp(wallet: &TestWallet) -> u64 {
         .expect("timestamp in header");
 
     match ts {
-        serde_json::Value::String(s) => {
-            if let Some(hex) = s.strip_prefix("0x") {
-                u64::from_str_radix(hex, 16).expect("parse hex timestamp")
-            } else {
-                s.parse::<u64>().expect("parse decimal timestamp")
-            }
-        }
+        serde_json::Value::String(s) => s.strip_prefix("0x").map_or_else(
+            || s.parse::<u64>().expect("parse decimal timestamp"),
+            |hex| u64::from_str_radix(hex, 16).expect("parse hex timestamp"),
+        ),
         serde_json::Value::Number(n) => n.as_u64().expect("u64 timestamp"),
         other => panic!("unexpected timestamp format: {other:?}"),
     }
