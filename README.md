@@ -123,7 +123,7 @@ cargo run --example event_logs
 cargo run --example account_deploy
 ```
 
-These are the core onboarding examples. The full example inventory and implementation notes live in `examples/ROADMAP.md`, including:
+These are the core onboarding examples. The full example guide lives in `examples/README.md`, including:
 
 - PXE-focused examples such as `scope_isolation`, `two_pxes`, and `note_getter`
 - contract and wallet examples such as `authwit`, `deploy_options`, `public_storage`, and `contract_update`
