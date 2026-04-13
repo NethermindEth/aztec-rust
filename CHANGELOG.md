@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Tier 8 e2e test suite mirroring upstream cross-chain messaging failure and public-bridge tests (5 tests across 2 files):
+  - `e2e_cross_chain_token_bridge_failure_cases` — authwit-required public burn rejected when unauthorized; wrong content on private claim rejected; wrong secret on public claim rejected (3 tests)
+  - `e2e_cross_chain_token_bridge_public` — public L1→L2 deposit with L2→L1 withdrawal round-trip (hash verified locally); third-party consumption honors the baked recipient (2 tests)
+- `tests/` reorganized into per-crate test groups so `cargo test --test <group>` runs only the tests tied to a given crate (9 groups: `account`, `contract`, `core`, `crypto`, `ethereum`, `fee`, `node_client`, `pxe`, `wallet`) — individual test modules moved under `tests/<group>/` and mounted via a single entry file `tests/<group>.rs` sharing `tests/common/` as `crate::common`
+- `E2E_TEST_COVERAGE.md` gains a "Test Groups (per-crate)" section mapping each group → crate → file count → run command; implemented-tests count refreshed to 57
+
+### Fixed
+
+- Split overlong first doc paragraphs on `tests/common/mod.rs::create_wallet` and `TokenTestState` to satisfy `clippy::nursery::too_long_first_doc_paragraph` (raised by `cargo lint`)
+
 ## [0.5.1] - 2026-04-13
 
 ### Added

@@ -9,7 +9,35 @@ P2P, L1 publishing, or multi-validator infrastructure are **out of scope**.
 
 ---
 
-## Implemented Tests (55 files)
+## Test Groups (per-crate)
+
+Tests are grouped by the primary `crates/<name>` they exercise. Each group is a
+single test binary under `tests/<group>.rs` with its test modules under
+`tests/<group>/`. This lets you run only the tests relevant to a crate change:
+
+| Group | Crate(s) touched | Tests | Run |
+|-------|------------------|------:|-----|
+| `account` | `crates/account` | 2 | `cargo test --test account -- --ignored` |
+| `contract` | `crates/contract` | 28 | `cargo test --test contract -- --ignored` |
+| `core` | `crates/core` | 3 | `cargo test --test core -- --ignored` |
+| `crypto` | `crates/crypto` | 1 | `cargo test --test crypto -- --ignored` |
+| `ethereum` | `crates/ethereum` | 5 | `cargo test --test ethereum -- --ignored` |
+| `fee` | `crates/fee` | 8 | `cargo test --test fee -- --ignored` |
+| `node_client` | `crates/node-client` | 1 | `cargo test --test node_client -- --ignored` |
+| `pxe` | `crates/pxe`, `crates/pxe-client` | 8 | `cargo test --test pxe -- --ignored` |
+| `wallet` | `crates/wallet` | 1 | `cargo test --test wallet -- --ignored` |
+
+Layer crates (`core`, `wallet`, `pxe`, `node-client`) are transitively exercised
+by most tests; the grouping reflects each test's *primary* focus, not every
+crate it touches. Changes in a layer crate still warrant running the full suite
+(`cargo test -- --ignored`).
+
+The shared test utilities live in `tests/common/` and are mounted into each
+group binary as `crate::common`.
+
+---
+
+## Implemented Tests (57 files)
 
 | File | Tests | What it covers |
 |------|-------|----------------|
@@ -21,7 +49,9 @@ P2P, L1 publishing, or multi-validator infrastructure are **out of scope**.
 | `e2e_contract_updates.rs` | — | Contract class upgrades |
 | `e2e_cross_chain_l1_to_l2.rs` | — | L1 to L2 message consumption |
 | `e2e_cross_chain_l2_to_l1.rs` | — | L2 to L1 message creation |
+| `e2e_cross_chain_token_bridge_failure_cases.rs` | 3 | Bridge authwit-required public burn rejection; wrong content / wrong secret rejected on claim |
 | `e2e_cross_chain_token_bridge_private.rs` | — | Private side of token bridge |
+| `e2e_cross_chain_token_bridge_public.rs` | 2 | Public L1→L2 deposit and L2→L1 withdraw; third-party consumption with correct recipient |
 | `e2e_deploy_contract_class_registration.rs` | 14 | On-chain class registration, instance deployment |
 | `e2e_deploy_legacy.rs` | 5 | Legacy deploy codepath, duplicate-salt reject, bad-public-part revert |
 | `e2e_escrow_contract.rs` | 3 | Escrow custom keypair, withdraw, batched multi-key tx |
@@ -72,13 +102,6 @@ P2P, L1 publishing, or multi-validator infrastructure are **out of scope**.
 ---
 
 ## Tests to Add
-
-### Tier 8 — Cross-chain extended
-
-| Test | Source file | What it tests |
-|------|-----------|---------------|
-| Bridge failure cases | `e2e_cross_chain_messaging/token_bridge_failure_cases.test.ts` | Bridge error handling and edge cases |
-| Bridge public side | `e2e_cross_chain_messaging/token_bridge_public.test.ts` | Public bridge deposit/withdraw |
 
 ### Tier 9 — Complex application contracts
 
