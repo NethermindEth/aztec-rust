@@ -329,7 +329,7 @@ mod tests {
             &self,
             _block_number: u64,
             _entry_key: &Fr,
-        ) -> Result<serde_json::Value, Error> {
+        ) -> Result<Option<serde_json::Value>, Error> {
             unimplemented!("not needed for event tests")
         }
         async fn simulate_public_calls(

@@ -300,8 +300,8 @@ mod tests {
             &self,
             _: u64,
             _: &Fr,
-        ) -> Result<serde_json::Value, Error> {
-            Ok(serde_json::Value::Null)
+        ) -> Result<Option<serde_json::Value>, Error> {
+            Ok(None)
         }
         async fn simulate_public_calls(
             &self,
