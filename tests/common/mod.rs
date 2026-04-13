@@ -286,6 +286,36 @@ pub fn load_escrow_artifact() -> ContractArtifact {
     ContractArtifact::from_nargo_json(json).expect("parse escrow_contract.json")
 }
 
+/// Loads the escrow contract's compiled artifact (with bytecode) if available,
+/// either from local fixtures or from the upstream noir-contracts target dir.
+pub fn load_escrow_compiled_artifact() -> Option<ContractArtifact> {
+    let root = repo_root();
+    try_load_artifact_from_candidates(&[
+        root.join("fixtures/escrow_contract_compiled.json"),
+        root.join(
+            "../aztec-packages/noir-projects/noir-contracts/target/escrow_contract-Escrow.json",
+        ),
+    ])
+}
+
+/// Loads the NFT contract compiled artifact if available.
+pub fn load_nft_artifact() -> Option<ContractArtifact> {
+    let root = repo_root();
+    try_load_artifact_from_candidates(&[
+        root.join("fixtures/nft_contract_compiled.json"),
+        root.join("../aztec-packages/noir-projects/noir-contracts/target/nft_contract-NFT.json"),
+    ])
+}
+
+/// Loads the event_only contract compiled artifact if available.
+pub fn load_event_only_artifact() -> Option<ContractArtifact> {
+    let root = repo_root();
+    try_load_artifact_from_candidates(&[
+        root.join("fixtures/event_only_contract_compiled.json"),
+        root.join("../aztec-packages/noir-projects/noir-contracts/target/event_only_contract-EventOnly.json"),
+    ])
+}
+
 /// Loads the FPC artifact if available (from fixtures or upstream).
 pub fn load_fpc_artifact() -> Option<ContractArtifact> {
     let root = repo_root();
