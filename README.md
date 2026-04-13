@@ -21,9 +21,9 @@ runs client-side, and this workspace includes that runtime in `aztec-pxe`.
 - **Node client** — connect to an Aztec node over JSON-RPC, query blocks, chain info, and wait for readiness
 - **Contract interaction** — load contract artifacts, build and send function calls (private, public, utility)
 - **Contract deployment** — builder-pattern deployer with deterministic addressing, class registration, and instance publication
-- **Account abstraction** — Schnorr/ECDSA/SingleKey account flavors, entrypoint execution, and authorization witnesses
+- **Account abstraction** — Schnorr and signerless account flavors, entrypoint execution, and authorization witnesses
 - **Auth witnesses** — create, validate, and consume authorization witnesses in private and public contexts
-- **Fee payments** — native, sponsored, private FPC, and Fee Juice claim-based payment methods
+- **Fee payments** — native, sponsored, and Fee Juice claim-based payment methods
 - **Cross-chain messaging** — L1-to-L2 and L2-to-L1 message sending, readiness polling, and consumption
 - **Cryptography** — BN254/Grumpkin field arithmetic, Poseidon2, Pedersen, Schnorr signing, key derivation
 - **Transaction handling** — construct, simulate, send, and track transactions through their full lifecycle
@@ -157,7 +157,7 @@ cargo build
 cargo test
 
 # E2E tests (requires a running Aztec sandbox)
-AZTEC_NODE_URL=http://localhost:8080 cargo test --test e2e_token_transfer_private -- --ignored --nocapture
+AZTEC_NODE_URL=http://localhost:8080 cargo test --test contract e2e_token_transfer_private:: -- --ignored --nocapture
 ```
 
 ### Lint

@@ -3,7 +3,7 @@
 //!
 //! Run with:
 //! ```bash
-//! AZTEC_NODE_URL=http://localhost:8080 cargo test --test e2e_token_transfer_private -- --ignored --nocapture
+//! AZTEC_NODE_URL=http://localhost:8080 cargo test --test contract e2e_token_transfer_private:: -- --ignored --nocapture
 //! ```
 
 #![allow(
