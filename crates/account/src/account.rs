@@ -309,8 +309,9 @@ impl std::fmt::Debug for DeployAccountOptions {
 
 /// A deployment method for account contracts.
 ///
-/// Wraps the generic [`DeployMethod`] from `aztec-contract` with account-specific
-/// fee-payment wrapping via [`AccountEntrypointMetaPaymentMethod`].
+/// Wraps the generic [`aztec_contract::deployment::DeployMethod`] with
+/// account-specific fee-payment wrapping via
+/// [`crate::meta_payment::AccountEntrypointMetaPaymentMethod`].
 pub struct DeployAccountMethod<'a, W> {
     wallet: &'a W,
     account: std::sync::Arc<dyn Account>,
