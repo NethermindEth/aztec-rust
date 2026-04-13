@@ -1,138 +1,84 @@
-//! Example: Contract deployment workflow.
-//!
-//! Demonstrates how to use `ContractDeployer` to prepare and deploy a
-//! contract using a real wallet connected to a live Aztec sandbox.
-//!
-//! Run with:
-//! ```bash
-//! AZTEC_NODE_URL=http://localhost:8080 cargo run --example deploy_contract
-//! ```
+//! Deploy a contract against the local network, then verify wallet and node state.
 
 #![allow(clippy::print_stdout)]
 
-use aztec_rs::abi::{AbiValue, ContractArtifact};
-use aztec_rs::account::{AccountManager, SchnorrAccountContract, SingleAccountProvider};
-use aztec_rs::deployment::{ContractDeployer, DeployOptions};
-use aztec_rs::node::{create_aztec_node_client, wait_for_node, AztecNode};
-use aztec_rs::types::{CompleteAddress, Fr};
-use aztec_rs::wallet::create_embedded_wallet;
+mod common;
+
+use common::*;
 
 #[tokio::main]
 async fn main() -> Result<(), aztec_rs::Error> {
-    let node_url =
-        std::env::var("AZTEC_NODE_URL").unwrap_or_else(|_| "http://localhost:8080".into());
-
-    // -- Connect to the network ------------------------------------------------
-
-    println!("Connecting to node at {node_url}...");
-    let node = create_aztec_node_client(&node_url);
-    let info = wait_for_node(&node).await?;
-    println!(
-        "Node ready: version={}, chain={}, block={}",
-        info.node_version,
-        info.l1_chain_id,
-        node.get_block_number().await?
-    );
-
-    // -- Create a wallet -------------------------------------------------------
-
-    let secret_key = Fr::from(0xcafe_u64);
-    let bootstrap_wallet = create_embedded_wallet(
-        &node_url,
-        SingleAccountProvider::new(
-            CompleteAddress::default(),
-            Box::new(SchnorrAccountContract::new(secret_key)),
-            "bootstrap",
-        ),
-    )
-    .await?;
-    let manager = AccountManager::create(
-        bootstrap_wallet,
-        secret_key,
-        Box::new(SchnorrAccountContract::new(secret_key)),
-        Some(Fr::from(1u64)),
-    )
-    .await?;
-
-    let complete_address = manager.complete_address().await?;
-    let wallet = create_embedded_wallet(
-        &node_url,
-        SingleAccountProvider::new(
-            complete_address,
-            Box::new(SchnorrAccountContract::new(secret_key)),
-            "main",
-        ),
-    )
-    .await?;
-
-    // -- Load a contract artifact ----------------------------------------------
-
-    let artifact_json = include_str!("../fixtures/token_contract.json");
-    let artifact = ContractArtifact::from_json(artifact_json)?;
-    println!("Loaded artifact: {}", artifact.name);
-    println!(
-        "  functions: {}",
-        artifact
-            .functions
-            .iter()
-            .map(|f| f.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
-
-    // Find the constructor and display its parameters.
-    let constructor = artifact.find_function("constructor")?;
-    println!("\nConstructor: {}", constructor.name);
-    println!("  is_initializer: {}", constructor.is_initializer);
-    println!(
-        "  parameters: {}",
-        constructor
-            .parameters
-            .iter()
-            .map(|p| p.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
-
-    // -- Build a deployer ------------------------------------------------------
-
-    let deployer = ContractDeployer::new(artifact, &wallet).with_constructor_name("constructor");
-    println!("\nDeployer: {deployer:?}");
-
-    // Create a deploy method with constructor arguments.
-    let deploy_method = deployer.deploy(vec![
-        AbiValue::Field(Fr::from(1u64)),      // admin
-        AbiValue::String("TestToken".into()), // name
-        AbiValue::String("TT".into()),        // symbol
-        AbiValue::Integer(18),                // decimals
-    ])?;
-    println!("Deploy method: {deploy_method:?}");
-
-    // Get the computed contract instance.
-    let opts = DeployOptions {
-        contract_address_salt: Some(Fr::from(42u64)),
-        universal_deploy: true,
-        ..DeployOptions::default()
+    let Some((wallet, owner)) = setup_wallet(TEST_ACCOUNT_0).await else {
+        return Err(aztec_rs::Error::InvalidData(format!(
+            "node not reachable at {}",
+            node_url()
+        )));
     };
-    let instance = deploy_method.get_instance(&opts)?;
-    println!("\nContract instance:");
-    println!("  address:  {}", instance.address);
-    println!("  version:  {}", instance.inner.version);
-    println!("  salt:     {}", instance.inner.salt);
-    println!("  class_id: {}", instance.inner.current_contract_class_id);
 
-    // Build the full deployment payload.
-    let opts_with_skip = DeployOptions {
-        contract_address_salt: Some(Fr::from(42u64)),
-        universal_deploy: true,
-        skip_registration: true,
-        ..DeployOptions::default()
-    };
-    let payload = deploy_method.request(&opts_with_skip).await?;
-    println!("\nDeployment payload built successfully.");
-    println!("  calls: {}", payload.calls.len());
+    let artifact = load_stateful_test_artifact();
+    let deploy = Contract::deploy(
+        &wallet,
+        artifact.clone(),
+        vec![abi_address(owner), AbiValue::Field(Fr::from(42u64))],
+        None,
+    )?;
+    let deploy_result = deploy
+        .send(
+            &DeployOptions {
+                contract_address_salt: Some(next_unique_salt()),
+                ..Default::default()
+            },
+            SendOptions {
+                from: owner,
+                ..Default::default()
+            },
+        )
+        .await?;
 
-    println!("\nDone.");
+    let address = deploy_result.instance.address;
+    let class_id = deploy_result.instance.inner.current_contract_class_id;
+    let contract_meta = wallet.get_contract_metadata(address).await?;
+    let class_meta = wallet.get_contract_class_metadata(class_id).await?;
+
+    let initial_sum = call_utility_u64(
+        &wallet,
+        &artifact,
+        address,
+        "summed_values",
+        vec![abi_address(owner)],
+        owner,
+    )
+    .await?;
+
+    let tx_hash = send_call(
+        &wallet,
+        build_call(
+            &artifact,
+            address,
+            "increment_public_value",
+            vec![abi_address(owner), AbiValue::Integer(84)],
+        ),
+        owner,
+    )
+    .await?;
+
+    let public_value =
+        read_public_u128(&wallet, address, derive_storage_slot_in_map(2, &owner)).await?;
+
+    println!("Contract address:   {address}");
+    println!("Deploy tx hash:     {tx_hash}");
+    println!("Class ID:           {class_id}");
+    println!("Initial sum:        {initial_sum}");
+    println!("Public value:       {public_value}");
+    println!("Class registered:   {}", class_meta.is_artifact_registered);
+    println!(
+        "Class published:    {}",
+        class_meta.is_contract_class_publicly_registered
+    );
+    println!(
+        "Instance initialized:{}",
+        contract_meta.is_contract_initialized
+    );
 
     Ok(())
 }
