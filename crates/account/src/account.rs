@@ -942,6 +942,7 @@ mod tests {
                 }),
                 ..GasSettings::default()
             }),
+            fee_payment_method: None,
         };
         let json = serde_json::to_string(&opts).expect("serialize EntrypointOptions");
         let decoded: EntrypointOptions =
@@ -1049,6 +1050,7 @@ mod tests {
         let options = EntrypointOptions {
             fee_payer: Some(AztecAddress(Fr::from(5u64))),
             gas_settings: None,
+            fee_payment_method: None,
         };
 
         let req = account
@@ -1103,6 +1105,7 @@ mod tests {
         let options = EntrypointOptions {
             fee_payer: Some(AztecAddress(Fr::from(7u64))),
             gas_settings: None,
+            fee_payment_method: None,
         };
 
         let wrapped = account
