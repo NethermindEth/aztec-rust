@@ -2,7 +2,7 @@
 
 Rust SDK for the [Aztec Network](https://aztec.network). Provides a client library for interacting with Aztec nodes, managing wallets and accounts, deploying contracts, and sending transactions. The design mirrors the upstream [`aztec.js`](https://github.com/AztecProtocol/aztec-packages/tree/master/yarn-project/aztec.js) package.
 
-> **Status:** Active development (v0.4.0). APIs may still change.
+> **Status:** Active development (v0.5.1). APIs may still change.
 >
 > **Not yet on crates.io** — depends on noir `1.0.0-beta.18` which is only available via git.
 > Install from GitHub as shown below.
@@ -36,7 +36,7 @@ Add `aztec-rs` as a git dependency in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-aztec-rs = { git = "https://github.com/NethermindEth/aztec-rust.git", tag = "v0.4.0" }
+aztec-rs = { git = "https://github.com/NethermindEth/aztec-rust.git", tag = "v0.5.1" }
 ```
 
 The noir git patches are declared in the workspace `Cargo.toml` and apply

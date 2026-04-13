@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-04-13
+
 ### Added
 
 - Tier 7 e2e test suite mirroring upstream ABI, encoding, and edge-case tests (29 tests across 8 files):
