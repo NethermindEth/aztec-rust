@@ -306,8 +306,10 @@ fn flatten_abi_value(value: &AbiValue, out: &mut Vec<Fr>) {
         AbiValue::Boolean(b) => out.push(if *b { Fr::one() } else { Fr::zero() }),
         AbiValue::Integer(i) => {
             // Integers are encoded as unsigned field elements.
-            // Negative values are not expected in authwit args.
-            out.push(Fr::from(*i as u64));
+            let bytes = (*i as u128).to_be_bytes();
+            let mut padded = [0u8; 32];
+            padded[16..].copy_from_slice(&bytes);
+            out.push(Fr::from(padded));
         }
         AbiValue::Array(items) => {
             for item in items {

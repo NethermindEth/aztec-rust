@@ -124,7 +124,7 @@ pub fn encode_value(typ: &AbiType, value: &AbiValue, out: &mut Vec<Fr>) -> Resul
                         Ok(())
                     }
                     AbiValue::Struct(map) => {
-                        let f = map
+                        let inner_value = map
                             .get("value")
                             .or_else(|| map.get("inner"))
                             .ok_or_else(|| {
@@ -133,7 +133,20 @@ pub fn encode_value(typ: &AbiType, value: &AbiValue, out: &mut Vec<Fr>) -> Resul
                                         .into(),
                                 )
                             })?;
-                        encode_value(&AbiType::Field, f, out)
+                        // Inner can be either Field or Integer (u32) — accept both.
+                        match inner_value {
+                            AbiValue::Field(f) => {
+                                out.push(*f);
+                                Ok(())
+                            }
+                            AbiValue::Integer(v) => {
+                                out.push(Fr::from(*v as u64));
+                                Ok(())
+                            }
+                            _ => Err(Error::Abi(
+                                "FunctionSelector inner must be Field or Integer".into(),
+                            )),
+                        }
                     }
                     _ => Err(Error::Abi(
                         "expected Integer, Field, or Struct for FunctionSelector".into(),
