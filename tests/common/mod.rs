@@ -316,6 +316,51 @@ pub fn load_event_only_artifact() -> Option<ContractArtifact> {
     ])
 }
 
+/// Loads the abi_types test contract artifact if available.
+pub fn load_abi_types_artifact() -> Option<ContractArtifact> {
+    let root = repo_root();
+    try_load_artifact_from_candidates(&[
+        root.join("fixtures/abi_types_contract_compiled.json"),
+        root.join("../aztec-packages/noir-projects/noir-contracts/target/abi_types_contract-AbiTypes.json"),
+    ])
+}
+
+/// Loads the option_param test contract artifact if available.
+pub fn load_option_param_artifact() -> Option<ContractArtifact> {
+    let root = repo_root();
+    try_load_artifact_from_candidates(&[
+        root.join("fixtures/option_param_contract_compiled.json"),
+        root.join("../aztec-packages/noir-projects/noir-contracts/target/option_param_contract-OptionParam.json"),
+    ])
+}
+
+/// Loads the import_test contract artifact if available.
+pub fn load_import_test_artifact() -> Option<ContractArtifact> {
+    let root = repo_root();
+    try_load_artifact_from_candidates(&[
+        root.join("fixtures/import_test_contract_compiled.json"),
+        root.join("../aztec-packages/noir-projects/noir-contracts/target/import_test_contract-ImportTest.json"),
+    ])
+}
+
+/// Loads the AMM contract artifact if available.
+pub fn load_amm_artifact() -> Option<ContractArtifact> {
+    let root = repo_root();
+    try_load_artifact_from_candidates(&[
+        root.join("fixtures/amm_contract_compiled.json"),
+        root.join("../aztec-packages/noir-projects/noir-contracts/target/amm_contract-AMM.json"),
+    ])
+}
+
+/// Loads the sponsored FPC (no-end-setup variant) test contract if available.
+pub fn load_sponsored_fpc_no_end_setup_artifact() -> Option<ContractArtifact> {
+    let root = repo_root();
+    try_load_artifact_from_candidates(&[
+        root.join("fixtures/sponsored_fpc_no_end_setup_contract_compiled.json"),
+        root.join("../aztec-packages/noir-projects/noir-contracts/target/sponsored_fpc_no_end_setup_contract-SponsoredFPCNoEndSetup.json"),
+    ])
+}
+
 /// Loads the FPC artifact if available (from fixtures or upstream).
 pub fn load_fpc_artifact() -> Option<ContractArtifact> {
     let root = repo_root();
