@@ -31,8 +31,10 @@ mod common;
 use aztec_rs::abi::FunctionSelector;
 use aztec_rs::authwit::SetPublicAuthWitInteraction;
 use aztec_rs::constants::protocol_contract_address;
-use aztec_rs::fee::{FeePaymentMethod, GasSettings};
+use aztec_rs::cross_chain;
+use aztec_rs::fee::{FeeJuicePaymentMethodWithClaim, FeePaymentMethod, GasSettings};
 use aztec_rs::hash::MessageHashOrIntent;
+use aztec_rs::l1_client::{self, EthClient, L1ContractAddresses};
 use aztec_rs::node::AztecNode;
 
 use common::*;
@@ -210,9 +212,81 @@ async fn init_shared_state() -> Option<PublicPaymentState> {
         )
         .await;
 
-        // Bridge Fee Juice to FPC so it can pay gas
-        // NOTE: Without L1 bridge harness, FPC must have Fee Juice pre-funded.
-        // On a dev network with funded test accounts, the FPC may need separate funding.
+        // Fund FPC with Fee Juice via L1 bridge.
+        // Mirrors upstream `feeJuiceBridgeTestHarness.bridgeFromL1ToL2(bananaFPC.address, alice)`.
+        let node_info = wallet.pxe().node().get_node_info().await.ok();
+        if let Some(ref info) = node_info {
+            if let Some(l1_addresses) = L1ContractAddresses::from_json(&info.l1_contract_addresses)
+            {
+                let eth_client = EthClient::new(&EthClient::default_url());
+                if let Ok(bridge_result) =
+                    l1_client::prepare_fee_juice_on_l1(&eth_client, &l1_addresses, &fpc_addr).await
+                {
+                    // Advance blocks until the L1→L2 message is included
+                    for _ in 0..30 {
+                        let _ = wallet
+                            .send_tx(
+                                ExecutionPayload::default(),
+                                SendOptions {
+                                    from: alice_address,
+                                    ..Default::default()
+                                },
+                            )
+                            .await;
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        if cross_chain::is_l1_to_l2_message_ready(
+                            wallet.pxe().node(),
+                            &bridge_result.message_hash,
+                        )
+                        .await
+                        .unwrap_or(false)
+                        {
+                            break;
+                        }
+                    }
+
+                    // Claim Fee Juice for FPC with retries.
+                    // Each attempt advances a block so the anchor includes the message.
+                    let claim = aztec_rs::fee::L2AmountClaim {
+                        claim_amount: bridge_result.claim_amount,
+                        claim_secret: bridge_result.claim_secret,
+                        message_leaf_index: bridge_result.message_leaf_index,
+                    };
+                    let payment = FeeJuicePaymentMethodWithClaim::new(fpc_addr, claim);
+                    if let Ok(fp) = payment.get_fee_execution_payload().await {
+                        for attempt in 0..10 {
+                            let _ = wallet
+                                .send_tx(
+                                    ExecutionPayload::default(),
+                                    SendOptions {
+                                        from: alice_address,
+                                        ..Default::default()
+                                    },
+                                )
+                                .await;
+
+                            match wallet
+                                .send_tx(
+                                    ExecutionPayload::default(),
+                                    SendOptions {
+                                        from: alice_address,
+                                        fee_execution_payload: Some(fp.clone()),
+                                        ..Default::default()
+                                    },
+                                )
+                                .await
+                            {
+                                Ok(_) => break,
+                                Err(_) if attempt < 9 => {
+                                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                                }
+                                Err(_) => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         (Some(fpc_art), Some(fpc_addr))
     } else {
@@ -281,6 +355,9 @@ async fn pays_fees_for_tx_that_make_public_transfer() {
         return;
     };
 
+    let fpc_gas = get_fee_juice_balance(&s.wallet, fpc_address).await;
+    assert!(fpc_gas > 0, "FPC must have Fee Juice to pay gas");
+
     let bananas_to_send: u128 = 10;
 
     // Capture initial balances
@@ -293,13 +370,21 @@ async fn pays_fees_for_tx_that_make_public_transfer() {
     let initial_alice_gas = get_fee_juice_balance(&s.wallet, s.alice_address).await;
     let initial_fpc_gas = get_fee_juice_balance(&s.wallet, fpc_address).await;
 
-    // Build the public fee payment payload
+    // Build the public fee payment payload.
+    // Use high max_fee_per_gas to cover the node's actual fees (upstream uses 2× min fees).
+    let mut gas_settings = GasSettings::default();
+    if let Some(ref fees) = gas_settings.max_fee_per_gas {
+        gas_settings.max_fee_per_gas = Some(aztec_rs::fee::GasFees {
+            fee_per_da_gas: std::cmp::max(fees.fee_per_da_gas, 100_000_000),
+            fee_per_l2_gas: std::cmp::max(fees.fee_per_l2_gas, 100_000_000),
+        });
+    }
     let fee_payload = build_public_fee_payload(
         &s.wallet,
         fpc_address,
         s.alice_address,
         s.token_address,
-        &GasSettings::default(),
+        &gas_settings,
     )
     .await;
 
@@ -326,6 +411,7 @@ async fn pays_fees_for_tx_that_make_public_transfer() {
             SendOptions {
                 from: s.alice_address,
                 fee_execution_payload: Some(fee_payload),
+                gas_settings: Some(gas_settings),
                 ..Default::default()
             },
         )
