@@ -19,9 +19,11 @@
     clippy::doc_markdown,
     clippy::expect_used,
     clippy::panic,
+    clippy::print_stderr,
     clippy::similar_names,
     clippy::too_many_lines,
     clippy::cast_possible_wrap,
+    clippy::useless_conversion,
     dead_code,
     unused_imports
 )]

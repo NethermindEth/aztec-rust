@@ -220,7 +220,7 @@ async fn init_shared_state() -> Option<FeeJuiceState> {
     // Upstream's TestWallet supports multiple accounts; our SingleAccountProvider
     // doesn't, so we create a second wallet backed by its own PXE.
     let bob_wallet = {
-        let node = create_aztec_node_client(&node_url());
+        let node = create_aztec_node_client(node_url());
         let kv = Arc::new(InMemoryKvStore::new());
         let pxe = EmbeddedPxe::create(node.clone(), kv)
             .await
