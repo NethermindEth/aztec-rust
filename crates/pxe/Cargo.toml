@@ -2,7 +2,7 @@
 name = "aztec-pxe"
 version = "0.5.1"
 edition = "2021"
-description = "Embedded PXE (Private eXecution Environment) for the Aztec Rust SDK"
+description = "Embedded PXE (Private eXecution Environment) runtime for aztec-rs"
 license = "Apache-2.0"
 # Depends on unpublished noir pre-release; publish when noir 1.0 lands on crates.io
 publish = false

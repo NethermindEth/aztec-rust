@@ -2,7 +2,7 @@
 name = "aztec-fee"
 version = "0.5.1"
 edition = "2021"
-description = "Fee payment strategies for the Aztec Rust SDK"
+description = "Fee payment strategies for aztec-rs"
 license = "Apache-2.0"
 
 [dependencies]

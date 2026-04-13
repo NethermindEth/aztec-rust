@@ -1,4 +1,4 @@
-//! Ethereum integration and L1-L2 messaging for the Aztec Rust SDK.
+//! Ethereum integration and L1-L2 messaging for aztec-rs.
 //!
 //! Provides:
 //! - Core messaging types (`L1Actor`, `L2Actor`, `L1ToL2Message`)

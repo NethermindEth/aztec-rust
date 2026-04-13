@@ -2,7 +2,7 @@
 name = "aztec-ethereum"
 version = "0.5.1"
 edition = "2021"
-description = "Ethereum L1 integration and L1-L2 messaging for the Aztec Rust SDK"
+description = "Ethereum L1 integration and L1-L2 messaging for aztec-rs"
 license = "Apache-2.0"
 
 [dependencies]

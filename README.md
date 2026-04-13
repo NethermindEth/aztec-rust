@@ -1,15 +1,23 @@
 # aztec-rs
 
-Rust SDK for the [Aztec Network](https://aztec.network). Provides a client library for interacting with Aztec nodes, managing wallets and accounts, deploying contracts, and sending transactions. The design mirrors the upstream [`aztec.js`](https://github.com/AztecProtocol/aztec-packages/tree/master/yarn-project/aztec.js) package.
+Rust runtime and client workspace for the [Aztec Network](https://aztec.network).
+This repository includes an in-process PXE runtime, wallet and account layers,
+node and Ethereum clients, contract tooling, and a top-level `aztec-rs` crate
+that re-exports the full stack.
+
+This is not just a thin RPC client around node methods. For Aztec v4.x, PXE
+runs client-side, and this workspace includes that runtime in `aztec-pxe`.
 
 > **Status:** Active development (v0.5.1). APIs may still change.
 >
 > **Not yet on crates.io** — depends on noir `1.0.0-beta.18` which is only available via git.
 > Install from GitHub as shown below.
 
-## Features
+## What It Includes
 
-- **Embedded PXE** — in-process private execution engine with note discovery, kernel proving, and block sync
+- **Embedded PXE runtime** — in-process private execution engine with note discovery, local stores, kernel simulation/proving, and block sync
+- **PXE client surface** — `aztec-pxe-client` defines the PXE trait and shared request/response types used by wallets and runtimes
+- **Wallet runtime** — `BaseWallet` composes a PXE backend, Aztec node client, and account provider into a production wallet
 - **Node client** — connect to an Aztec node over JSON-RPC, query blocks, chain info, and wait for readiness
 - **Contract interaction** — load contract artifacts, build and send function calls (private, public, utility)
 - **Contract deployment** — builder-pattern deployer with deterministic addressing, class registration, and instance publication
@@ -36,7 +44,7 @@ Add `aztec-rs` as a git dependency in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-aztec-rs = { git = "https://github.com/NethermindEth/aztec-rust.git", tag = "v0.5.1" }
+aztec-rs = { git = "https://github.com/NethermindEth/aztec-rs.git", tag = "v0.5.1" }
 ```
 
 The noir git patches are declared in the workspace `Cargo.toml` and apply
@@ -44,6 +52,10 @@ automatically when Cargo resolves the dependency — no `[patch.crates-io]`
 needed in your project. Once noir publishes stable releases to crates.io,
 `aztec-rs` will be published there too and a simple version dependency will
 work.
+
+If you only want a subset of the stack, the workspace is also split into
+dedicated crates such as `aztec-pxe`, `aztec-pxe-client`, `aztec-wallet`,
+`aztec-node-client`, and `aztec-contract`.
 
 ## Quick Start
 
@@ -62,6 +74,28 @@ async fn main() -> Result<(), aztec_rs::Error> {
 }
 ```
 
+For Aztec v4.x applications, the usual production entrypoint is
+`aztec_rs::wallet::create_embedded_wallet`, which creates a wallet backed by an
+in-process PXE runtime and a single node URL. There is no separate PXE server
+to configure in that flow.
+
+## Workspace Crates
+
+| Crate | Purpose |
+|------|---------|
+| `aztec-rs` | Umbrella crate that re-exports the workspace as one dependency |
+| `aztec-core` | Core types, ABI support, hashes, fees, errors, and transaction types |
+| `aztec-rpc` | JSON-RPC transport layer used by clients |
+| `aztec-crypto` | Key derivation, Schnorr, Pedersen, Grumpkin, and related primitives |
+| `aztec-node-client` | HTTP client and polling helpers for Aztec node RPC |
+| `aztec-pxe-client` | PXE trait plus shared types for simulation, proving, events, and sync |
+| `aztec-pxe` | Embedded PXE runtime with local stores, execution, kernel, and sync services |
+| `aztec-wallet` | `BaseWallet` and account-provider integration on top of PXE + node backends |
+| `aztec-contract` | Contract handles, deployments, authwits, and event decoding |
+| `aztec-account` | Account abstraction flows, entrypoints, and account deployment helpers |
+| `aztec-fee` | Fee payment strategies and fee-related types |
+| `aztec-ethereum` | L1 client and L1<->L2 messaging helpers |
+
 ## Examples
 
 Run examples with a local Aztec node (defaults to `http://localhost:8080`):
@@ -70,13 +104,13 @@ Run examples with a local Aztec node (defaults to `http://localhost:8080`):
 # Connect to a node and display info
 cargo run --example node_info
 
-# Make a contract function call
+# Make a contract function call with an embedded wallet/PXE
 cargo run --example contract_call
 
-# Deploy a contract
+# Deploy a contract with an embedded wallet/PXE
 cargo run --example deploy_contract
 
-# Full account lifecycle
+# Full account lifecycle with account manager + embedded PXE
 cargo run --example account_flow
 ```
 
@@ -85,28 +119,6 @@ Override the node URL with the `AZTEC_NODE_URL` environment variable:
 ```bash
 AZTEC_NODE_URL=http://localhost:9090 cargo run --example node_info
 ```
-
-## Modules
-
-| Module | Description |
-|--------|-------------|
-| `abi` | ABI types, selectors, encoding/decoding, and contract artifact loading |
-| `account` | Account abstraction traits, Schnorr/ECDSA/SingleKey flavors, manager, and deployment |
-| `authwit` | Authorization witness creation, validation, and public auth registry interaction |
-| `contract` | Contract handles, function interactions, and batch calls |
-| `cross_chain` | L1-to-L2 message readiness checking and polling utilities |
-| `crypto` | Key derivation, Schnorr signing, Pedersen hashing, and Grumpkin curve operations |
-| `deployment` | Contract deployment, class registration, and instance publication |
-| `events` | Public and private event types and decoding |
-| `fee` | Gas settings and fee payment methods (native, sponsored, private FPC, claim-based) |
-| `hash` | Poseidon2, SHA-256, authwit hashing, and cross-chain message hashing |
-| `l1_client` | Ethereum JSON-RPC client for Inbox/Outbox contract interaction |
-| `messaging` | L1-L2 messaging types (L1Actor, L2Actor, L1ToL2Message, claims) |
-| `node` | Node client, readiness polling, and receipt waiting |
-| `pxe` | Embedded PXE runtime with private execution, note stores, and block sync |
-| `tx` | Transaction types, receipts, statuses, and execution payloads |
-| `types` | Core field (Fr), address, key, and contract instance types |
-| `wallet` | BaseWallet implementation backed by embedded PXE and node connections |
 
 ## Development
 

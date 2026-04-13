@@ -1,4 +1,4 @@
-//! Embedded PXE (Private eXecution Environment) for the Aztec Rust SDK.
+//! Embedded PXE (Private eXecution Environment) runtime for aztec-rs.
 //!
 //! This crate provides an in-process PXE implementation for Aztec v4.x,
 //! where PXE runs client-side. It implements

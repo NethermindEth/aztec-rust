@@ -2,7 +2,7 @@
 name = "aztec-crypto"
 version = "0.5.1"
 edition = "2021"
-description = "Cryptographic primitives and key derivation for the Aztec Rust SDK"
+description = "Cryptographic primitives and key derivation for aztec-rs"
 license = "Apache-2.0"
 # Depends on unpublished noir pre-release; publish when noir 1.0 lands on crates.io
 publish = false

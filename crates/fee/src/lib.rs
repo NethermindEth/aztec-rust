@@ -1,4 +1,4 @@
-//! Fee payment strategies for the Aztec Rust SDK.
+//! Fee payment strategies for aztec-rs.
 //!
 //! This crate provides implementations of the [`FeePaymentMethod`] trait,
 //! which determines how transaction fees are paid on the Aztec network.

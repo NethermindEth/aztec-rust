@@ -1,8 +1,11 @@
-//! Rust SDK for the Aztec Network.
+//! Rust runtime and client workspace for the Aztec Network.
 //!
-//! `aztec-rs` provides a client library for interacting with Aztec nodes,
-//! managing wallets and accounts, deploying contracts, and sending
-//! transactions. The design mirrors the upstream `aztec.js` package.
+//! `aztec-rs` re-exports the full workspace: an embedded PXE runtime, wallet
+//! and account layers, node and Ethereum clients, contract tooling, and core
+//! Aztec types.
+//!
+//! For Aztec v4.x, PXE runs client-side. This repository includes that runtime
+//! in `aztec-pxe`; it is not just a thin wrapper around node RPC.
 //!
 //! # Quick Start
 //!

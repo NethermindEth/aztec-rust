@@ -2,7 +2,7 @@
 name = "aztec-account"
 version = "0.5.1"
 edition = "2021"
-description = "Account abstraction, AccountManager, and authorization for the Aztec Rust SDK"
+description = "Account abstraction, AccountManager, and authorization for aztec-rs"
 license = "Apache-2.0"
 # Depends on unpublished noir pre-release via aztec-crypto/aztec-pxe
 publish = false

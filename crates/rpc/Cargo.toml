@@ -2,7 +2,7 @@
 name = "aztec-rpc"
 version = "0.5.1"
 edition = "2021"
-description = "JSON-RPC transport for Aztec Rust SDK clients"
+description = "JSON-RPC transport for aztec-rs clients"
 license = "Apache-2.0"
 
 [dependencies]

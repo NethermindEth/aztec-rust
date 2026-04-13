@@ -2,7 +2,7 @@
 name = "aztec-core"
 version = "0.5.1"
 edition = "2021"
-description = "Core types, traits, and ABI definitions for the Aztec Rust SDK"
+description = "Core types, traits, and ABI definitions for aztec-rs"
 license = "Apache-2.0"
 
 [dependencies]
