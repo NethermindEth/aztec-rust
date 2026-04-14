@@ -5,6 +5,19 @@ Implements [`aztec_pxe_client::Pxe`](./aztec-pxe-client.md) by composing local s
 
 Source: `crates/pxe/src/`.
 
+## Start From User Tasks
+
+Use `aztec-pxe` when your process should run its own Private Execution Environment instead of talking to an external PXE service.
+Most application code gets one through `aztec_rs::wallet::create_embedded_wallet`; use this crate directly when you need custom storage, custom prover settings, or lower-level tests.
+
+| Task | API | Example |
+| ---- | --- | ------- |
+| Spin up a short-lived PXE | `EmbeddedPxe::create_ephemeral` | Tests and examples |
+| Persist local PXE state | `EmbeddedPxe::create` + `SledKvStore` | Desktop or server process with durable notes |
+| Customize sync/proving | `EmbeddedPxe::create_with_config` | Advanced local runtime setup |
+| Inspect local stores | `note_store`, `contract_store`, `key_store` accessors | Debugging note discovery |
+| Accept a PXE in library code | `aztec_pxe_client::Pxe` | Avoid depending on `EmbeddedPxe` directly |
+
 ## Top-Level Types
 
 ```rust,ignore
@@ -37,6 +50,12 @@ let pxe = EmbeddedPxe::create_with_config(
     kv,
     EmbeddedPxeConfig::default(),
 ).await?;
+```
+
+For the complete wallet path that creates this for you, run:
+
+```bash
+cargo run --example wallet_minimal
 ```
 
 Accessors expose individual stores for advanced use:

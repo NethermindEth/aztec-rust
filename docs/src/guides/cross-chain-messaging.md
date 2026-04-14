@@ -57,9 +57,9 @@ See `examples/l2_to_l1_message.rs` for the full flow; the L1-side call is handle
 
 ## Message Identity
 
-- `L1Actor { address, chain_id }` — the L1 sender.
-- `L2Actor { address, version }` — the L2 recipient.
-- `L1ToL2Message { sender, recipient, content, secret_hash }` — bound by its hash.
+- `L1Actor { sender, chain_id }` — the L1 sender.
+- `L2Actor { recipient, version }` — the L2 recipient.
+- `L1ToL2Message { sender, recipient, content, secret_hash, index }` — bound by its hash and tree position.
 
 Tampering with any field changes the hash and breaks consumption.
 

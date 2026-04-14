@@ -5,6 +5,20 @@ No network or runtime dependencies — pure data + validation.
 
 Source: `crates/core/src/`.
 
+## Start From User Tasks
+
+Use `aztec-core` when you need protocol data types without starting a node, wallet, or PXE.
+Most application code reaches these types through `aztec_rs::types`, `aztec_rs::abi`, `aztec_rs::tx`, and `aztec_rs::fee`.
+
+| Task | API | Example |
+| ---- | --- | ------- |
+| Pass addresses, field values, and public keys around | `types::{Fr, Fq, AztecAddress, EthAddress, PublicKeys}` | Parse a field with `Fr::from_hex("0x...")?` |
+| Encode contract call arguments | `abi::{AbiValue, encode_arguments}` | `Contract::method` calls this for you |
+| Decode utility return values | `abi::decode_from_abi` | Decode fields into typed ABI values |
+| Set transaction gas limits | `fee::GasSettings` | Pass into `SendOptions` |
+| Hash protocol data | `hash::{poseidon2_hash, compute_secret_hash}` | Derive secret hashes for claim flows |
+| Inspect transaction status | `tx::{TxHash, TxReceipt, TxStatus}` | Use with `wait_for_tx` |
+
 ## Module Map
 
 | Module          | Highlights                                                                                 |
@@ -39,8 +53,13 @@ Use the decoder / encoder to move between typed values and field-encoded calldat
 
 ```rust,ignore
 use aztec_core::abi::{decode_from_abi, encode_arguments, AbiValue};
-let fields = encode_arguments(&abi_params, &[AbiValue::Field(fr)]);
-let decoded = decode_from_abi(&return_types, &field_output)?;
+
+let function = artifact.find_function("transfer")?;
+let calldata = encode_arguments(function, &[
+    AbiValue::Field(recipient.into()),
+    AbiValue::Integer(10),
+])?;
+let decoded = decode_from_abi(&function.return_types, &field_output)?;
 ```
 
 Selectors:
@@ -58,6 +77,28 @@ Selectors:
 
 `poseidon2_hash` is a rate-3 / capacity-1 sponge matching barretenberg's implementation.
 Use `poseidon2_hash_with_separator` to bind a domain tag into the sponge.
+
+```rust,ignore
+use aztec_core::hash::{compute_secret_hash, poseidon2_hash};
+use aztec_core::types::Fr;
+
+let secret = Fr::random();
+let secret_hash = compute_secret_hash(&secret);
+let commitment = poseidon2_hash(&[secret_hash, Fr::from(42u64)]);
+```
+
+## Gas Settings
+
+Use default gas settings first, then override limits only when simulation suggests a tighter value.
+
+```rust,ignore
+use aztec_core::fee::{Gas, GasSettings};
+
+let gas_settings = GasSettings {
+    gas_limits: Some(Gas::new(20_000, 500_000)),
+    ..GasSettings::default()
+};
+```
 
 ## Full API
 

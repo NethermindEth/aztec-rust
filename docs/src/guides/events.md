@@ -11,17 +11,27 @@ Public events come from the node; private events come from the PXE (they require
 
 ```rust,ignore
 use aztec_rs::events::{get_public_events, PublicEventFilter};
+use aztec_rs::wallet::EventMetadataDefinition;
 
-let filter = PublicEventFilter::new(contract_address, from_block, to_block)
-    .with_event::<MyEvent>();
+let metadata = EventMetadataDefinition {
+    event_selector,
+    abi_type,
+    field_names,
+};
+let filter = PublicEventFilter {
+    contract_address: Some(contract_address),
+    from_block: Some(from_block),
+    to_block: Some(to_block),
+    ..Default::default()
+};
 
-let result = get_public_events::<MyEvent>(&node, filter).await?;
+let result = get_public_events(&node, &metadata, filter).await?;
 for ev in result.events {
-    println!("{:?}", ev.data);
+    println!("{:?}", ev.event);
 }
 ```
 
-The node's `get_public_logs` endpoint backs this; `aztec-contract` decodes the field vector into your typed struct.
+The node's `get_public_logs` endpoint backs this; `aztec-contract` decodes the field vector into named fields from the event metadata.
 
 ## Private Events
 

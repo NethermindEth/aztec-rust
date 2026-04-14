@@ -4,6 +4,19 @@ Higher-level cryptographic primitives built on top of [`aztec-core`](./aztec-cor
 
 Source: `crates/crypto/src/`.
 
+## Start From User Tasks
+
+Use `aztec-crypto` when you need key material or protocol-compatible signatures outside the wallet/account helpers.
+If you are only sending transactions, prefer [`aztec-account`](./aztec-account.md) and [`aztec-wallet`](./aztec-wallet.md), which call these helpers for you.
+
+| Task | API | Example |
+| ---- | --- | ------- |
+| Turn a secret into the four Aztec master keys | `derive_keys` | Wallet/account setup |
+| Derive app-scoped keys | `compute_app_secret_key`, `compute_ovsk_app` | App-specific privacy keys |
+| Sign and verify a message | `schnorr_sign`, `schnorr_verify` | Custom authorization provider |
+| Compute legacy Pedersen hashes | `pedersen_hash` | Compatibility with legacy protocol pieces |
+| Rebuild a complete address | `complete_address_from_secret_key_and_partial_address` | Wallet reconstruction |
+
 ## Module Map
 
 | Module     | Purpose                                                              |
@@ -54,8 +67,8 @@ Application-scoped derivations:
 ```rust,ignore
 use aztec_crypto::{schnorr_sign, schnorr_verify, SchnorrSignature};
 
-let sig: SchnorrSignature = schnorr_sign(&message, &signing_key);
-assert!(schnorr_verify(&message, &public_key, &sig));
+let sig: SchnorrSignature = schnorr_sign(&signing_key, &message);
+assert!(schnorr_verify(&public_key, &message, &sig));
 ```
 
 The sign/verify pair matches barretenberg's Grumpkin Schnorr scheme used by default Aztec accounts.

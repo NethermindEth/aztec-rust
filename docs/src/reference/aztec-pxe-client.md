@@ -5,6 +5,32 @@ Depend on this crate when you want to accept any PXE backend (embedded, remote, 
 
 Source: `crates/pxe-client/src/`.
 
+## Start From User Tasks
+
+Use `aztec-pxe-client` when your code needs a PXE but should not care whether it is embedded, remote, or mocked.
+Wallets and contract helpers call the trait for you; libraries should accept `impl Pxe` or a generic `P: Pxe`.
+
+| Task | API | Example |
+| ---- | --- | ------- |
+| Register an imported account | `register_account` | Wallet setup before note discovery |
+| Register contract metadata locally | `register_contract_class`, `register_contract` | After deployment or import |
+| Simulate or prove a transaction | `simulate_tx`, `prove_tx` | Wallet `simulate_tx` / `send_tx` |
+| Run a utility function | `execute_utility` | Read private state without sending a tx |
+| Read private events | `get_private_events` | `cargo run --example event_logs` |
+| Cleanly stop background work | `stop` | Tests and short-lived tools |
+
+```rust,ignore
+use aztec_pxe_client::Pxe;
+
+async fn print_pxe_state(pxe: &(impl Pxe + ?Sized)) -> Result<(), aztec_core::Error> {
+    let header = pxe.get_synced_block_header().await?;
+    let accounts = pxe.get_registered_accounts().await?;
+    println!("synced header: {:?}", header);
+    println!("registered accounts: {}", accounts.len());
+    Ok(())
+}
+```
+
 ## The `Pxe` Trait
 
 ```rust,ignore

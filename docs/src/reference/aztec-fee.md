@@ -5,6 +5,18 @@ Each strategy produces an `ExecutionPayload` that is merged into the user's tx b
 
 Source: `crates/fee/src/`.
 
+## Start From User Tasks
+
+Use `aztec-fee` when the user transaction needs an explicit payment payload.
+The wallet merges the payload from a `FeePaymentMethod` into the user's execution payload before simulation, profiling, or sending.
+
+| Task | Strategy | Example |
+| ---- | -------- | ------- |
+| Sender already has Fee Juice on L2 | `NativeFeePaymentMethod` | `cargo run --example fee_native` |
+| A sponsor contract should pay | `SponsoredFeePaymentMethod` | `cargo run --example fee_sponsored` |
+| Sender funded Fee Juice on L1 and must claim it on L2 | `FeeJuicePaymentMethodWithClaim` | `cargo run --example fee_juice_claim` |
+| Build a custom payment flow | Implement `FeePaymentMethod` | Private or application-specific FPCs |
+
 ## The `FeePaymentMethod` Trait
 
 ```rust,ignore
@@ -51,6 +63,26 @@ use aztec_fee::{FeePaymentMethod, NativeFeePaymentMethod};
 let payment = NativeFeePaymentMethod::new(account_address);
 let payload = payment.get_fee_execution_payload().await?;
 // The wallet merges `payload` with the user's call payload.
+```
+
+### Sponsored payment
+
+```rust,ignore
+use aztec_fee::{FeePaymentMethod, SponsoredFeePaymentMethod};
+
+let payload = SponsoredFeePaymentMethod::new(sponsored_fpc_address)
+    .get_fee_execution_payload()
+    .await?;
+```
+
+### Fee Juice claim payment
+
+```rust,ignore
+use aztec_fee::{FeeJuicePaymentMethodWithClaim, FeePaymentMethod};
+
+let payload = FeeJuicePaymentMethodWithClaim::new(account_address, claim)
+    .get_fee_execution_payload()
+    .await?;
 ```
 
 ## Full API

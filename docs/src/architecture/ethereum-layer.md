@@ -53,7 +53,7 @@ Composes an L1 tx against the Inbox for an `L1ToL2Message`, returning `L1ToL2Mes
 
 ### Fee Juice Bridge
 
-`prepare_fee_juice_on_l1(eth, l1_addresses, recipient, amount)` wraps the approve → deposit → message flow into a single helper, returning `FeeJuiceBridgeResult` with the `L2AmountClaim` ready for use with `FeeJuicePaymentMethodWithClaim` in [`aztec-fee`](../reference/aztec-fee.md).
+`prepare_fee_juice_on_l1(eth, l1_addresses, recipient)` wraps the approve → deposit → message flow into a single helper, returning `FeeJuiceBridgeResult` with the `L2AmountClaim` ready for use with `FeeJuicePaymentMethodWithClaim` in [`aztec-fee`](../reference/aztec-fee.md).
 
 ### Readiness
 

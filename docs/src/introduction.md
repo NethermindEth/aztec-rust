@@ -5,12 +5,15 @@ It bundles an embedded PXE (Private Execution Environment), wallet and account a
 
 This book is the entry point for users, application developers, and contributors.
 
+The docs are organized around what you are trying to do, then link down into API details.
+If a page starts to feel like a crate inventory, jump to its **Start From User Tasks** section or the matching runnable example.
+
 ## Who This Is For
 
 | Audience    | Start here                                                              |
 | ----------- | ----------------------------------------------------------------------- |
-| Users       | [Quickstart](./quickstart.md) and [Guides](./guides/installation.md)    |
-| Developers  | [Reference](./reference/crates.md) and runnable [examples](./guides/embedded-wallet-setup.md) |
+| Users       | [Quickstart](./quickstart.md), [Guides](./guides/installation.md), and the runnable examples listed there |
+| Developers  | [Choose by task](./reference/crates.md) and then drill into per-crate reference |
 | Engineers   | [Architecture](./architecture/overview.md) and [Concepts](./concepts/overview.md) |
 | Contributors| [Development](./development/contributing.md)                             |
 

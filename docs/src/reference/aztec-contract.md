@@ -4,6 +4,20 @@ Contract interaction, deployment, authorization witnesses, and event reading.
 
 Source: `crates/contract/src/`.
 
+## Start From User Tasks
+
+Use `aztec-contract` when a user action is expressed as a contract deployment, function call, authwit interaction, or event query.
+It sits on top of a `Wallet`, so examples usually start after wallet setup.
+
+| Task | API | Example |
+| ---- | --- | ------- |
+| Attach to an existing deployment | `Contract::at` | Build calls against a known address |
+| Deploy a new contract | `Contract::deploy`, `ContractDeployer` | `cargo run --example deploy_contract` |
+| Simulate or send a function call | `ContractFunctionInteraction` | `cargo run --example simulate_profile_send` |
+| Batch multiple calls | `BatchCall` | One transaction for several actions |
+| Create and consume authwits | `SetPublicAuthWitInteraction`, `lookup_validity` | `cargo run --example authwit` |
+| Read public events | `get_public_events` | `cargo run --example event_logs` |
+
 ## Module Map
 
 | Module       | Highlights                                                                                      |
@@ -44,6 +58,19 @@ The returned `ContractFunctionInteraction` offers:
 
 `BatchCall` bundles several calls into one transaction, exposing the same simulate / profile / send API.
 
+### Example: batch calls into one transaction
+
+```rust,ignore
+use aztec_contract::contract::BatchCall;
+use aztec_wallet::SendOptions;
+
+let first = contract.method("approve", approve_args)?;
+let second = contract.method("transfer", transfer_args)?;
+let sent = BatchCall::new(&wallet, vec![first.request()?, second.request()?])
+    .send(SendOptions { from: owner, ..Default::default() })
+    .await?;
+```
+
 ## Deployment
 
 ```rust,ignore
@@ -73,12 +100,16 @@ Low-level helpers:
 ```rust,ignore
 use aztec_contract::events::{get_public_events, PublicEventFilter};
 
-let filter = PublicEventFilter::new(token_address, from_block, to_block)
-    .with_event::<MyEvent>();
+let filter = PublicEventFilter {
+    contract_address: Some(token_address),
+    from_block: Some(from_block),
+    to_block: Some(to_block),
+    ..Default::default()
+};
 
-let GetPublicEventsResult { events, .. } = get_public_events::<MyEvent>(&node, filter).await?;
-for PublicEvent { metadata, data } in events {
-    /* ... */
+let result = get_public_events(&node, &event_metadata, filter).await?;
+for event in result.events {
+    println!("{:?} at block {}", event.event, event.metadata.block_number);
 }
 ```
 

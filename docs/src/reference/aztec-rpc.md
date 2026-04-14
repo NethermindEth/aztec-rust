@@ -4,6 +4,29 @@ JSON-RPC HTTP transport shared by the node client (and internally by other clien
 
 Source: `crates/rpc/src/`.
 
+## Start From User Tasks
+
+Use this crate only when a typed client does not wrap the JSON-RPC method you need yet.
+For normal node work, prefer [`aztec-node-client`](./aztec-node-client.md); for L1 helpers, prefer [`aztec-ethereum`](./aztec-ethereum.md).
+
+| Task | Method | Example |
+| ---- | ------ | ------- |
+| Call a method with a required result | `call::<T>` | `transport.call("node_getNodeInfo", json!([])).await?` |
+| Call a method that may return `null` | `call_optional::<T>` | `transport.call_optional("node_getBlock", json!([block])).await?` |
+| Call a method where the result is irrelevant | `call_void` | `transport.call_void("node_sendTx", params).await?` |
+
+```rust,ignore
+use aztec_rpc::RpcTransport;
+use serde_json::json;
+use std::time::Duration;
+
+let transport = RpcTransport::new(
+    "http://localhost:8080".to_owned(),
+    Duration::from_secs(30),
+);
+let block: u64 = transport.call("node_getBlockNumber", json!([])).await?;
+```
+
 ## Public Surface
 
 One module: `rpc`, re-exported at the crate root.

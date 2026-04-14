@@ -45,9 +45,9 @@ The wallet merges the fee payload with `execution_payload` before handing the co
 
 ```rust,ignore
 use aztec_rs::l1_client::{EthClient, prepare_fee_juice_on_l1};
-use aztec_rs::fee::FeeJuicePaymentMethodWithClaim;
+use aztec_rs::fee::{FeeJuicePaymentMethodWithClaim, FeePaymentMethod};
 
-let bridge = prepare_fee_juice_on_l1(&eth_client, &l1_addresses, alice, amount).await?;
+let bridge = prepare_fee_juice_on_l1(&eth_client, &l1_addresses, &alice).await?;
 // Wait for L2-side readiness first (see cross-chain guide).
 let fee   = FeeJuicePaymentMethodWithClaim::new(alice, bridge.claim);
 let payload = fee.get_fee_execution_payload().await?;

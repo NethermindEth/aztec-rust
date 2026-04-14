@@ -5,6 +5,25 @@ Depend on this when you want a single dependency; pick individual crates for a s
 
 Source: `src/lib.rs`.
 
+## Start From User Tasks
+
+Use `aztec-rs` when you are building an app and want the shortest import path for the full client stack.
+The umbrella crate is the easiest way to move from one user workflow to the next without learning crate boundaries first.
+
+| Task | Import from | Full example |
+| ---- | ----------- | ------------ |
+| Connect to a node | `aztec_rs::node` | `cargo run --example node_info` |
+| Create an embedded wallet | `aztec_rs::wallet` | `cargo run --example wallet_minimal` |
+| Deploy a contract | `aztec_rs::contract` | `cargo run --example deploy_contract` |
+| Simulate, profile, and send a call | `aztec_rs::wallet`, `aztec_rs::contract` | `cargo run --example simulate_profile_send` |
+| Deploy an account | `aztec_rs::account` | `cargo run --example account_deploy` |
+| Attach a fee payment | `aztec_rs::fee` | `cargo run --example fee_native` |
+| Read events | `aztec_rs::events` and `aztec_rs::wallet` | `cargo run --example event_logs` |
+| Bridge messages across L1 / L2 | `aztec_rs::l1_client`, `aztec_rs::cross_chain`, `aztec_rs::messaging` | `cargo run --example l1_to_l2_message` |
+
+Start with `aztec-rs` while prototyping.
+Switch to individual crates later if you need a smaller dependency graph or a library API that should expose only one layer, such as `aztec_pxe_client::Pxe`.
+
 ## Public Modules
 
 Every module is a curated re-export from one or more workspace crates.
@@ -51,6 +70,47 @@ let block = node.get_block_number().await?;
 println!("Current block: {block}");
 # Ok(())
 # }
+```
+
+## Example: User Transaction Flow
+
+The common application path is: connect, build a wallet, build an execution payload, simulate it, then send it.
+
+```rust,ignore
+use aztec_rs::wallet::{ProfileMode, ProfileOptions, SendOptions, SimulateOptions, Wallet};
+
+let sim = wallet
+    .simulate_tx(payload.clone(), SimulateOptions {
+        from: owner,
+        estimate_gas: true,
+        ..Default::default()
+    })
+    .await?;
+
+let profile = wallet
+    .profile_tx(payload.clone(), ProfileOptions {
+        from: owner,
+        profile_mode: Some(ProfileMode::Full),
+        ..Default::default()
+    })
+    .await?;
+
+let sent = wallet
+    .send_tx(payload, SendOptions {
+        from: owner,
+        ..Default::default()
+    })
+    .await?;
+
+println!("return values: {}", sim.return_values);
+println!("profile data: {}", profile.profile_data);
+println!("tx hash: {}", sent.tx_hash);
+```
+
+Run the complete version with:
+
+```bash
+cargo run --example simulate_profile_send
 ```
 
 ## Full API

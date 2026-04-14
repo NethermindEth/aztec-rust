@@ -39,7 +39,14 @@ Link validation via `mdbook-linkcheck` is gated until the preprocessor is compat
 
 ## Style Rules
 
-- Follow the page template: **Context → Design → Implementation → Edge Cases → Security → References** for technical pages.
+- Write for the user's task first; describe modules and types only after the reader knows which problem they solve.
+- For each user-facing functionality on a page, include at least one of: a runnable `cargo run --example ...` command, a minimal Rust snippet, or a link to the guide that performs the flow end-to-end.
+- Start reference pages with **Start From User Tasks** when they expose app-facing APIs.
+  Keep module maps, trait dumps, and rustdoc links below that task map.
+- Avoid flat API catalog prose such as "this module contains X" unless it is paired with "use this when you need Y".
+- Prefer examples that show the full action shape: create the client / wallet / handle, call the method, and show what the user does with the result.
+- Link to the closest shipped example under `examples/` whenever one exists.
+- Follow the page template: **User Task → Example → Details → Edge Cases → Security → References** for user-facing pages, and **Context → Design → Implementation → Edge Cases → Security → References** for internal architecture/spec pages.
 - Use **sentence-per-line** formatting — one sentence per line for clean diffs.
 - Avoid heading levels deeper than `###`.
 - Use **relative links** between pages: `[...](../architecture/overview.md)`.

@@ -4,6 +4,19 @@ L1 (Ethereum) client and L1↔L2 messaging helpers.
 
 Source: `crates/ethereum/src/`.
 
+## Start From User Tasks
+
+Use `aztec-ethereum` when a user action starts or finishes on Ethereum L1.
+For normal L2 contract calls, stay in [`aztec-wallet`](./aztec-wallet.md) and [`aztec-contract`](./aztec-contract.md).
+
+| Task | API | Example |
+| ---- | --- | ------- |
+| Send an L1 → L2 message | `l1_client::send_l1_to_l2_message` | `cargo run --example l1_to_l2_message` |
+| Wait until an L1 → L2 message is consumable | `cross_chain::wait_for_l1_to_l2_message_ready` | `cargo run --example l1_to_l2_message` |
+| Prepare Fee Juice on L1 for claim-based fees | `l1_client::prepare_fee_juice_on_l1` | `cargo run --example fee_juice_claim` |
+| Build message actors and claim payloads | `messaging::{L1Actor, L2Actor, L1ToL2Message, L2AmountClaim}` | Custom bridge flows |
+| Send a raw Ethereum transaction | `l1_client::EthClient` | Local-network helpers |
+
 ## Module Map
 
 | Module         | Highlights                                                                                  |
@@ -16,12 +29,12 @@ Source: `crates/ethereum/src/`.
 
 ```rust,ignore
 pub struct L1Actor {
-    pub address: EthAddress,
+    pub sender: EthAddress,
     pub chain_id: u64,
 }
 
 pub struct L2Actor {
-    pub address: AztecAddress,
+    pub recipient: AztecAddress,
     pub version: u64,
 }
 
@@ -30,6 +43,7 @@ pub struct L1ToL2Message {
     pub recipient: L2Actor,
     pub content: Fr,
     pub secret_hash: Fr,
+    pub index: Fr,
 }
 ```
 
@@ -44,7 +58,7 @@ use aztec_ethereum::l1_client::{EthClient, L1ContractAddresses, send_l1_to_l2_me
 
 let eth = EthClient::new(&EthClient::default_url());
 let account = eth.get_account().await?;
-let tx_hash = eth.send_transaction(/* ... */).await?;
+let tx_hash = eth.send_transaction(&to_address, &calldata, &account).await?;
 let receipt = eth.wait_for_receipt(&tx_hash).await?;
 ```
 
@@ -56,8 +70,11 @@ let receipt = eth.wait_for_receipt(&tx_hash).await?;
 ```rust,ignore
 let result: L1ToL2MessageSentResult = send_l1_to_l2_message(
     &eth,
-    &l1_addresses,
-    &message,
+    &l1_addresses.inbox,
+    &recipient,
+    rollup_version,
+    &content,
+    &secret_hash,
 ).await?;
 ```
 
@@ -69,8 +86,7 @@ Returns the L1 tx hash and the on-L2 message hash / leaf index needed later for 
 let FeeJuiceBridgeResult { claim, .. } = prepare_fee_juice_on_l1(
     &eth,
     &l1_addresses,
-    recipient,
-    amount,
+    &recipient,
 ).await?;
 // `claim` can be handed to `FeeJuicePaymentMethodWithClaim` in `aztec-fee`.
 ```

@@ -3,6 +3,17 @@
 `aztec-rs` has a single top-level error type, re-exported from [`aztec_core::error::Error`](https://github.com/NethermindEth/aztec-rs/blob/main/crates/core/src/error.rs).
 Every crate in the workspace converts its internal failures into this type.
 
+## Start From User Tasks
+
+| Symptom | Likely variant | What to check |
+| ------- | -------------- | ------------- |
+| Node URL is wrong or offline | `Transport` | `AZTEC_NODE_URL`, sandbox status, network connectivity |
+| Node returns a JSON-RPC error | `Rpc` | Method name, parameters, node logs |
+| Artifact or call arguments do not match | `Abi` | Function name, argument count, ABI type |
+| Hex, address, or field value will not parse | `InvalidData` | Input format and `0x` prefix |
+| Transaction simulation or inclusion failed | `Reverted` | Contract assertion message and authwit / fee setup |
+| A poller never reached the target state | `Timeout` | Node progress, block production, `WaitOpts` timeout |
+
 ## The `Error` Enum
 
 ```rust,ignore
@@ -47,6 +58,18 @@ match result {
     Err(aztec_rs::Error::Rpc { code, message }) => eprintln!("rpc {code}: {message}"),
     Err(e) => eprintln!("other error: {e}"),
     Ok(v) => v,
+}
+```
+
+For CLI-style tools, keep the top-level result simple and handle only the variants where you can give the user a better next step:
+
+```rust,ignore
+if let Err(err) = run().await {
+    match err {
+        aztec_rs::Error::Transport(msg) => eprintln!("cannot reach node: {msg}"),
+        aztec_rs::Error::Reverted(msg) => eprintln!("transaction reverted: {msg}"),
+        other => eprintln!("{other}"),
+    }
 }
 ```
 

@@ -4,6 +4,22 @@ Wallet trait, `BaseWallet` composition root, and the `AccountProvider` abstracti
 
 Source: `crates/wallet/src/`.
 
+## Start From User Tasks
+
+Use `aztec-wallet` when you want the application-facing object that owns account lookup, PXE calls, node calls, simulation, sending, utility execution, auth witnesses, and event reads.
+Most app code should call wallet methods instead of calling the PXE and node directly.
+
+| Task | API | Example |
+| ---- | --- | ------- |
+| Create a production wallet | `create_embedded_wallet` | `cargo run --example wallet_minimal` |
+| Simulate a user action | `simulate_tx` | `cargo run --example simulate_profile_send` |
+| Profile a transaction | `profile_tx` | `ProfileMode::Full` in `simulate_profile_send` |
+| Send a transaction | `send_tx` | Contract call and fee examples |
+| Run a utility function | `execute_utility` | Read-only contract helper calls |
+| Create authorization witnesses | `create_auth_wit` | `cargo run --example authwit` |
+| Read public storage | `get_public_storage_at` | `cargo run --example public_storage` |
+| Read private events | `get_private_events` | `cargo run --example event_logs` |
+
 ## Module Map
 
 | Module             | Highlights                                                                                                                |
@@ -84,6 +100,45 @@ let wallet = create_embedded_wallet("http://localhost:8080", account_provider).a
 
 Requires the `embedded-pxe` crate feature.
 Internally creates an `HttpNodeClient` + ephemeral `EmbeddedPxe` + the provided `AccountProvider`.
+
+## Example: simulate, profile, and send
+
+```rust,ignore
+use aztec_wallet::{ProfileMode, ProfileOptions, SendOptions, SimulateOptions, Wallet};
+
+let sim = wallet
+    .simulate_tx(payload.clone(), SimulateOptions {
+        from: owner,
+        estimate_gas: true,
+        ..Default::default()
+    })
+    .await?;
+
+let profile = wallet
+    .profile_tx(payload.clone(), ProfileOptions {
+        from: owner,
+        profile_mode: Some(ProfileMode::Full),
+        ..Default::default()
+    })
+    .await?;
+
+let sent = wallet
+    .send_tx(payload, SendOptions {
+        from: owner,
+        ..Default::default()
+    })
+    .await?;
+
+println!("return values: {}", sim.return_values);
+println!("profile data: {}", profile.profile_data);
+println!("tx hash: {}", sent.tx_hash);
+```
+
+Run the complete example with:
+
+```bash
+cargo run --example simulate_profile_send
+```
 
 ## `AccountProvider`
 

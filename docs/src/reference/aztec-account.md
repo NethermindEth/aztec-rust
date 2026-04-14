@@ -4,6 +4,20 @@ Account abstraction: traits, concrete account implementations, entrypoints, auth
 
 Source: `crates/account/src/`.
 
+## Start From User Tasks
+
+Use `aztec-account` when you need to create, deploy, or adapt an account for a wallet.
+If you already have a wallet and only want to send a contract call, you usually do not need to touch this crate directly.
+
+| Task | API | Example |
+| ---- | --- | ------- |
+| Deploy a fresh Schnorr account | `AccountManager` + `SchnorrAccountContract` | `cargo run --example account_deploy` |
+| Wrap one account for a wallet | `SingleAccountProvider` | Embedded wallet setup |
+| Build an auth witness | `AuthorizationProvider` | `cargo run --example authwit` |
+| Encode one or many calls through an account entrypoint | `DefaultAccountEntrypoint`, `DefaultMultiCallEntrypoint` | Custom account integration |
+| Bootstrap tests without signatures | `SignerlessAccount` | Local deployment tests |
+| Pay fees through the account entrypoint | `AccountEntrypointMetaPaymentMethod` | Account-sponsored fee flow |
+
 ## Module Map
 
 | Module                    | Highlights                                                                                              |
@@ -69,6 +83,27 @@ println!("account address = {}", result.instance.address);
 ```
 
 `DeployAccountMethod` is the builder behind `deploy_method`; you can drive it explicitly to customize fee payment, simulation, or send options.
+
+Run the full account lifecycle example with:
+
+```bash
+cargo run --example account_deploy
+```
+
+## Example: provide one account to a wallet
+
+```rust,ignore
+use aztec_account::{SchnorrAccountContract, SingleAccountProvider};
+
+let account_contract = SchnorrAccountContract::new(secret_key);
+// Usually produced by AccountManager::complete_address() or reconstructed from stored keys.
+let complete_address = account_manager.complete_address().await?;
+let provider = SingleAccountProvider::new(
+    complete_address,
+    Box::new(account_contract),
+    "alice",
+);
+```
 
 ## Entrypoints
 

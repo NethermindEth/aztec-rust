@@ -4,6 +4,20 @@ Typed async client for the Aztec node's JSON-RPC surface, plus readiness polling
 
 Source: `crates/node-client/src/`.
 
+## Start From User Tasks
+
+Use the node client when you need public chain data, transaction polling, contract metadata from the node, public logs, or tree witnesses for PXE work.
+Application code should depend on the `AztecNode` trait when it can, and use `create_aztec_node_client` at the edge of the program.
+
+| Task | API | Example |
+| ---- | --- | ------- |
+| Wait until a local node is ready | `wait_for_node` | `cargo run --example node_info` |
+| Read block and protocol metadata | `get_node_info`, `get_block_number`, `get_proven_block_number` | Print chain state on startup |
+| Wait for inclusion or revert | `wait_for_tx` + `WaitOpts` | After `wallet.send_tx` |
+| Read contract metadata | `get_contract`, `get_contract_class` | Verify deployment |
+| Read public logs | `get_public_logs` | `cargo run --example event_logs` |
+| Support PXE simulation/proving | witness methods | Used by `aztec-pxe` sync and execution |
+
 ## Entry Points
 
 ```rust,no_run
@@ -21,6 +35,20 @@ let block = node.get_block_number().await?;
 - `wait_for_node(&node)` — polls `get_node_info` until it succeeds; returns the first `NodeInfo`.
 - `wait_for_tx(&node, tx_hash, opts)` — polls until `TxReceipt` reaches the configured status.
 - `wait_for_proven(&node, opts)` — polls until the proven block number advances per `WaitForProvenOpts`.
+
+### Example: wait for a transaction
+
+```rust,ignore
+use aztec_rs::node::{wait_for_tx, WaitOpts};
+use aztec_rs::tx::TxStatus;
+
+let receipt = wait_for_tx(&node, &tx_hash, WaitOpts {
+    wait_for_status: TxStatus::Checkpointed,
+    ..WaitOpts::default()
+})
+.await?;
+println!("tx status: {:?}", receipt.status);
+```
 
 ## The `AztecNode` Trait
 
