@@ -1,8 +1,9 @@
 //! Embedded PXE implementation that runs PXE logic in-process.
 
-use std::process::Stdio;
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use async_trait::async_trait;
 use aztec_core::abi::FunctionSelector;
@@ -81,6 +82,172 @@ struct CallExecutionBundle {
     first_acir_call_return_values: Vec<Fr>,
     /// User-visible return values for the top-level simulated call bundle.
     simulated_return_values: Vec<Fr>,
+}
+
+struct RealKernelProveDaemon {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+}
+
+impl RealKernelProveDaemon {
+    fn is_alive(&mut self) -> Result<bool, Error> {
+        self.child
+            .try_wait()
+            .map(|status| status.is_none())
+            .map_err(|err| Error::InvalidData(format!("check private kernel daemon: {err}")))
+    }
+
+    fn read_protocol_line(&mut self) -> Result<serde_json::Value, Error> {
+        let mut line = String::new();
+        let bytes = self
+            .stdout
+            .read_line(&mut line)
+            .map_err(|err| Error::InvalidData(format!("read private kernel daemon: {err}")))?;
+        if bytes == 0 {
+            return Err(Error::InvalidData(
+                "private kernel daemon closed stdout".to_owned(),
+            ));
+        }
+        serde_json::from_str(&line)
+            .map_err(|err| Error::InvalidData(format!("parse private kernel daemon line: {err}")))
+    }
+}
+
+impl Drop for RealKernelProveDaemon {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn real_kernel_prove_daemon() -> &'static Mutex<Option<RealKernelProveDaemon>> {
+    static DAEMON: OnceLock<Mutex<Option<RealKernelProveDaemon>>> = OnceLock::new();
+    DAEMON.get_or_init(|| Mutex::new(None))
+}
+
+fn stop_real_kernel_prove_daemon() {
+    if let Ok(mut daemon) = real_kernel_prove_daemon().lock() {
+        daemon.take();
+    }
+}
+
+fn start_real_kernel_prove_daemon() -> Result<(), Error> {
+    let mut guard = real_kernel_prove_daemon()
+        .lock()
+        .map_err(|_| Error::InvalidData("private kernel daemon mutex poisoned".to_owned()))?;
+
+    if let Some(daemon) = guard.as_mut() {
+        if daemon.is_alive()? {
+            return Ok(());
+        }
+        guard.take();
+    }
+
+    let script_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tools/private_kernel_prove_daemon_from_rust.mjs");
+    let mut command = std::process::Command::new("node");
+    command
+        .arg(script_path)
+        .arg("--daemon")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+    if let Some(path) = crate::kernel::prover::locate_aztec_packages_path() {
+        command.env("AZTEC_PACKAGES_PATH", path);
+    }
+
+    let mut child = command
+        .spawn()
+        .map_err(|err| Error::InvalidData(format!("start private kernel daemon: {err}")))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| Error::InvalidData("private kernel daemon missing stdin".to_owned()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| Error::InvalidData("private kernel daemon missing stdout".to_owned()))?;
+    let mut daemon = RealKernelProveDaemon {
+        child,
+        stdin,
+        stdout: BufReader::new(stdout),
+    };
+
+    let ready = daemon.read_protocol_line()?;
+    if ready.get("ready").and_then(|value| value.as_bool()) != Some(true) {
+        return Err(Error::InvalidData(format!(
+            "private kernel daemon did not become ready: {ready}"
+        )));
+    }
+
+    *guard = Some(daemon);
+    Ok(())
+}
+
+fn prove_with_real_kernel_daemon_once(
+    request_path: &std::path::Path,
+    response_path: &std::path::Path,
+) -> Result<serde_json::Value, Error> {
+    start_real_kernel_prove_daemon()?;
+    let mut guard = real_kernel_prove_daemon()
+        .lock()
+        .map_err(|_| Error::InvalidData("private kernel daemon mutex poisoned".to_owned()))?;
+    let daemon = guard
+        .as_mut()
+        .ok_or_else(|| Error::InvalidData("private kernel daemon is not running".to_owned()))?;
+    if !daemon.is_alive()? {
+        return Err(Error::InvalidData(
+            "private kernel daemon exited before request".to_owned(),
+        ));
+    }
+
+    let message = serde_json::json!({
+        "inputPath": request_path,
+        "outputPath": response_path,
+    });
+    serde_json::to_writer(&mut daemon.stdin, &message)?;
+    daemon
+        .stdin
+        .write_all(b"\n")
+        .map_err(|err| Error::InvalidData(format!("write private kernel daemon: {err}")))?;
+    daemon
+        .stdin
+        .flush()
+        .map_err(|err| Error::InvalidData(format!("flush private kernel daemon: {err}")))?;
+
+    let response = daemon.read_protocol_line()?;
+    if response.get("ok").and_then(|value| value.as_bool()) != Some(true) {
+        return Err(Error::InvalidData(format!(
+            "private kernel daemon proof failed: {}",
+            response
+                .get("error")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown error")
+        )));
+    }
+
+    let response_bytes = std::fs::read(response_path)
+        .map_err(|err| Error::InvalidData(format!("read private kernel response: {err}")))?;
+    serde_json::from_slice(&response_bytes)
+        .map_err(|err| Error::InvalidData(format!("parse private kernel response: {err}")))
+}
+
+fn prove_with_real_kernel_daemon(
+    request_path: &std::path::Path,
+    response_path: &std::path::Path,
+) -> Result<serde_json::Value, Error> {
+    match prove_with_real_kernel_daemon_once(request_path, response_path) {
+        Ok(response) => Ok(response),
+        Err(first_err) => {
+            stop_real_kernel_prove_daemon();
+            prove_with_real_kernel_daemon_once(request_path, response_path).map_err(|second_err| {
+                Error::InvalidData(format!(
+                    "{second_err}; retry after private kernel daemon failure also failed: {first_err}"
+                ))
+            })
+        }
+    }
 }
 
 fn parse_encoded_calls(fields: &[Fr]) -> Result<Vec<ParsedEntrypointCall>, Error> {
@@ -432,6 +599,13 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
     /// calls.
     pub fn set_prover_enabled(&self, enabled: bool) {
         self.prover_enabled.store(enabled, AtomicOrdering::Relaxed);
+        if enabled {
+            if let Err(err) = start_real_kernel_prove_daemon() {
+                tracing::warn!(?err, "failed to warm private kernel proof daemon");
+            }
+        } else {
+            stop_real_kernel_prove_daemon();
+        }
     }
 
     /// Recursively flatten an [`AbiValue`] into field elements.
@@ -2267,32 +2441,45 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
             .await
             .map_err(|err| Error::InvalidData(format!("write private kernel request: {err}")))?;
 
-        let script_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tools/private_kernel_prove_from_rust.mjs");
-        let mut command = Command::new("node");
-        command
-            .arg(script_path)
-            .arg(&request_path)
-            .arg(&response_path)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        if let Some(path) = crate::kernel::prover::locate_aztec_packages_path() {
-            command.env("AZTEC_PACKAGES_PATH", path);
-        }
+        let response = if std::env::var("PXE_REAL_PROOF_DISABLE_DAEMON")
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE"))
+            .unwrap_or(false)
+        {
+            let script_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tools/private_kernel_prove_from_rust.mjs");
+            let mut command = Command::new("node");
+            command
+                .arg(script_path)
+                .arg(&request_path)
+                .arg(&response_path)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            if let Some(path) = crate::kernel::prover::locate_aztec_packages_path() {
+                command.env("AZTEC_PACKAGES_PATH", path);
+            }
 
-        let output = command.output().await.map_err(|err| {
-            Error::InvalidData(format!("execute private kernel proof helper: {err}"))
-        })?;
-        if !output.status.success() {
-            return Err(Error::InvalidData(format!(
-                "private kernel proof helper failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            )));
-        }
-        let response_bytes = tokio::fs::read(&response_path)
+            let output = command.output().await.map_err(|err| {
+                Error::InvalidData(format!("execute private kernel proof helper: {err}"))
+            })?;
+            if !output.status.success() {
+                return Err(Error::InvalidData(format!(
+                    "private kernel proof helper failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                )));
+            }
+            let response_bytes = tokio::fs::read(&response_path).await.map_err(|err| {
+                Error::InvalidData(format!("read private kernel response: {err}"))
+            })?;
+            serde_json::from_slice(&response_bytes)?
+        } else {
+            let request_path = request_path.clone();
+            let response_path = response_path.clone();
+            tokio::task::spawn_blocking(move || {
+                prove_with_real_kernel_daemon(&request_path, &response_path)
+            })
             .await
-            .map_err(|err| Error::InvalidData(format!("read private kernel response: {err}")))?;
-        let response: serde_json::Value = serde_json::from_slice(&response_bytes)?;
+            .map_err(|err| Error::InvalidData(format!("join private kernel daemon: {err}")))??
+        };
         let b64 = base64::engine::general_purpose::STANDARD;
         let proof = response
             .get("proofBase64")
