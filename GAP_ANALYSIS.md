@@ -1,622 +1,319 @@
-# aztec-rs Gap Analysis vs aztec.js
+# aztec-rs Gap Analysis vs aztec-packages
 
-**Date:** 2026-04-06
-**Reference:** `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js`
-**Target:** `/Users/alexmetelli/source/aztec-rust`
-
----
+**Date:** 2026-04-15
+**Reference root:** `/Users/alexmetelli/source/aztec-packages`
+**Target root:** `/Users/alexmetelli/source/aztec-rs`
+**Method:** local source review only. This file intentionally avoids parity estimates that were not measured from code.
 
 ## Executive Summary
 
-The Rust SDK (`aztec-rs`) has established a solid foundation with core types, node client, contract interactions, wallet trait, account abstraction, and deployment scaffolding. However, significant gaps remain to reach feature parity with `aztec.js`. The biggest missing areas are:
-
-1. **No real PXE-backed Wallet implementation** — only a `MockWallet` exists; no `BaseWallet` that connects to a running PXE over HTTP/JSON-RPC
-2. **Fee payment strategies** — only types exist, no payment method implementations
-3. **Authorization** — module is empty, no authwit computation or utilities
-4. **L1-L2 messaging** — module is empty, no cross-chain helpers
-5. **Ethereum/L1 portal integration** — entirely missing module
-6. **Wallet capabilities system** — not implemented
-7. **Key derivation** — no key generation/derivation utilities
-8. **Deployment internals** — `publish_contract_class` and `publish_instance` are stubs
-9. **Account deployment** — `DeployAccountMethod` only partially functional
-10. **Signerless account** — not implemented
-11. **Various utility functions** — authwit computation, fee juice balance, ABI checkers, etc.
-
----
-
-## PXE (Private eXecution Environment) — Architectural Gap
-
-This is the most significant structural gap in the Rust SDK and deserves its own section.
-
-### How aztec.js relates to PXE
-
-In the TypeScript ecosystem, **aztec.js does NOT directly depend on or expose PXE**. Instead:
-
-1. **aztec.js** defines the `Wallet` interface — a high-level abstraction over all PXE operations
-2. **`@aztec/wallet-sdk`** provides `BaseWallet`, which implements `Wallet` by wrapping a `PXE` instance
-3. **`@aztec/pxe`** provides the actual PXE server/client implementation
-
-The `Wallet` interface is the seam between aztec.js and PXE. Every PXE operation is exposed through Wallet methods:
-
-| Wallet Method | Delegates to PXE |
-|---------------|-------------------|
-| `registerSender()` | `pxe.registerSender()` |
-| `registerContract()` | `pxe.registerContract()` + `pxe.updateContract()` |
-| `simulateTx()` | `pxe.simulateTx()` (private + public simulation) |
-| `sendTx()` | `pxe.proveTx()` → `aztecNode.sendTx()` |
-| `profileTx()` | `pxe.profileTx()` |
-| `executeUtility()` | `pxe.executeUtility()` |
-| `getPrivateEvents()` | `pxe.getPrivateEvents()` |
-| `getContractMetadata()` | `pxe.getContractInstance()` + `aztecNode.getContract()` |
-| `getContractClassMetadata()` | `pxe.getContractArtifact()` + `aztecNode.getContractClass()` |
-| `getAddressBook()` | `pxe.getSenders()` |
-| `getAccounts()` | `pxe.getRegisteredAccounts()` |
-| `createAuthWit()` | Account abstraction layer |
-
-### What aztec-rs has
-
-- The `Wallet` **trait** is defined with all the right methods (mirrors the TS interface)
-- A `MockWallet` for testing that returns canned responses
-
-### What aztec-rs is missing
-
-| Gap | Reference File | Priority |
-|-----|----------------|----------|
-| **`BaseWallet`** — real implementation wrapping a PXE connection | `wallet-sdk/src/base-wallet/base_wallet.ts` | **P0** |
-| **PXE JSON-RPC client** — HTTP client to talk to a running PXE node | `pxe/src/client/` | **P0** |
-| **`PXE` trait** — interface for PXE operations (simulate, prove, register, etc.) | `stdlib/src/interfaces/pxe.ts` | **P0** |
-| **`createPXEClient()`** — factory to create HTTP-backed PXE client | `pxe/src/client/lazy/` | **P0** |
-| PXE account registration (`registerAccount()`) | `pxe/src/pxe.ts` | P0 |
-| PXE sender management (`removeSender()`) | `pxe/src/pxe.ts` | P1 |
-| PXE contract class registration (`registerContractClass()`) | `pxe/src/pxe.ts` | P1 |
-| PXE state queries (`getSyncedBlockHeader()`, `getContracts()`) | `pxe/src/pxe.ts` | P2 |
-
-### Why this matters
-
-Without a real `BaseWallet` + PXE client, **the Rust SDK cannot actually execute private transactions**. The `MockWallet` is useful for unit tests, but any real application needs to:
-
-1. Connect to a PXE instance (local or remote)
-2. Register accounts and contracts with PXE
-3. Have PXE simulate and prove transactions (private execution happens in PXE)
-4. Send proven transactions to the Aztec node
-
-The current `HttpNodeClient` only talks to the **Aztec Node** (public state, block queries, tx submission). PXE is a separate service that handles all **private state and execution**.
-
-### Reference files (outside aztec.js)
-
-These files are in the broader `aztec-packages/yarn-project/` — not in aztec.js itself, but they're needed for a functional SDK:
-
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/wallet-sdk/src/base-wallet/base_wallet.ts` — BaseWallet implementation
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/pxe/src/pxe.ts` — PXE server implementation
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/pxe/src/client/` — PXE client (HTTP/JSON-RPC)
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/stdlib/src/interfaces/pxe.ts` — PXE interface definition
-
----
-
-## Module-by-Module Comparison
-
-### 1. Account Module
-
-| Feature | aztec.js | aztec-rs | Status |
-|---------|----------|----------|--------|
-| `Account` trait/interface | `src/account/account.ts` | `src/account.rs` | Implemented |
-| `AccountContract` trait | `src/account/account_contract.ts` | `src/account.rs` | Implemented |
-| `AuthorizationProvider` trait | `src/account/account.ts` | `src/account.rs` | Implemented |
-| `BaseAccount` implementation | `src/account/account.ts` | `src/account.rs` (inline) | Implemented |
-| `AccountWithSecretKey` | `src/account/account_with_secret_key.ts` | `src/account.rs` | Implemented |
-| `SignerlessAccount` | `src/account/signerless_account.ts` | — | **Missing** |
-| `getAccountContractAddress()` | `src/account/account_contract.ts` | — | **Missing** |
-| `InitializationSpec` | — | `src/account.rs` | Rust-only extra |
-| `Salt` type alias | `src/account/account.ts` | — | **Missing** (minor) |
-
-**Reference files to port:**
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/src/account/signerless_account.ts`
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/src/account/account_contract.ts` (for `getAccountContractAddress`)
-
----
-
-### 2. Contract Module
-
-| Feature | aztec.js | aztec-rs | Status |
-|---------|----------|----------|--------|
-| `Contract` (with `at`, `deploy`, `deployWithPublicKeys`) | `src/contract/contract.ts` | `src/contract.rs` | Partial — missing `deploy`/`deployWithPublicKeys` static methods |
-| `ContractBase` (dynamic method creation) | `src/contract/contract_base.ts` | `src/contract.rs` | Partial — no dynamic method map |
-| `ContractFunctionInteraction` | `src/contract/contract_function_interaction.ts` | `src/contract.rs` | Implemented |
-| `BaseContractInteraction` | `src/contract/base_contract_interaction.ts` | `src/contract.rs` | Implemented |
-| `BatchCall` | `src/contract/batch_call.ts` | `src/contract.rs` | Implemented |
-| `DeployMethod` | `src/contract/deploy_method.ts` | `src/deployment.rs` | Partial — missing request/simulate/send internals |
-| `getGasLimits()` | `src/contract/get_gas_limits.ts` | — | **Missing** |
-| `waitForProven()` | `src/contract/wait_for_proven.ts` | — | **Missing** |
-| `abiChecker()` | `src/contract/checker.ts` | — | **Missing** |
-| Interaction options (full type system) | `src/contract/interaction_options.ts` | `src/wallet.rs` | Partial — simplified |
-| `WaitOpts` with `dontThrowOnRevert` | `src/contract/wait_opts.ts` | `src/node.rs` | Partial — missing `dontThrowOnRevert`, `waitForStatus`, `ignoreDroppedReceiptsFor` |
-| `NO_WAIT` constant | `src/contract/wait_opts.ts` | — | **Missing** |
-| `ContractMethod` type (dynamic dispatch) | `src/contract/contract_base.ts` | — | **Missing** |
-| `ContractStorageLayout` | `src/contract/contract_base.ts` | — | **Missing** |
-| `profile()` method on interactions | `src/contract/contract_function_interaction.ts` | — | **Missing** |
-
-**Reference files to port:**
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/src/contract/get_gas_limits.ts`
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/src/contract/wait_for_proven.ts`
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/src/contract/checker.ts`
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/src/contract/interaction_options.ts`
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/src/contract/wait_opts.ts`
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/src/contract/contract.ts` (for static deploy methods)
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/src/contract/contract_base.ts` (for dynamic method creation)
-
----
-
-### 3. Wallet Module
-
-| Feature | aztec.js | aztec-rs | Status |
-|---------|----------|----------|--------|
-| `Wallet` trait/type | `src/wallet/wallet.ts` | `src/wallet.rs` | Implemented |
-| `AccountManager` | `src/wallet/account_manager.ts` | `src/account.rs` | Implemented (different location) |
-| `DeployAccountMethod` | `src/wallet/deploy_account_method.ts` | `src/account.rs` | Partial — stub internals |
-| `MockWallet` | — | `src/wallet.rs` | Rust-only (good for testing) |
-| `Aliased<T>` type | `src/wallet/wallet.ts` | `src/wallet.rs` | Implemented |
-| `ContractMetadata` | `src/wallet/wallet.ts` | `src/wallet.rs` | Implemented |
-| `ContractClassMetadata` | `src/wallet/wallet.ts` | `src/wallet.rs` | Implemented |
-| `SimulateOptions` / `SendOptions` / etc. | `src/wallet/wallet.ts` | `src/wallet.rs` | Implemented |
-| `AccountEntrypointMetaPaymentMethod` | `src/wallet/account_entrypoint_meta_payment_method.ts` | — | **Missing** |
-| **Capabilities system** | `src/wallet/capabilities.ts` | — | **Missing** |
-| `AppCapabilities` | `src/wallet/capabilities.ts` | — | **Missing** |
-| `WalletCapabilities` | `src/wallet/capabilities.ts` | — | **Missing** |
-| `requestCapabilities()` on Wallet | `src/wallet/wallet.ts` | — | **Missing** |
-| `batch()` on Wallet | `src/wallet/wallet.ts` | — | **Missing** |
-| `BatchedMethod` / `BatchResults` types | `src/wallet/wallet.ts` | — | **Missing** |
-| Zod validation schemas | `src/wallet/wallet.ts` | — | N/A (Rust uses serde) |
-
-**Reference files to port:**
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/src/wallet/capabilities.ts`
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/src/wallet/account_entrypoint_meta_payment_method.ts`
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/src/wallet/deploy_account_method.ts` (for complete internals)
-
----
-
-### 4. Fee Payment Module
-
-| Feature | aztec.js | aztec-rs | Status |
-|---------|----------|----------|--------|
-| `Gas` / `GasFees` / `GasSettings` types | `src/fee/*` | `src/fee.rs` | Implemented |
-| `FeePaymentMethod` trait | `src/fee/fee_payment_method.ts` | — | **Missing** |
-| `PrivateFeePaymentMethod` | `src/fee/private_fee_payment_method.ts` | — | **Missing** |
-| `PublicFeePaymentMethod` | `src/fee/public_fee_payment_method.ts` | — | **Missing** |
-| `FeeJuicePaymentMethodWithClaim` | `src/fee/fee_juice_payment_method_with_claim.ts` | — | **Missing** |
-| `SponsoredFeePaymentMethod` | `src/fee/sponsored_fee_payment.ts` | — | **Missing** |
-
-**Reference files to port:**
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/src/fee/fee_payment_method.ts`
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/src/fee/private_fee_payment_method.ts`
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/src/fee/public_fee_payment_method.ts`
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/src/fee/fee_juice_payment_method_with_claim.ts`
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/src/fee/sponsored_fee_payment.ts`
-
----
-
-### 5. Authorization Module
-
-| Feature | aztec.js | aztec-rs | Status |
-|---------|----------|----------|--------|
-| `CallAuthorizationRequest` | `src/authorization/call_authorization_request.ts` | — | **Missing** (module empty) |
-| `computeAuthWitMessageHash()` | `src/utils/authwit.ts` | — | **Missing** |
-| `computeInnerAuthWitHashFromAction()` | `src/utils/authwit.ts` | — | **Missing** |
-| `lookupValidity()` | `src/utils/authwit.ts` | — | **Missing** |
-| `SetPublicAuthwitContractInteraction` | `src/utils/authwit.ts` | — | **Missing** |
-| `IntentInnerHash` type | `src/utils/authwit.ts` | `src/wallet.rs` | Partial — type exists but no computation |
-| `CallIntent` type | `src/utils/authwit.ts` | `src/wallet.rs` | Partial — type exists |
-
-**Reference files to port:**
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/src/authorization/call_authorization_request.ts`
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/src/utils/authwit.ts`
-
----
-
-### 6. Deployment Module
-
-| Feature | aztec.js | aztec-rs | Status |
-|---------|----------|----------|--------|
-| `ContractDeployer` | `src/deployment/contract_deployer.ts` | `src/deployment.rs` | Implemented |
-| `publishContractClass()` | `src/deployment/publish_class.ts` | `src/deployment.rs` | **Stub** — returns "not yet implemented" |
-| `publishInstance()` | `src/deployment/publish_instance.ts` | `src/deployment.rs` | **Stub** — returns "not yet implemented" |
-| `DeployOptions` | `src/contract/deploy_method.ts` | `src/deployment.rs` | Implemented |
-| Address derivation from salt/deployer | `src/contract/deploy_method.ts` | — | **Missing** |
-
-**Reference files to port:**
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/src/deployment/publish_class.ts`
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/src/deployment/publish_instance.ts`
-
----
-
-### 7. Ethereum / L1 Portal Module
-
-| Feature | aztec.js | aztec-rs | Status |
-|---------|----------|----------|--------|
-| Entire module | `src/ethereum/portal_manager.ts` | — | **Missing** (no module) |
-| `L1TokenManager` | `src/ethereum/portal_manager.ts` | — | **Missing** |
-| `L1FeeJuicePortalManager` | `src/ethereum/portal_manager.ts` | — | **Missing** |
-| `L1ToL2TokenPortalManager` | `src/ethereum/portal_manager.ts` | — | **Missing** |
-| `L1TokenPortalManager` | `src/ethereum/portal_manager.ts` | — | **Missing** |
-| `L2Claim` / `L2AmountClaim` types | `src/ethereum/portal_manager.ts` | — | **Missing** |
-| `generateClaimSecret()` | `src/ethereum/portal_manager.ts` | — | **Missing** |
-
-**Reference files to port:**
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/src/ethereum/portal_manager.ts`
-
----
-
-### 8. L1-L2 Messaging Module
-
-| Feature | aztec.js | aztec-rs | Status |
-|---------|----------|----------|--------|
-| `waitForL1ToL2MessageReady()` | `src/utils/cross_chain.ts` | — | **Missing** (module empty) |
-| `isL1ToL2MessageReady()` | `src/utils/cross_chain.ts` | — | **Missing** |
-| L1ToL2Message / L1Actor / L2Actor types | re-exported from `@aztec/stdlib` | — | **Missing** |
-
-**Reference files to port:**
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/src/utils/cross_chain.ts`
-
----
-
-### 9. Events Module
-
-| Feature | aztec.js | aztec-rs | Status |
-|---------|----------|----------|--------|
-| `PublicEvent<T>` / `PublicEventMetadata` | `src/api/events.ts` | `src/events.rs` | Implemented |
-| `PublicEventFilter` | `src/api/events.ts` | `src/events.rs` | Implemented |
-| `GetPublicEventsResult` | `src/api/events.ts` | `src/events.rs` | Implemented |
-| `getPublicEvents()` helper function | `src/api/events.ts` | `src/events.rs` | Partial — decoding logic exists |
-| `PrivateEvent<T>` type | `src/wallet/wallet.ts` | `src/wallet.rs` | Implemented |
-| `PrivateEventFilter` | `src/wallet/wallet.ts` | `src/wallet.rs` | Implemented |
-| `EventMetadataDefinition` | `src/wallet/wallet.ts` | `src/wallet.rs` | Implemented |
-
-**Status: Mostly complete.** Events are one of the stronger areas of the Rust port.
-
----
-
-### 10. Node Client Module
-
-| Feature | aztec.js | aztec-rs | Status |
-|---------|----------|----------|--------|
-| `createAztecNodeClient()` | `src/utils/node.ts` | `src/node.rs` | Implemented |
-| `waitForNode()` | `src/utils/node.ts` | `src/node.rs` | Implemented |
-| `waitForTx()` | `src/utils/node.ts` | `src/node.rs` | Implemented |
-| `AztecNode` trait | `src/utils/node.ts` | `src/node.rs` | Implemented |
-| `NodeInfo` | — | `src/node.rs` | Implemented |
-| `HttpNodeClient` | — | `src/node.rs` | Implemented |
-| `PublicLogFilter` / `PublicLog` | — | `src/node.rs` | Implemented |
-| `WaitOpts` | `src/contract/wait_opts.ts` | `src/node.rs` | Partial (missing fields) |
-
-**Status: Mostly complete.** Missing some `WaitOpts` fields (`dontThrowOnRevert`, `waitForStatus`, `ignoreDroppedReceiptsFor`).
-
----
-
-### 11. Transaction Module
-
-| Feature | aztec.js | aztec-rs | Status |
-|---------|----------|----------|--------|
-| `TxHash` | re-exported | `src/tx.rs` | Implemented |
-| `TxStatus` | re-exported | `src/tx.rs` | Implemented |
-| `TxReceipt` | re-exported | `src/tx.rs` | Implemented |
-| `TxExecutionResult` | re-exported | `src/tx.rs` | Implemented |
-| `FunctionCall` | re-exported | `src/tx.rs` | Implemented |
-| `ExecutionPayload` | re-exported | `src/tx.rs` | Implemented |
-| `AuthWitness` | re-exported | `src/tx.rs` | Implemented |
-| `Capsule` | re-exported | `src/tx.rs` | Implemented |
-| `HashedValues` | re-exported | `src/tx.rs` | Implemented |
-| `mergeExecutionPayloads()` | re-exported | — | **Missing** |
-| `GlobalVariables` | re-exported | — | **Missing** |
-| `Tx` (full transaction object) | re-exported | — | **Missing** |
-| `TxExecutionRequest` | re-exported | `src/account.rs` | Implemented |
-
-**Status: Mostly complete.** A few missing utility types.
-
----
-
-### 12. Types / Fields Module
-
-| Feature | aztec.js | aztec-rs | Status |
-|---------|----------|----------|--------|
-| `Fr` | re-exported | `src/types.rs` | Implemented |
-| `Fq` | re-exported | `src/types.rs` | Implemented |
-| `Point` | re-exported | `src/types.rs` | Implemented |
-| `GrumpkinScalar` | re-exported | `src/types.rs` | Implemented |
-| `AztecAddress` | re-exported | `src/types.rs` | Implemented |
-| `EthAddress` | re-exported | `src/types.rs` | Implemented |
-| `CompleteAddress` | re-exported | `src/types.rs` | Implemented |
-| `PublicKeys` | re-exported | `src/types.rs` | Implemented |
-| `ContractInstance` | re-exported | `src/types.rs` | Implemented |
-| `ContractInstanceWithAddress` | re-exported | `src/types.rs` | Implemented |
-| `BlockNumber` | re-exported | — | **Missing** (minor) |
-
-**Status: Complete for core types.**
-
----
-
-### 13. ABI Module
-
-| Feature | aztec.js | aztec-rs | Status |
-|---------|----------|----------|--------|
-| `ContractArtifact` / `FunctionArtifact` | re-exported | `src/abi.rs` | Implemented |
-| `FunctionSelector` / `EventSelector` | re-exported | `src/abi.rs` | Implemented |
-| `FunctionType` | re-exported | `src/abi.rs` | Implemented |
-| `AbiType` / `AbiValue` / `AbiParameter` | — | `src/abi.rs` | Implemented |
-| `encodeArguments()` | re-exported | — | **Missing** |
-| `decodeFromAbi()` | re-exported | — | **Missing** |
-| `loadContractArtifact()` | re-exported | `src/abi.rs` (`from_json`) | Implemented (different name) |
-| `contractArtifactToBuffer()` | re-exported | — | **Missing** |
-| `contractArtifactFromBuffer()` | re-exported | — | **Missing** |
-| `NoteSelector` | re-exported | — | **Missing** |
-| `FunctionSelector.from_name()` | `src/api/abi.ts` | `src/abi.rs` | **Stub** — unimplemented |
-| Type checkers (`isAddressStruct`, etc.) | `src/utils/abi_types.ts` | — | **Missing** |
-| Type converters (`FieldLike`, `AztecAddressLike`, etc.) | `src/utils/abi_types.ts` | — | **Missing** |
-
-**Reference files to port:**
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/src/utils/abi_types.ts`
-
----
-
-### 14. Keys Module
-
-| Feature | aztec.js | aztec-rs | Status |
-|---------|----------|----------|--------|
-| Entire module | `src/api/keys.ts` | — | **Missing** (no module) |
-| `generatePublicKey()` | `src/utils/pub_key.ts` | — | **Missing** |
-| `deriveKeys()` | re-exported from stdlib | — | **Missing** |
-| `deriveMasterIncomingViewingSecretKey()` | re-exported | — | **Missing** |
-| `deriveMasterNullifierHidingKey()` | re-exported | — | **Missing** |
-| `computeAppNullifierHidingKey()` | re-exported | — | **Missing** |
-
-**Reference files to port:**
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/src/utils/pub_key.ts`
-- Key derivation functions from `@aztec/stdlib`
-
----
-
-### 15. Crypto Module
-
-| Feature | aztec.js | aztec-rs | Status |
-|---------|----------|----------|--------|
-| `computeSecretHash()` | re-exported from stdlib | — | **Missing** |
-
----
-
-### 16. Protocol Module
-
-| Feature | aztec.js | aztec-rs | Status |
-|---------|----------|----------|--------|
-| Entire module | `src/api/protocol.ts` | — | **Missing** (no module) |
-| `ProtocolContractAddress` | re-exported | — | **Missing** |
-| Protocol contract wrappers | re-exported | — | **Missing** |
-
----
-
-### 17. Block / Trees / Log / Note Modules
-
-| Feature | aztec.js | aztec-rs | Status |
-|---------|----------|----------|--------|
-| Block types (`L2Block`, `Body`) | `src/api/block.ts` | — | **Missing** |
-| `getTimestampRangeForEpoch()` | `src/api/block.ts` | — | **Missing** |
-| Tree types (`SiblingPath`, `MerkleTreeId`) | `src/api/trees.ts` | — | **Missing** |
-| Log types (`LogId`, `LogFilter`) | `src/api/log.ts` | — | **Missing** |
-| Note types (`Comparator`, `Note`) | `src/api/note.ts` | — | **Missing** |
-
----
-
-### 18. Utilities
-
-| Feature | aztec.js | aztec-rs | Status |
-|---------|----------|----------|--------|
-| `getFeeJuiceBalance()` | `src/utils/fee_juice.ts` | — | **Missing** |
-| `readFieldCompressedString()` | `src/utils/field_compressed_string.ts` | — | **Missing** |
-| `FieldLike` / `AztecAddressLike` / etc. | `src/utils/abi_types.ts` | — | **Missing** |
-
-**Reference files to port:**
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/src/utils/fee_juice.ts`
-- `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/src/utils/field_compressed_string.ts`
-
----
-
-## Priority-Ordered Implementation Roadmap
-
-### P0 — Critical (needed for basic contract deployment and interaction)
-
-0. **PXE client + BaseWallet** — Without these, **no real private execution is possible**
-   - Define a `Pxe` trait mirroring the TS `PXE` interface
-   - Implement an HTTP/JSON-RPC PXE client (`create_pxe_client()`)
-   - Implement `BaseWallet` that wraps PXE + AztecNode and implements the `Wallet` trait
-   - Reference: `wallet-sdk/src/base-wallet/base_wallet.ts`, `pxe/src/client/`, `stdlib/src/interfaces/pxe.ts`
-
-1. **Fee payment methods** — Without these, no real transaction can be sent
-   - `FeePaymentMethod` trait
-   - `FeeJuicePaymentMethodWithClaim`
-   - `SponsoredFeePaymentMethod`
-   - Files: `src/fee/fee_payment_method.ts`, `src/fee/fee_juice_payment_method_with_claim.ts`, `src/fee/sponsored_fee_payment.ts`
-
-2. **Authorization module** — Required for any multi-party interaction
-   - `computeAuthWitMessageHash()`
-   - `computeInnerAuthWitHashFromAction()`
-   - `CallAuthorizationRequest`
-   - Files: `src/utils/authwit.ts`, `src/authorization/call_authorization_request.ts`
-
-3. **Deployment internals** — Complete the stubs
-   - `publishContractClass()` — actual implementation
-   - `publishInstance()` — actual implementation
-   - Address derivation logic
-   - Files: `src/deployment/publish_class.ts`, `src/deployment/publish_instance.ts`
-
-4. **`getGasLimits()`** — Needed for proper gas estimation before sending
-   - File: `src/contract/get_gas_limits.ts`
-
-5. **`mergeExecutionPayloads()`** — Used by batch calls and deployment
-   - From `@aztec/stdlib`
-
-### P1 — High (needed for account management and full workflow)
-
-6. **Key derivation utilities**
-   - `generatePublicKey()`
-   - `deriveKeys()`
-   - `deriveMasterIncomingViewingSecretKey()`
-   - Files: `src/utils/pub_key.ts`, stdlib key derivation
-
-7. **`SignerlessAccount`** — Used for fee-sponsored transactions
-   - File: `src/account/signerless_account.ts`
-
-8. **`AccountEntrypointMetaPaymentMethod`** — Fee payment during account deployment
-   - File: `src/wallet/account_entrypoint_meta_payment_method.ts`
-
-9. **`getAccountContractAddress()`** — Compute account address before deployment
-   - File: `src/account/account_contract.ts`
-
-10. **Complete `WaitOpts`** — Add missing fields (`dontThrowOnRevert`, `waitForStatus`, `ignoreDroppedReceiptsFor`)
-    - File: `src/contract/wait_opts.ts`
-
-### P2 — Medium (needed for L1-L2 workflows and DeFi)
-
-11. **L1-L2 messaging**
-    - `waitForL1ToL2MessageReady()`
-    - `isL1ToL2MessageReady()`
-    - File: `src/utils/cross_chain.ts`
-
-12. **Ethereum portal managers**
-    - `L1TokenManager`
-    - `L1FeeJuicePortalManager`
-    - `L1ToL2TokenPortalManager`
-    - `generateClaimSecret()`
-    - File: `src/ethereum/portal_manager.ts`
-
-13. **`waitForProven()`** — Wait for transaction to be proven on L1
-    - File: `src/contract/wait_for_proven.ts`
-
-14. **Private/Public fee payment methods** (deprecated but still used)
-    - `PrivateFeePaymentMethod`
-    - `PublicFeePaymentMethod`
-    - Files: `src/fee/private_fee_payment_method.ts`, `src/fee/public_fee_payment_method.ts`
-
-### P3 — Lower (polish and completeness)
-
-15. **Wallet capabilities system**
-    - `AppCapabilities`, `WalletCapabilities`, `requestCapabilities()`
-    - Capability types and granted types
-    - File: `src/wallet/capabilities.ts`
-
-16. **`batch()` on Wallet** — Batched wallet method calls
-    - File: `src/wallet/wallet.ts`
-
-17. **ABI utilities**
-    - `encodeArguments()`, `decodeFromAbi()`
-    - `contractArtifactToBuffer()`, `contractArtifactFromBuffer()`
-    - `FunctionSelector.from_name()` (currently unimplemented)
-    - ABI type checkers and converters
-    - Files: `src/utils/abi_types.ts`, `@aztec/stdlib`
-
-18. **`Contract.deploy()` / `Contract.deployWithPublicKeys()` static methods**
-    - File: `src/contract/contract.ts`
-
-19. **Protocol contract addresses and wrappers**
-    - `ProtocolContractAddress`
-    - Protocol contract wrapper types
-    - File: `src/api/protocol.ts`
-
-20. **Misc utilities**
-    - `getFeeJuiceBalance()`
-    - `readFieldCompressedString()`
-    - `computeSecretHash()`
-    - `abiChecker()`
-    - `getTimestampRangeForEpoch()`
-    - Files: `src/utils/fee_juice.ts`, `src/utils/field_compressed_string.ts`, `src/contract/checker.ts`
-
-21. **Block / Tree / Log / Note types** — Mostly re-exports from stdlib
-    - Files: `src/api/block.ts`, `src/api/trees.ts`, `src/api/log.ts`, `src/api/note.ts`
-
-22. **`profile()` on contract interactions** — Gas profiling support
-    - File: `src/contract/contract_function_interaction.ts`
-
----
-
-## Summary Statistics
-
-| Category | aztec.js items | aztec-rs implemented | Gap |
-|----------|---------------|---------------------|-----|
-| **PXE + BaseWallet** | ~8 | ~0 | **8** |
-| Core types | ~15 | ~15 | 0 |
-| Node client | ~8 | ~7 | 1 |
-| ABI | ~15 | ~10 | 5 |
-| Contract interaction | ~18 | ~10 | 8 |
-| Wallet | ~20 | ~12 | 8 |
-| Account | ~8 | ~5 | 3 |
-| Deployment | ~5 | ~2 | 3 |
-| Fee payment | ~6 | ~1 (types only) | 5 |
-| Authorization | ~6 | ~0 | 6 |
-| Ethereum/L1 | ~6 | ~0 | 6 |
-| L1-L2 messaging | ~4 | ~0 | 4 |
-| Keys/Crypto | ~6 | ~0 | 6 |
-| Events | ~8 | ~7 | 1 |
-| Protocol | ~7 | ~0 | 7 |
-| Utilities | ~8 | ~0 | 8 |
-| Block/Tree/Log/Note | ~8 | ~0 | 8 |
-| **Total** | **~156** | **~69** | **~87** |
-
-**Approximate feature parity: ~44%**
-
-> **Note:** The PXE + BaseWallet gap is the most critical. Without it, the SDK can only talk to the Aztec Node (public state). All private execution — which is the core value proposition of Aztec — requires a PXE connection. The `Wallet` trait is defined correctly, but there is no concrete implementation that connects to a real PXE instance.
-
----
-
-## Complete List of aztec.js Source Files to Port
-
-### Must port (PXE + Wallet infrastructure — outside aztec.js):
-
-These files are in the broader `yarn-project/` monorepo, not in `aztec.js/` itself:
-
-| # | File (relative to `yarn-project/`) | Priority |
-|---|------|----------|
-| 0a | `stdlib/src/interfaces/pxe.ts` | P0 |
-| 0b | `pxe/src/client/` (PXE HTTP/JSON-RPC client) | P0 |
-| 0c | `wallet-sdk/src/base-wallet/base_wallet.ts` | P0 |
-| 0d | `pxe/src/pxe.ts` (reference for PXE operations) | P0 |
-
-### Must port from aztec.js (implementation logic):
-| # | File | Priority |
-|---|------|----------|
-| 1 | `src/fee/fee_payment_method.ts` | P0 |
-| 2 | `src/fee/fee_juice_payment_method_with_claim.ts` | P0 |
-| 3 | `src/fee/sponsored_fee_payment.ts` | P0 |
-| 4 | `src/utils/authwit.ts` | P0 |
-| 5 | `src/authorization/call_authorization_request.ts` | P0 |
-| 6 | `src/deployment/publish_class.ts` | P0 |
-| 7 | `src/deployment/publish_instance.ts` | P0 |
-| 8 | `src/contract/get_gas_limits.ts` | P0 |
-| 9 | `src/utils/pub_key.ts` | P1 |
-| 10 | `src/account/signerless_account.ts` | P1 |
-| 11 | `src/wallet/account_entrypoint_meta_payment_method.ts` | P1 |
-| 12 | `src/account/account_contract.ts` | P1 |
-| 13 | `src/contract/wait_opts.ts` | P1 |
-| 14 | `src/utils/cross_chain.ts` | P2 |
-| 15 | `src/ethereum/portal_manager.ts` | P2 |
-| 16 | `src/contract/wait_for_proven.ts` | P2 |
-| 17 | `src/fee/private_fee_payment_method.ts` | P2 |
-| 18 | `src/fee/public_fee_payment_method.ts` | P2 |
-| 19 | `src/wallet/capabilities.ts` | P3 |
-| 20 | `src/utils/abi_types.ts` | P3 |
-| 21 | `src/contract/contract.ts` | P3 |
-| 22 | `src/contract/contract_base.ts` | P3 |
-| 23 | `src/contract/interaction_options.ts` | P3 |
-| 24 | `src/contract/checker.ts` | P3 |
-| 25 | `src/utils/fee_juice.ts` | P3 |
-| 26 | `src/utils/field_compressed_string.ts` | P3 |
-| 27 | `src/wallet/deploy_account_method.ts` | P3 |
-
-### Re-export only (types from @aztec/stdlib — need Rust equivalents):
-| # | File | Priority |
-|---|------|----------|
-| 28 | `src/api/protocol.ts` | P3 |
-| 29 | `src/api/block.ts` | P3 |
-| 30 | `src/api/trees.ts` | P3 |
-| 31 | `src/api/log.ts` | P3 |
-| 32 | `src/api/note.ts` | P3 |
-| 33 | `src/api/keys.ts` | P1 |
-| 34 | `src/api/crypto.ts` | P3 |
-| 35 | `src/api/messaging.ts` | P2 |
-
-All file paths above are relative to `/Users/alexmetelli/source/aztec-packages/yarn-project/aztec.js/`.
+The previous version of this document was stale. It described `aztec-rs` as a single `src/*.rs` SDK with no real PXE, no `BaseWallet`, stubbed deployment, empty fee/auth/L1 modules, and no key derivation. The current repository is a multi-crate workspace and those statements are no longer accurate.
+
+The current Rust workspace has substantial coverage:
+
+- `crates/pxe-client` defines a `Pxe` trait covering synced header, accounts, senders, contracts, simulation, proving, profiling, utility execution, private events, and shutdown.
+- `crates/pxe` implements an in-process `EmbeddedPxe` with local stores, block sync, note/event services, private execution plumbing, and kernel proving hooks.
+- `crates/wallet` implements `BaseWallet<P, N, A>` over `Pxe`, `AztecNode`, and an `AccountProvider`.
+- `crates/account` implements account traits, `AccountManager`, `DeployAccountMethod`, `AccountWithSecretKey`, `SignerlessAccount`, `SchnorrAccountContract`, `get_account_contract_address`, and `AccountEntrypointMetaPaymentMethod`.
+- `crates/contract` implements `Contract`, `ContractFunctionInteraction`, `BatchCall`, `ContractDeployer`, `DeployMethod`, `publish_contract_class`, `publish_instance`, `get_gas_limits`, profiling, event decoding, and authwit interaction helpers.
+- `crates/fee` implements `FeePaymentMethod`, `NativeFeePaymentMethod`, `SponsoredFeePaymentMethod`, and `FeeJuicePaymentMethodWithClaim`.
+- `crates/ethereum` implements L1/L2 messaging types, claim secret generation, L1-to-L2 readiness helpers, and a lower-level JSON-RPC Ethereum client with Fee Juice preparation support.
+- `crates/crypto` and `crates/core` implement key derivation, public key derivation, secret hashing, authwit hashing, ABI encoding/decoding/checkers, typed transaction/kernel structures, protocol constants, and node client wait helpers.
+
+The largest current gaps are therefore not the old P0 items. The remaining gaps are mostly API parity and behavioral completeness:
+
+1. **Wallet capability and wallet batch APIs are absent from the Rust `Wallet` trait.** TypeScript exposes `requestCapabilities()` and `batch()` in `aztec.js/src/wallet/wallet.ts` and implements them in `wallet-sdk/src/base-wallet/base_wallet.ts`. No Rust equivalent was found in `crates/wallet/src/wallet.rs`.
+2. **No remote HTTP/JSON-RPC PXE client was found.** Rust has `Pxe` plus `EmbeddedPxe`, but `rg` found no `HttpPxe`, `create_pxe_client`, or JSON-RPC PXE transport implementation. Current `aztec-packages` also no longer has the old `stdlib/src/interfaces/pxe.ts` file referenced by the previous doc; the current TS PXE reference is `yarn-project/pxe/src/pxe.ts` and `pxe/src/entrypoints/client/*/utils.ts`.
+3. **`PrivateFeePaymentMethod` and `PublicFeePaymentMethod` are still missing.** Rust has native, sponsored, and Fee Juice claim payment methods, but no modules or exports matching `aztec.js/src/fee/private_fee_payment_method.ts` and `public_fee_payment_method.ts`. Both are marked `@deprecated` in the upstream TS source (not supported on mainnet), which reduces urgency.
+4. **Broader account package parity is incomplete.** Rust has Schnorr plus generic account abstractions and signerless support. `aztec-packages/yarn-project/accounts/src` also has ECDSA K, ECDSA R, SSH ECDSA R, single-key, and stub account contract classes.
+5. **TypeScript dynamic convenience APIs are not mirrored exactly.** Rust has `Contract::method(...)`, `Contract::deploy(...)`, and `Contract::deploy_with_public_keys(...)`, but not the TS `ContractBase.methods.<name>` dynamic map or TS type-level `ContractMethod` call surface.
+6. **Send/wait return-shape parity differs.** Rust node `WaitOpts` has `wait_for_status`, `dont_throw_on_revert`, and dropped-receipt grace support, but wallet `SendOptions` has no `wait`/`NO_WAIT` option and `SendResult` always contains a `tx_hash`, not the TS conditional `txHash` versus `receipt` return shape.
+7. **Public API re-export parity still has gaps.** Missing or partial areas include protocol contract wrappers, block/tree/log/note public API wrappers, `readFieldCompressedString`, `getFeeJuiceBalance`, `getTimestampRangeForEpoch`, and current min-fee helpers at the wallet option level.
+8. **Some PXE and node-facing data remains opaque JSON.** `crates/pxe-client/src/pxe.rs` keeps `BlockHeader`, `TxExecutionRequest`, and PXE simulation/profile payloads as `serde_json::Value` wrappers in places. `TxProvingResult::validate()` is intentionally shallow until typed public input parsing is expanded.
+
+## Evidence Reviewed
+
+Rust target paths:
+
+- Workspace and re-exports: `Cargo.toml`, `src/lib.rs`
+- PXE: `crates/pxe-client/src/pxe.rs`, `crates/pxe/src/embedded_pxe.rs`, `crates/pxe/src/stores/*`, `crates/pxe/src/sync/*`, `crates/pxe/src/execution/*`, `crates/pxe/src/kernel/*`
+- Wallet: `crates/wallet/src/wallet.rs`, `crates/wallet/src/base_wallet.rs`, `crates/wallet/src/account_provider.rs`
+- Accounts: `crates/account/src/account.rs`, `crates/account/src/schnorr.rs`, `crates/account/src/signerless.rs`, `crates/account/src/meta_payment.rs`, `crates/account/src/authorization.rs`
+- Contracts/deployment/events/authwit: `crates/contract/src/contract.rs`, `crates/contract/src/deployment.rs`, `crates/contract/src/events.rs`, `crates/contract/src/authwit.rs`
+- Fee: `crates/fee/src/*.rs`
+- Ethereum/L1 messaging: `crates/ethereum/src/messaging.rs`, `crates/ethereum/src/cross_chain.rs`, `crates/ethereum/src/l1_client.rs`
+- Core/crypto/node: `crates/core/src/abi/*`, `crates/core/src/hash.rs`, `crates/core/src/tx.rs`, `crates/core/src/kernel_types.rs`, `crates/core/src/constants.rs`, `crates/crypto/src/keys.rs`, `crates/node-client/src/node.rs`
+
+TypeScript reference paths:
+
+- `yarn-project/aztec.js/src/**`
+- `yarn-project/wallet-sdk/src/base-wallet/base_wallet.ts`
+- `yarn-project/pxe/src/pxe.ts`
+- `yarn-project/pxe/src/entrypoints/client/{lazy,bundle}/utils.ts`
+- `yarn-project/accounts/src/**`
+- `yarn-project/stdlib/src/interfaces/aztec-node.ts`
+
+The old reference file `yarn-project/stdlib/src/interfaces/pxe.ts` is not present in the current local `aztec-packages` tree.
+
+## Current Module Comparison
+
+### 1. PXE and Wallet Infrastructure
+
+| Feature | TS reference | Rust status | Evidence |
+|---|---|---|---|
+| PXE public operations | `pxe/src/pxe.ts` | Implemented as `Pxe` trait | `crates/pxe-client/src/pxe.rs` |
+| In-process PXE creation | `pxe/src/entrypoints/client/{bundle,lazy}/utils.ts` | Implemented as `EmbeddedPxe::create*` | `crates/pxe/src/embedded_pxe.rs` |
+| PXE-backed wallet | `wallet-sdk/src/base-wallet/base_wallet.ts` | Implemented as generic `BaseWallet<P, N, A>` | `crates/wallet/src/base_wallet.rs` |
+| Embedded wallet helper | `wallets/src/embedded/embedded_wallet.ts` | Implemented (feature-gated: `embedded-pxe`): `create_embedded_wallet` | `crates/wallet/src/base_wallet.rs` |
+| Remote PXE HTTP client | old doc named `pxe/src/client/` | Not found | `rg "HttpPxe|create_pxe_client|createPXEClient"` found no Rust impl |
+| Wallet `requestCapabilities` | `aztec.js/src/wallet/capabilities.ts`, wallet-sdk base wallet | Missing | no Rust capability types or wallet method found |
+| Wallet `batch` | `aztec.js/src/wallet/wallet.ts`, wallet-sdk base wallet | Missing at wallet trait level | `BatchCall` exists for execution payloads only |
+| Send `NO_WAIT` return shape | `aztec.js/src/contract/interaction_options.ts` | Missing | Rust `SendOptions` has no `wait`; `SendResult` is tx hash only |
+
+Notes:
+
+- The old claim "no real PXE-backed Wallet implementation" is false for the current Rust workspace.
+- The old claim that `aztec.js` does not expose PXE via the current tree needs updating. Current `aztec-packages` uses an in-process `PXE` class under `yarn-project/pxe/src/pxe.ts`, with client entrypoint factories under `pxe/src/entrypoints/client`.
+- Rust does not mirror TypeScript's `simulateTx` optimization for leading public static calls through `extractOptimizablePublicStaticCalls`; Rust simulation goes through PXE and then public-call simulation/preflight where needed.
+
+### 2. Account Module
+
+| Feature | TS reference | Rust status | Evidence |
+|---|---|---|---|
+| Account and auth provider traits | `aztec.js/src/account/account.ts` | Implemented | `crates/account/src/account.rs` |
+| Account contract trait | `aztec.js/src/account/account_contract.ts` | Implemented | `crates/account/src/account.rs` |
+| `getAccountContractAddress` | `aztec.js/src/account/account_contract.ts` | Implemented as `get_account_contract_address` | `crates/account/src/account.rs` |
+| `AccountWithSecretKey` | `aztec.js/src/account/account_with_secret_key.ts` | Implemented | `crates/account/src/account.rs` |
+| `SignerlessAccount` | `aztec.js/src/account/signerless_account.ts` | Implemented | `crates/account/src/signerless.rs` |
+| `AccountManager` | `aztec.js/src/wallet/account_manager.ts` | Implemented | `crates/account/src/account.rs` |
+| `DeployAccountMethod` | `aztec.js/src/wallet/deploy_account_method.ts` | Implemented with self-fee routing | `crates/account/src/account.rs` |
+| Account meta payment method | `aztec.js/src/wallet/account_entrypoint_meta_payment_method.ts` | Implemented | `crates/account/src/meta_payment.rs` |
+| Schnorr account contract | `accounts/src/schnorr/*` | Implemented | `crates/account/src/schnorr.rs` |
+| ECDSA K/R, SSH ECDSA R, single-key, stub account contracts | `accounts/src/{ecdsa,single_key,stub}` | Missing | no matching Rust account contract structs found |
+
+Notes:
+
+- The old claims that signerless account, account address derivation, meta payment method, and account deployment were missing are no longer accurate.
+- `DeployAccountMethod` defaults differ from the TS implementation in one important place: TS defaults account deployment to `skipClassPublication: true` and `skipInstancePublication: true` when not provided; Rust `DeployAccountOptions` uses the default booleans from Rust's struct unless callers set them.
+
+### 3. Contract and Deployment Modules
+
+| Feature | TS reference | Rust status | Evidence |
+|---|---|---|---|
+| `Contract.at` | `aztec.js/src/contract/contract.ts` | Implemented as `Contract::at` | `crates/contract/src/contract.rs` |
+| `Contract.deploy` | `aztec.js/src/contract/contract.ts` | Implemented as `Contract::deploy` | `crates/contract/src/contract.rs` |
+| `deployWithPublicKeys` | `aztec.js/src/contract/contract.ts` | Implemented as `Contract::deploy_with_public_keys` | `crates/contract/src/contract.rs` |
+| Dynamic method map | `aztec.js/src/contract/contract_base.ts` | Different API | Rust uses `Contract::method(name, args)` |
+| `ContractFunctionInteraction` | `aztec.js/src/contract/contract_function_interaction.ts` | Implemented | `crates/contract/src/contract.rs` |
+| `BatchCall` | `aztec.js/src/contract/batch_call.ts` | Implemented | `crates/contract/src/contract.rs` |
+| `profile()` on interactions and batch | `aztec.js/src/contract/contract_function_interaction.ts` | Implemented | `crates/contract/src/contract.rs` |
+| `ContractDeployer` / `DeployMethod` | `aztec.js/src/deployment/contract_deployer.ts`, `contract/deploy_method.ts` | Implemented | `crates/contract/src/deployment.rs` |
+| `publishContractClass` | `aztec.js/src/deployment/publish_class.ts` | Implemented | `crates/contract/src/deployment.rs` |
+| `publishInstance` | `aztec.js/src/deployment/publish_instance.ts` | Implemented | `crates/contract/src/deployment.rs` |
+| Address derivation from artifact/salt/deployer | stdlib contract helpers | Implemented | `get_contract_instance_from_instantiation_params` |
+| `getGasLimits` | `aztec.js/src/contract/get_gas_limits.ts` | Implemented | `crates/contract/src/deployment.rs` |
+| `waitForProven` | `aztec.js/src/contract/wait_for_proven.ts` | Implemented in node client | `crates/node-client/src/node.rs` |
+| ABI checker | `aztec.js/src/contract/checker.ts` | Implemented as `abi_checker` | `crates/core/src/abi/checkers.rs` |
+| `NO_WAIT` interaction option | `aztec.js/src/contract/interaction_options.ts` | Missing | no Rust `NO_WAIT` equivalent found |
+
+Notes:
+
+- The old "deployment internals are stubs" claim is false.
+- Rust returns `DeployResult { send_result, instance }`, whereas TS has richer conditional return types tied to wait options.
+
+### 4. Fee Payment
+
+| Feature | TS reference | Rust status | Evidence |
+|---|---|---|---|
+| `FeePaymentMethod` | `aztec.js/src/fee/fee_payment_method.ts` | Implemented | `crates/fee/src/fee_payment_method.rs` |
+| Native Fee Juice from existing balance | TS wallet default fee option behavior | Implemented as explicit `NativeFeePaymentMethod` | `crates/fee/src/native.rs` |
+| `SponsoredFeePaymentMethod` | `aztec.js/src/fee/sponsored_fee_payment.ts` | Implemented | `crates/fee/src/sponsored.rs` |
+| `FeeJuicePaymentMethodWithClaim` | `aztec.js/src/fee/fee_juice_payment_method_with_claim.ts` | Implemented | `crates/fee/src/fee_juice_with_claim.rs` |
+| `PrivateFeePaymentMethod` | `aztec.js/src/fee/private_fee_payment_method.ts` | Missing | no Rust type/module found; upstream TS marks as `@deprecated` (not supported on mainnet) |
+| `PublicFeePaymentMethod` | `aztec.js/src/fee/public_fee_payment_method.ts` | Missing | no Rust type/module found; upstream TS marks as `@deprecated` (not supported on mainnet) |
+
+Notes:
+
+- Both `PrivateFeePaymentMethod` and `PublicFeePaymentMethod` are marked `@deprecated` in the upstream TS source with the note "not supported on mainnet". Implementing them in Rust is therefore lower urgency; tests in `tests/fee/e2e_fee_private_payments.rs` and `tests/fee/e2e_fee_public_payments.rs` exist and mark related flows as TODO.
+- Rust currently expects fee execution payloads to be pre-resolved into wallet options; it does not mirror TS's full `fee?: { paymentMethod, gasSettings, estimateGas }` shape at the wallet API boundary.
+
+### 5. Authorization and Authwit
+
+| Feature | TS reference | Rust status | Evidence |
+|---|---|---|---|
+| `CallAuthorizationRequest` | `aztec.js/src/authorization/call_authorization_request.ts` | Implemented | `crates/account/src/authorization.rs` |
+| `computeAuthWitMessageHash` | `aztec.js/src/utils/authwit.ts` | Implemented as `compute_auth_wit_message_hash` | `crates/core/src/hash.rs` |
+| `getMessageHashFromIntent` | `aztec.js/src/utils/authwit.ts` | Missing | generic intent-to-hash helper added alongside `computeAuthWitMessageHash`; no Rust equivalent found |
+| `computeInnerAuthWitHashFromAction` | `aztec.js/src/utils/authwit.ts` | Implemented | `crates/core/src/hash.rs` |
+| `lookupValidity` | `aztec.js/src/utils/authwit.ts` | Implemented | `crates/contract/src/authwit.rs` |
+| `SetPublicAuthwitContractInteraction` | `aztec.js/src/utils/authwit.ts` | Implemented as `SetPublicAuthWitInteraction` | `crates/contract/src/authwit.rs` |
+| Wallet `createAuthWit` | `aztec.js/src/wallet/wallet.ts` | Implemented | `crates/wallet/src/wallet.rs`, `crates/wallet/src/base_wallet.rs` |
+
+The old claim "authorization module is empty" is false.
+
+### 6. Ethereum and L1/L2 Messaging
+
+| Feature | TS reference | Rust status | Evidence |
+|---|---|---|---|
+| `L1Actor`, `L2Actor`, `L1ToL2Message` | `aztec.js/src/api/messaging.ts` / stdlib messaging | Implemented | `crates/ethereum/src/messaging.rs` |
+| `L2Claim`, `L2AmountClaim`, recipient variant | `aztec.js/src/ethereum/portal_manager.ts` | Implemented | `crates/ethereum/src/messaging.rs` |
+| `generateClaimSecret` | `aztec.js/src/ethereum/portal_manager.ts` | Implemented as `generate_claim_secret` | `crates/ethereum/src/messaging.rs` |
+| `isL1ToL2MessageReady` | `aztec.js/src/utils/cross_chain.ts` | Implemented | `crates/ethereum/src/cross_chain.rs` |
+| `waitForL1ToL2MessageReady` | `aztec.js/src/utils/cross_chain.ts` | Implemented | `crates/ethereum/src/cross_chain.rs` |
+| L1 `sendL2Message` helper | portal/inbox flows | Implemented lower-level helper | `crates/ethereum/src/l1_client.rs` |
+| Fee Juice L1 preparation | portal manager flow | Partially implemented lower-level helper | `prepare_fee_juice_on_l1` |
+| `L1TokenManager`, `L1FeeJuicePortalManager`, `L1ToL2TokenPortalManager`, `L1TokenPortalManager` | `aztec.js/src/ethereum/portal_manager.ts` (all four confirmed present) | Missing as class-level API | no matching Rust managers found |
+
+The old claim "Ethereum/L1 portal integration entirely missing" is false, but the Rust API is lower-level and does not mirror the TS portal manager classes. All four TS portal manager classes (`L1TokenManager`, `L1FeeJuicePortalManager`, `L1ToL2TokenPortalManager`, `L1TokenPortalManager`) are confirmed present in `portal_manager.ts`.
+
+### 7. Node Client
+
+| Feature | TS reference | Rust status | Evidence |
+|---|---|---|---|
+| `createAztecNodeClient` | `aztec.js/src/utils/node.ts` | Implemented | `crates/node-client/src/node.rs` |
+| `waitForNode` | `aztec.js/src/utils/node.ts` | Implemented | `crates/node-client/src/node.rs` |
+| `waitForTx` | `aztec.js/src/utils/node.ts` | Implemented | `crates/node-client/src/node.rs` |
+| `WaitOpts` `waitForStatus` | `aztec.js/src/contract/wait_opts.ts` | Implemented as `wait_for_status` | `crates/node-client/src/node.rs` |
+| `WaitOpts` `dontThrowOnRevert` | `aztec.js/src/contract/wait_opts.ts` | Implemented as `dont_throw_on_revert` | `crates/node-client/src/node.rs` |
+| `WaitOpts` dropped receipt grace | `aztec.js/src/contract/wait_opts.ts` | Implemented as `ignore_dropped_receipts_for` | `crates/node-client/src/node.rs` |
+| Expanded Aztec node methods for PXE | `stdlib/src/interfaces/aztec-node.ts` | Partially implemented | `crates/node-client/src/node.rs` |
+
+The old claim that `WaitOpts` lacked the advanced fields is false.
+
+### 8. ABI, Types, Crypto, and Transactions
+
+| Feature | TS reference | Rust status | Evidence |
+|---|---|---|---|
+| `Fr`, `Fq`, `Point`, `GrumpkinScalar`, addresses, public keys | `aztec.js/src/api/{fields,addresses,keys}.ts` | Implemented/re-exported | `crates/core/src/types.rs`, `src/lib.rs` |
+| `FunctionSelector`, `EventSelector`, `NoteSelector` | `aztec.js/src/api/abi.ts` | Implemented | `crates/core/src/abi/selectors.rs` |
+| `FunctionSelector` derivation from signature/name+params | stdlib ABI | Implemented | `crates/core/src/abi/selectors.rs` |
+| `ContractArtifact`, `FunctionArtifact`, `FunctionType` | `aztec.js/src/api/abi.ts` | Implemented | `crates/core/src/abi/types.rs` |
+| `encodeArguments` | `aztec.js/src/api/abi.ts` / stdlib | Implemented as `encode_arguments` | `crates/core/src/abi/encoder.rs` |
+| `decodeFromAbi` | `aztec.js/src/api/abi.ts` / stdlib | Implemented as `decode_from_abi` | `crates/core/src/abi/decoder.rs` |
+| ABI type checkers | `aztec.js/src/utils/abi_types.ts`, checker.ts | Partially implemented | `crates/core/src/abi/checkers.rs` |
+| Contract storage layout type | `aztec.js/src/contract/contract_base.ts` | Implemented | `crates/core/src/abi/storage_layout.rs` |
+| Key derivation | `aztec.js/src/api/keys.ts` / stdlib keys | Implemented | `crates/crypto/src/keys.rs` |
+| `generatePublicKey` | `aztec.js/src/utils/pub_key.ts` | Implemented as `derive_public_key_from_secret_key` | `crates/crypto/src/keys.rs` |
+| `computeSecretHash` | `aztec.js/src/api/crypto.ts` | Implemented | `crates/core/src/hash.rs`, re-exported by `crates/crypto` |
+| `Tx`, `TypedTx`, `TxReceipt`, `TxStatus`, `ExecutionPayload`, `mergeExecutionPayloads` | `aztec.js/src/api/tx.ts` | Implemented in Rust shape | `crates/core/src/tx.rs` |
+| `GlobalVariables` and kernel structs | stdlib tx/kernel | Implemented | `crates/core/src/kernel_types.rs` |
+
+Remaining gaps in this area:
+
+- TS `FieldLike`, `AztecAddressLike`, `EthAddressLike`, `FunctionSelectorLike`, `OptionLike<T>`, and other JS ergonomic input unions do not have direct Rust equivalents. Rust uses typed `AbiValue` and concrete Rust types.
+- Contract artifact buffer helpers (`contractArtifactToBuffer`, `contractArtifactFromBuffer`) were not found as Rust public APIs.
+- `readFieldCompressedString` was not found.
+
+### 9. Events, Logs, Notes, Blocks, Trees, and Protocol Exports
+
+| Feature | TS reference | Rust status | Evidence |
+|---|---|---|---|
+| Public event types and decoder | `aztec.js/src/api/events.ts` | Implemented | `crates/contract/src/events.rs` |
+| Private event filter/result path | `aztec.js/src/wallet/wallet.ts` | Implemented | `crates/wallet/src/wallet.rs`, `crates/pxe-client/src/pxe.rs` |
+| `LogId` / public log filters | `aztec.js/src/api/log.ts` / stdlib logs | Partially implemented | `crates/node-client/src/node.rs` |
+| Stored notes and note filtering internals | `aztec.js/src/api/note.ts` / PXE note services | Implemented internally, not aztec.js-style public API | `crates/pxe/src/stores/note_store.rs`, `crates/pxe/src/execution/pick_notes.rs` |
+| `L2Block`, `Body` | `aztec.js/src/api/block.ts` (re-exports from `@aztec/stdlib/block`) | Missing as direct public types | no matching Rust `L2Block`/`Body` types found |
+| `getTimestampRangeForEpoch` | `aztec.js/src/api/block.ts` (re-exports from `@aztec/stdlib/epoch-helpers`) | Missing | no Rust public helper found |
+| `SiblingPath`, `MerkleTreeId` public API | `aztec.js/src/api/trees.ts` (re-exports from `@aztec/foundation/trees` and `@aztec/stdlib/trees`) | Missing as direct public API | node methods accept string/tree ids internally |
+| Protocol contract addresses | `aztec.js/src/api/protocol.ts` | Partially implemented as functions/constants | `crates/core/src/constants.rs` |
+| Protocol contract wrapper classes | `aztec.js/src/api/protocol.ts` | Missing | no Rust wrappers found |
+
+Notes:
+
+- `aztec.js/src/api/protocol.ts` imports generated files under `src/contract/protocol_contracts/*`, but those generated files were not present in the checked-out local source tree during review. Rust has protocol addresses and direct interactions, not generated wrapper classes.
+
+## Priority Roadmap
+
+### P0 - Real parity blockers for application/wallet APIs
+
+1. Add wallet capabilities surface:
+   - `CAPABILITY_VERSION`
+   - capability structs/enums matching `aztec.js/src/wallet/capabilities.ts`
+   - `Wallet::request_capabilities(...)`
+   - default `BaseWallet` behavior equivalent to TS "not implemented" or an explicit unsupported result
+
+2. Add wallet batch method parity:
+   - `BatchedMethod` / `BatchResults`-style Rust API if useful
+   - or document that Rust only supports execution-payload batching through `BatchCall`
+
+3. Decide `PublicFeePaymentMethod` and `PrivateFeePaymentMethod` stance:
+   - Both are marked `@deprecated` in upstream TS and are not supported on mainnet
+   - If testnet/devnet FPC flows are a near-term need, implement them; otherwise defer to P2 until mainnet support lands upstream
+   - Reference: `aztec.js/src/fee/public_fee_payment_method.ts`, `aztec.js/src/fee/private_fee_payment_method.ts`
+   - Test stubs exist in `tests/fee/e2e_fee_private_payments.rs` and `tests/fee/e2e_fee_public_payments.rs`
+
+4. Decide the remote PXE stance:
+   - if Rust should support remote PXE, add an HTTP JSON-RPC `Pxe` implementation
+   - if Rust intentionally only supports embedded PXE for Aztec v4, update docs and remove references to the old `pxe/src/client/` and `stdlib/src/interfaces/pxe.ts` paths
+
+### P1 - Account and wallet feature completeness
+
+5. Add broader `@aztec/accounts` account flavors:
+   - ECDSA K
+   - ECDSA R
+   - SSH ECDSA R
+   - single-key
+   - stub/testing account contract helpers
+
+6. Align account deployment defaults with TS where intended:
+   - TS `DeployAccountMethod.request()` defaults `skipClassPublication` and `skipInstancePublication` to `true`
+   - Rust currently inherits struct defaults unless callers set options
+
+7. Add wallet send wait options if TS parity is required:
+   - `NO_WAIT` equivalent or idiomatic Rust enum
+   - send result variant for receipt versus hash
+   - propagation of `WaitOpts` into wallet send
+
+### P2 - Public API completeness
+
+8. Add convenience wrappers/utilities:
+   - `get_fee_juice_balance`
+   - `read_field_compressed_string`
+   - `get_timestamp_range_for_epoch`
+   - `get_message_hash_from_intent` (generic multi-intent-type authwit hash helper; upstream `getMessageHashFromIntent` accepts `Fr | IntentInnerHash | CallIntent | ContractFunctionInteractionCallIntent`)
+   - contract artifact buffer serialization helpers
+
+9. Add public block/tree/log/note API wrappers:
+   - `L2Block`, `Body`
+   - `SiblingPath`, `MerkleTreeId`
+   - `Comparator`, `Note`
+   - public `LogFilter` equivalents where currently only node/PXE internals exist
+
+10. Add protocol wrapper surface:
+   - `ProtocolContractAddress`-style enum/wrapper if desired
+   - generated or hand-written protocol contract handles for auth registry, contract class registry, contract instance registry, Fee Juice, multicall entrypoint, public checks
+
+### P3 - Behavioral and type tightening
+
+11. Replace opaque PXE JSON wrappers with typed structs where practical:
+   - `BlockHeader`
+   - `TxExecutionRequest`
+   - PXE simulation/profile result data
+   - block and tx effect responses
+
+12. Expand `TxProvingResult::validate()`:
+   - parse typed public inputs
+   - verify calldata/log count invariants instead of only carrying placeholders
+
+13. Consider porting TS wallet simulation optimization:
+   - `extractOptimizablePublicStaticCalls`
+   - `simulateViaNode`
+   - `buildMergedSimulationResult`
+
+## Removed Stale Items
+
+These old gap statements should not be reintroduced unless the code regresses:
+
+- "No real PXE-backed Wallet implementation" - false; see `BaseWallet` and `EmbeddedPxe`.
+- "PXE trait missing" - false; see `crates/pxe-client/src/pxe.rs`.
+- "Fee payment strategies only have types" - false; native, sponsored, and Fee Juice claim strategies exist.
+- "Authorization module empty" - false; auth request and authwit helpers exist.
+- "L1-L2 messaging module empty" - false; messaging and readiness helpers exist.
+- "Ethereum/L1 portal integration entirely missing" - false; lower-level L1 client and Fee Juice helper exist.
+- "Deployment internals are stubs" - false; class and instance publication interactions are implemented.
+- "`getGasLimits` missing" - false; implemented as `get_gas_limits`.
+- "`waitForProven` missing" - false; implemented as `wait_for_proven`.
+- "Signerless account missing" - false; implemented.
+- "Key derivation missing" - false; implemented in `crates/crypto/src/keys.rs`.
+- "`FunctionSelector.from_name` stub" - false; Rust has `from_signature` and `from_name_and_parameters`.
+- "ABI encode/decode/checkers missing" - false; Rust has encoder, decoder, and checker modules.
