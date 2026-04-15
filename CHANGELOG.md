@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Real private-kernel ClientIVC proving** (`aztec-pxe`):
+  - `EmbeddedPxe::set_prover_enabled()` switches `prove_tx` from the simulated-kernel dummy path to real witness generation and ClientIVC proof creation; defaults to the node's `realProofs` setting, overridable via `EmbeddedPxeConfig`
+  - `AcvmExecutor` surfaces the function verification key from the artifact; `PrivateCallExecutionResult` carries `public_inputs_fields` extracted from the solved witness for the kernel prover
+  - `KernelExecutionProver` collects app-circuit ClientIVC steps and wires them into the init/inner/reset/tail/hiding kernel sequence
+- **Persistent kernel-proving daemon** (`aztec-pxe`): `RealKernelProveDaemon` is a long-lived child process speaking line-delimited JSON over stdin/stdout, kept alive via a process-global `OnceLock` singleton — eliminates per-proof node startup cost; `set_prover_enabled` warms/kills the daemon; automatic one-shot restart on failure; original one-shot path available via `PXE_REAL_PROOF_DISABLE_DAEMON=1`
+- **Contract class preimage cache** (`aztec-pxe`): `ContractStore::add_class_preimage` / `get_class_preimage` persist canonical class preimages so the kernel oracle can retrieve them directly without re-deriving from the artifact each time
+- bb.js contract instance canonicalization for real-proof benchmarks (`aztec-bench`): when `PXE_BENCH_REAL_PROOFS=1`, `get_contract_instance_from_instantiation_params` delegates to a `compute_contract_instance_from_rust.mjs` helper so class ID and address are computed by barretenberg, matching what the upstream node expects
 - Tier 8 e2e test suite mirroring upstream cross-chain messaging failure and public-bridge tests (5 tests across 2 files):
   - `e2e_cross_chain_token_bridge_failure_cases` — authwit-required public burn rejected when unauthorized; wrong content on private claim rejected; wrong secret on public claim rejected (3 tests)
   - `e2e_cross_chain_token_bridge_public` — public L1→L2 deposit with L2→L1 withdrawal round-trip (hash verified locally); third-party consumption honors the baked recipient (2 tests)
@@ -17,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Public bytecode commitment** (`aztec-core`): `compute_public_bytecode_commitment` was double-unpacking packed bytecode (treating the first field as a length prefix already consumed by `buffer_as_fields`); now encodes raw bytes directly
+- **Empty private-functions root caching** (`aztec-core`): `compute_private_functions_root` now caches the empty-tree root via `OnceLock`, avoiding recomputation on every contract registration call
+- **bb.js poseidon2 bridge** (`aztec-core`): optional `AZTEC_RS_USE_TS_POSEIDON=1` flag delegates hash calls to the upstream TypeScript helper for cross-checking against barretenberg during benchmarks
+- **VK tree height** (`aztec-core`): `VK_TREE_HEIGHT` corrected from 8 to 7 (matches the actual protocol tree); `ContractArtifact::from_nargo_json` now reads `verification_key` and `verification_key_hash` from artifact JSON
+- **Grumpkin operations** (`aztec-core`): replaced hand-rolled affine addition, doubling, and scalar-multiplication with the `ark-grumpkin` crate, eliminating manual double-and-add arithmetic
+- **RPC transport resilience** (`aztec-node-client`): `send_json` helper extracted from three call-site methods; adds a one-shot retry on connection or request error to handle transient network hiccups
+- **Note fallback storage** (`aztec-pxe`): skip the fallback path when the scopes list is empty — previously attempted to derive a scope from the note owner even with no scopes, producing incorrect note storage behavior
 - Split overlong first doc paragraphs on `tests/common/mod.rs::create_wallet` and `TokenTestState` to satisfy `clippy::nursery::too_long_first_doc_paragraph` (raised by `cargo lint`)
 
 ## [0.5.1] - 2026-04-13
