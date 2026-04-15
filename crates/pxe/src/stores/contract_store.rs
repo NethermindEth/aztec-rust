@@ -73,6 +73,33 @@ impl ContractStore {
         }
     }
 
+    /// Store a canonical contract class id preimage by class ID.
+    ///
+    /// This is used when the artifact is still needed locally for execution
+    /// and membership witnesses, but the canonical class preimage comes from
+    /// an upstream deployment flow.
+    pub async fn add_class_preimage(
+        &self,
+        class_id: &Fr,
+        preimage: &serde_json::Value,
+    ) -> Result<(), Error> {
+        let key = class_preimage_key(class_id);
+        let value = serde_json::to_vec(preimage)?;
+        self.kv.put(&key, &value).await
+    }
+
+    /// Get a canonical contract class id preimage by class ID.
+    pub async fn get_class_preimage(
+        &self,
+        class_id: &Fr,
+    ) -> Result<Option<serde_json::Value>, Error> {
+        let key = class_preimage_key(class_id);
+        match self.kv.get(&key).await? {
+            Some(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+            None => Ok(None),
+        }
+    }
+
     /// Update a contract's artifact (by address — looks up the class ID).
     pub async fn update_artifact(
         &self,
@@ -103,6 +130,10 @@ fn instance_key(address: &AztecAddress) -> Vec<u8> {
 
 fn artifact_key(class_id: &Fr) -> Vec<u8> {
     format!("contract:artifact:{class_id}").into_bytes()
+}
+
+fn class_preimage_key(class_id: &Fr) -> Vec<u8> {
+    format!("contract:class-preimage:{class_id}").into_bytes()
 }
 
 #[cfg(test)]

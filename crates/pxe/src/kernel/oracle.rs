@@ -107,6 +107,10 @@ impl<'a, N: AztecNode> PrivateKernelOracle<'a, N> {
         &self,
         class_id: &Fr,
     ) -> Result<serde_json::Value, Error> {
+        if let Some(preimage) = self.contract_store.get_class_preimage(class_id).await? {
+            return Ok(preimage);
+        }
+
         if let Some(artifact) = self.contract_store.get_artifact(class_id).await? {
             return Self::contract_class_preimage(&artifact);
         }
