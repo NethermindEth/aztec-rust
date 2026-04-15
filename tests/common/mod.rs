@@ -21,6 +21,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -201,8 +202,99 @@ pub fn load_token_artifact() -> ContractArtifact {
 }
 
 pub fn load_schnorr_account_artifact() -> ContractArtifact {
+    if std::env::var("PXE_BENCH_REAL_PROOFS")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE"))
+        .unwrap_or(false)
+    {
+        if let Some(artifact) = load_real_proof_schnorr_account_artifact() {
+            return artifact;
+        }
+    }
+
     let json = include_str!("../../fixtures/schnorr_account_contract_compiled.json");
     ContractArtifact::from_nargo_json(json).expect("parse schnorr_account_contract_compiled.json")
+}
+
+fn load_real_proof_schnorr_account_artifact() -> Option<ContractArtifact> {
+    let aztec_packages = std::env::var("AZTEC_PACKAGES_PATH")
+        .or_else(|_| std::env::var("PXE_AZTEC_PACKAGES_PATH"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/Users/alexmetelli/source/aztec-packages"));
+    let artifact_path = aztec_packages
+        .join("yarn-project")
+        .join("accounts")
+        .join("artifacts")
+        .join("SchnorrAccount.json");
+    let json = fs::read_to_string(artifact_path).ok()?;
+    let artifact = ContractArtifact::from_nargo_json(&json).ok()?;
+    Some(fill_real_proof_vk_hashes(artifact, "schnorr-account"))
+}
+
+fn fill_real_proof_vk_hashes(mut artifact: ContractArtifact, name: &str) -> ContractArtifact {
+    if artifact.functions.iter().all(|function| {
+        function.verification_key.is_none() || function.verification_key_hash.is_some()
+    }) {
+        return artifact;
+    }
+
+    let work_dir = std::env::var("BB_WORKING_DIRECTORY")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("crates/pxe/target/tmp"));
+    fs::create_dir_all(&work_dir).expect("create benchmark tmp dir");
+    let artifact_path = work_dir.join(format!("{name}-artifact.json"));
+    let hashes_path = work_dir.join(format!("{name}-vk-hashes.json"));
+    fs::write(
+        &artifact_path,
+        serde_json::to_vec(&artifact).expect("serialize artifact"),
+    )
+    .expect("write artifact for vk hashing");
+
+    let script = find_repo_tool_for_common("compute_artifact_vk_hashes.mjs");
+    let output = Command::new("node")
+        .arg(&script)
+        .arg(&artifact_path)
+        .arg(&hashes_path)
+        .output()
+        .expect("run vk hash helper");
+    assert!(
+        output.status.success(),
+        "vk hash helper failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let report: serde_json::Value =
+        serde_json::from_slice(&fs::read(&hashes_path).expect("read vk hash report"))
+            .expect("parse vk hash report");
+    let hashes = report
+        .get("hashes")
+        .and_then(|value| value.as_object())
+        .expect("vk hash report contains hashes");
+
+    for function in &mut artifact.functions {
+        if function.verification_key.is_none() || function.verification_key_hash.is_some() {
+            continue;
+        }
+        let hash = hashes
+            .get(&function.name)
+            .and_then(|value| value.get("verificationKeyHash"))
+            .and_then(|value| value.as_str())
+            .unwrap_or_else(|| panic!("missing vk hash for {}", function.name));
+        function.verification_key_hash = Some(Fr::from_hex(hash).expect("valid vk hash"));
+    }
+
+    artifact
+}
+
+fn find_repo_tool_for_common(name: &str) -> PathBuf {
+    let current = std::env::current_dir().expect("current dir");
+    [
+        current.join("tools").join(name),
+        current.join("../../tools").join(name),
+        current.join("../tools").join(name),
+    ]
+    .into_iter()
+    .find(|path| path.exists())
+    .unwrap_or_else(|| panic!("could not find tools/{name} from {}", current.display()))
 }
 
 pub fn load_child_contract_artifact() -> ContractArtifact {

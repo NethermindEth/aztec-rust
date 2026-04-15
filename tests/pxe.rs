@@ -12,6 +12,8 @@ pub mod common;
 
 #[path = "pxe/e2e_2_pxes.rs"]
 mod e2e_2_pxes;
+#[path = "pxe/e2e_bench.rs"]
+mod e2e_bench;
 #[path = "pxe/e2e_kernelless_simulation.rs"]
 mod e2e_kernelless_simulation;
 #[path = "pxe/e2e_note_getter.rs"]
