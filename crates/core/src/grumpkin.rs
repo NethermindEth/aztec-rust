@@ -6,79 +6,29 @@
 //! `compute_contract_address_from_instance`.
 
 use ark_bn254::Fr as ArkFr;
-use ark_ff::{AdditiveGroup, BigInteger, Field, PrimeField};
+use ark_ec::{AffineRepr, CurveGroup};
+use ark_ff::{Field, PrimeField};
 
 use crate::{
     types::{Fq, Fr, Point},
     Error,
 };
 
-/// Grumpkin curve parameter: y^2 = x^3 + B, where B = -17.
-const B: i64 = -17;
-
 /// Return the Grumpkin generator point G = (1, y) where y = sqrt(1 - 17).
 pub fn generator() -> Point {
-    let one = ArkFr::from(1u64);
-    // rhs = 1^3 + B = 1 - 17 = -16
-    let rhs = one + ArkFr::from(B.unsigned_abs()) * (-ArkFr::from(1u64));
-    let y = rhs.sqrt().expect("Grumpkin generator y must exist");
-
-    // Pick the lexicographically smaller y (convention).
-    let neg_y = -y;
-    let chosen = if y.into_bigint() < neg_y.into_bigint() {
-        y
-    } else {
-        neg_y
-    };
-
-    Point {
-        x: Fr(one),
-        y: Fr(chosen),
-        is_infinite: false,
-    }
+    from_ark_affine(ark_grumpkin::Affine::generator())
 }
 
 /// Add two Grumpkin affine points.
 pub fn point_add(p: &Point, q: &Point) -> Point {
-    if p.is_infinite {
-        return *q;
-    }
-    if q.is_infinite {
-        return *p;
-    }
-
-    let px = p.x.0;
-    let py = p.y.0;
-    let qx = q.x.0;
-    let qy = q.y.0;
-
-    // If same x but opposite y (or both zero), result is point at infinity.
-    if px == qx {
-        if py == -qy || (py == ArkFr::ZERO && qy == ArkFr::ZERO) {
-            return Point {
-                x: Fr::zero(),
-                y: Fr::zero(),
-                is_infinite: true,
-            };
-        }
-        // Same point → doubling
-        return point_double(p);
-    }
-
-    // Standard affine addition: λ = (qy - py) / (qx - px)
-    let lambda = (qy - py) * (qx - px).inverse().expect("non-zero denominator");
-    let x3 = lambda * lambda - px - qx;
-    let y3 = lambda * (px - x3) - py;
-
-    Point {
-        x: Fr(x3),
-        y: Fr(y3),
-        is_infinite: false,
-    }
+    from_ark_affine((to_ark_affine(p) + to_ark_affine(q)).into_affine())
 }
 
 /// Double a Grumpkin affine point.
+#[cfg(test)]
 fn point_double(p: &Point) -> Point {
+    use ark_ff::AdditiveGroup;
+
     if p.is_infinite || p.y.0 == ArkFr::ZERO {
         return Point {
             x: Fr::zero(),
@@ -119,23 +69,35 @@ pub fn scalar_mul(scalar: &Fq, point: &Point) -> Point {
         };
     }
 
-    let bits = scalar.0.into_bigint().to_bits_be();
+    from_ark_affine(
+        to_ark_affine(point)
+            .mul_bigint(scalar.0.into_bigint())
+            .into_affine(),
+    )
+}
 
-    // Skip leading zeros
-    let mut result = Point {
-        x: Fr::zero(),
-        y: Fr::zero(),
-        is_infinite: true,
-    };
+fn to_ark_affine(point: &Point) -> ark_grumpkin::Affine {
+    if point.is_infinite {
+        ark_grumpkin::Affine::zero()
+    } else {
+        ark_grumpkin::Affine::new_unchecked(point.x.0, point.y.0)
+    }
+}
 
-    for bit in bits {
-        result = point_double(&result);
-        if bit {
-            result = point_add(&result, point);
+fn from_ark_affine(point: ark_grumpkin::Affine) -> Point {
+    if point.is_zero() {
+        Point {
+            x: Fr::zero(),
+            y: Fr::zero(),
+            is_infinite: true,
+        }
+    } else {
+        Point {
+            x: Fr(point.x().expect("non-infinite point has x")),
+            y: Fr(point.y().expect("non-infinite point has y")),
+            is_infinite: false,
         }
     }
-
-    result
 }
 
 /// Recover the canonical Grumpkin affine point from an x-coordinate.
