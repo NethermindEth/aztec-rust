@@ -2529,11 +2529,19 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
             .map(aztec_core::tx::TxHash::from_hex)
             .transpose()?;
 
+        let helper_script = if std::env::var("PXE_REAL_PROOF_DISABLE_DAEMON")
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE"))
+            .unwrap_or(false)
+        {
+            "private_kernel_prove_from_rust.mjs"
+        } else {
+            "private_kernel_prove_daemon_from_rust.mjs"
+        };
         Ok(TxProvingResult {
             tx_hash,
             private_execution_result: serde_json::json!({
                 "realProofs": true,
-                "helper": "private_kernel_prove_from_rust.mjs",
+                "helper": helper_script,
             }),
             public_inputs: aztec_core::tx::PrivateKernelTailCircuitPublicInputs::from_bytes(
                 public_inputs,
