@@ -1,7 +1,6 @@
 /target
 Cargo.lock
 /docs/book/
-/PXE_BENCHMARKS.md
 /tools/
 /tests/pxe/e2e_bench.rs
 /crates/pxe/target/
