@@ -290,11 +290,98 @@ pub fn get_contract_instance_from_instantiation_params(
     };
 
     let address = compute_contract_address_from_instance(&instance)?;
-
-    Ok(ContractInstanceWithAddress {
+    let instance = ContractInstanceWithAddress {
         address,
         inner: instance,
-    })
+    };
+
+    if std::env::var("PXE_BENCH_REAL_PROOFS")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE"))
+        .unwrap_or(false)
+    {
+        return canonicalize_instance_with_bbjs(
+            instance,
+            artifact_hash,
+            private_functions_root,
+            public_bytecode_commitment,
+        );
+    }
+
+    Ok(instance)
+}
+
+fn canonicalize_instance_with_bbjs(
+    mut instance: ContractInstanceWithAddress,
+    artifact_hash: Fr,
+    private_functions_root: Fr,
+    public_bytecode_commitment: Fr,
+) -> Result<ContractInstanceWithAddress, Error> {
+    let script = locate_repo_tool("compute_contract_instance_from_rust.mjs").ok_or_else(|| {
+        Error::InvalidData(
+            "tools/compute_contract_instance_from_rust.mjs not found for real proof benchmark"
+                .to_owned(),
+        )
+    })?;
+    let keys = &instance.inner.public_keys;
+    let point_args = [
+        &keys.master_nullifier_public_key,
+        &keys.master_incoming_viewing_public_key,
+        &keys.master_outgoing_viewing_public_key,
+        &keys.master_tagging_public_key,
+    ];
+    let mut command = std::process::Command::new("node");
+    command
+        .arg(script)
+        .arg(artifact_hash.to_string())
+        .arg(private_functions_root.to_string())
+        .arg(public_bytecode_commitment.to_string())
+        .arg(instance.inner.salt.to_string())
+        .arg(instance.inner.initialization_hash.to_string())
+        .arg(instance.inner.deployer.0.to_string());
+    for point in point_args {
+        command
+            .arg(point.x.to_string())
+            .arg(point.y.to_string())
+            .arg(point.is_infinite.to_string());
+    }
+    let output = command
+        .output()
+        .map_err(|err| Error::InvalidData(format!("run bb.js contract instance helper: {err}")))?;
+    if !output.status.success() {
+        return Err(Error::InvalidData(format!(
+            "bb.js contract instance helper failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let class_id = response
+        .get("classId")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| Error::InvalidData("contract instance helper missing classId".into()))
+        .and_then(Fr::from_hex)?;
+    let address = response
+        .get("address")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| Error::InvalidData("contract instance helper missing address".into()))
+        .and_then(Fr::from_hex)
+        .map(AztecAddress)?;
+    instance.inner.current_contract_class_id = class_id;
+    instance.inner.original_contract_class_id = class_id;
+    instance.address = address;
+    Ok(instance)
+}
+
+fn locate_repo_tool(name: &str) -> Option<std::path::PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(path) = std::env::var("AZTEC_RS_REPO") {
+        candidates.push(std::path::PathBuf::from(path).join("tools").join(name));
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("tools").join(name));
+        candidates.push(cwd.join("../tools").join(name));
+        candidates.push(cwd.join("../../tools").join(name));
+    }
+    candidates.into_iter().find(|path| path.exists())
 }
 
 // ---------------------------------------------------------------------------
