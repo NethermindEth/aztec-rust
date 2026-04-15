@@ -1,5 +1,7 @@
 //! Embedded PXE implementation that runs PXE logic in-process.
 
+use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -11,7 +13,7 @@ use aztec_core::constants::{
 };
 use aztec_core::error::Error;
 use aztec_core::hash::{
-    compute_contract_address_from_instance, compute_contract_class_id,
+    compute_address, compute_contract_address_from_instance, compute_contract_class_id,
     compute_contract_class_id_from_artifact, compute_protocol_contracts_hash,
     compute_protocol_nullifier,
 };
@@ -20,7 +22,6 @@ use aztec_core::types::{
     AztecAddress, CompleteAddress, ContractInstance, ContractInstanceWithAddress, Fr, Point,
     PublicKeys,
 };
-use aztec_crypto::complete_address_from_secret_key_and_partial_address;
 use aztec_crypto::schnorr::{schnorr_verify, SchnorrSignature};
 use aztec_node_client::AztecNode;
 use aztec_pxe_client::{
@@ -28,6 +29,8 @@ use aztec_pxe_client::{
     RegisterContractRequest, SimulateTxOpts, TxExecutionRequest, TxProfileResult, TxProvingResult,
     TxSimulationResult, UtilityExecutionResult,
 };
+use base64::Engine;
+use tokio::process::Command;
 
 use crate::kernel::prover::{BbPrivateKernelProver, BbProverConfig};
 use crate::stores::anchor_block_store::AnchorBlockHeader;
@@ -146,6 +149,9 @@ pub struct EmbeddedPxe<N: AztecNode> {
     vk_tree_root: Fr,
     /// Protocol contracts hash from node info — needed in TxConstantData.
     protocol_contracts_hash: Fr,
+    /// Whether `prove_tx` should run private-kernel witness generation and
+    /// ClientIVC proof creation instead of the simulated-kernel dummy proof.
+    prover_enabled: AtomicBool,
 }
 
 /// Configuration for EmbeddedPxe creation.
@@ -155,6 +161,12 @@ pub struct EmbeddedPxeConfig {
     pub prover_config: BbProverConfig,
     /// Block synchronization configuration.
     pub block_sync_config: BlockSyncConfig,
+    /// Whether to generate real private-kernel proofs.
+    ///
+    /// `None` mirrors upstream TS PXE: use the node's `realProofs` setting.
+    /// `Some(false)` keeps the local simulated-kernel path even against a real
+    /// proof node, which is useful for PXE-local benchmarking.
+    pub prover_enabled: Option<bool>,
 }
 
 impl Default for EmbeddedPxeConfig {
@@ -162,6 +174,7 @@ impl Default for EmbeddedPxeConfig {
         Self {
             prover_config: BbProverConfig::default(),
             block_sync_config: BlockSyncConfig::default(),
+            prover_enabled: Some(false),
         }
     }
 }
@@ -368,6 +381,7 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
         // Match upstream PXE behavior by deriving them locally and only
         // honoring node-provided values when they are explicitly present.
         let node_info = node.get_node_info().await?;
+        let prover_enabled = config.prover_enabled.unwrap_or(node_info.real_proofs);
         let vk_tree_root = node_info
             .l2_circuits_vk_tree_root
             .as_deref()
@@ -396,6 +410,7 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
             contract_sync_service,
             vk_tree_root,
             protocol_contracts_hash,
+            prover_enabled: AtomicBool::new(prover_enabled),
         };
 
         // Initial block sync
@@ -408,6 +423,12 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
     pub async fn create_ephemeral(node: N) -> Result<Self, Error> {
         let kv = Arc::new(crate::stores::InMemoryKvStore::new());
         Self::create(node, kv).await
+    }
+
+    /// Enable or disable real private-kernel proving for subsequent `prove_tx`
+    /// calls.
+    pub fn set_prover_enabled(&self, enabled: bool) {
+        self.prover_enabled.store(enabled, AtomicOrdering::Relaxed);
     }
 
     /// Recursively flatten an [`AbiValue`] into field elements.
@@ -1304,6 +1325,11 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
                 .to_field(),
             is_static_call: function.is_static,
         };
+        execution_result.entrypoint.public_inputs_fields =
+            crate::execution::execution_result::PrivateCallExecutionResult::extract_public_inputs_fields(
+                &execution_result.entrypoint.partial_witness,
+                full_witness.len(),
+            );
 
         // Extract circuit-constrained side effects from PrivateCircuitPublicInputs
         // in the solved witness. These are NOT emitted through oracle calls.
@@ -1863,7 +1889,7 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
             &function_name,
             &entrypoint_args.values,
             origin, // contract_address = account address
-            origin, // msg_sender = self-call
+            aztec_core::constants::protocol_contract_address::null_msg_sender(),
             tx_request,
             anchor,
             function
@@ -1941,7 +1967,7 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
         let entrypoint_result = crate::execution::execution_result::PrivateCallExecutionResult {
             contract_address: origin,
             call_context: aztec_core::kernel_types::CallContext {
-                msg_sender: origin,
+                msg_sender: aztec_core::constants::protocol_contract_address::null_msg_sender(),
                 contract_address: origin,
                 function_selector: function
                     .selector
@@ -1950,9 +1976,14 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
                 is_static_call: false,
             },
             acir: acvm_output.acir_bytecode.clone(),
-            vk: Vec::new(),
+            vk: acvm_output.verification_key.clone(),
             partial_witness: acvm_output.witness.clone(),
             return_values: acvm_output.return_values.clone(),
+            public_inputs_fields:
+                crate::execution::execution_result::PrivateCallExecutionResult::extract_public_inputs_fields(
+                    &acvm_output.witness,
+                    full_witness.len(),
+                ),
             new_notes: oracle.new_notes.clone(),
             note_hash_nullifier_counter_map: oracle.note_hash_nullifier_counter_map.clone(),
             offchain_effects: Vec::new(),
@@ -2076,6 +2107,255 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
         let accounts = self.key_store.get_accounts().await?;
         Ok(accounts.contains(&complete.public_keys.hash()))
     }
+
+    fn tx_request_fields_for_kernel(tx_request: &TxExecutionRequest) -> Result<Vec<Fr>, Error> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct WireTxRequest {
+            origin: AztecAddress,
+            function_selector: FunctionSelector,
+            first_call_args_hash: Fr,
+            tx_context: TxContext,
+            salt: Fr,
+        }
+
+        let request: WireTxRequest = serde_json::from_value(tx_request.data.clone())
+            .map_err(|err| Error::InvalidData(format!("invalid tx request payload: {err}")))?;
+        let mut fields = Vec::with_capacity(15);
+        fields.push(request.origin.0);
+        fields.push(request.first_call_args_hash);
+        fields.extend(request.tx_context.to_fields());
+        fields.push(request.function_selector.to_field());
+        fields.push(Fr::from(true));
+        fields.push(request.salt);
+        Ok(fields)
+    }
+
+    fn kernel_proof_call_json(
+        call: &crate::execution::execution_result::PrivateCallExecutionResult,
+    ) -> serde_json::Value {
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let witness = call
+            .partial_witness
+            .clone()
+            .into_iter()
+            .map(|(witness, field)| {
+                serde_json::json!([
+                    witness.0,
+                    crate::execution::field_conversion::fe_to_fr(&field)
+                ])
+            })
+            .collect::<Vec<_>>();
+        let nested = call
+            .nested_execution_results
+            .iter()
+            .map(Self::kernel_proof_call_json)
+            .collect::<Vec<_>>();
+
+        serde_json::json!({
+            "functionName": "private_call",
+            "acirBase64": b64.encode(&call.acir),
+            "vkBase64": b64.encode(&call.vk),
+            "partialWitness": witness,
+            "publicInputsFields": call.public_inputs_fields,
+            "minRevertibleSideEffectCounter": call.min_revertible_side_effect_counter,
+            "startSideEffectCounter": call.start_side_effect_counter,
+            "endSideEffectCounter": call.end_side_effect_counter,
+            "returnValues": call.return_values,
+            "noteHashNullifierCounterMap": call.note_hash_nullifier_counter_map,
+            "nestedExecutionResults": nested,
+        })
+    }
+
+    async fn prove_with_real_kernel_helper(
+        &self,
+        tx_request: &TxExecutionRequest,
+        execution_result: &crate::execution::execution_result::PrivateExecutionResult,
+        anchor: &AnchorBlockHeader,
+    ) -> Result<(Vec<u8>, Vec<u8>, serde_json::Value), Error> {
+        let work_dir = std::env::var("BB_WORKING_DIRECTORY")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_owned());
+                std::path::PathBuf::from(home).join(".aztec/bb-working")
+            });
+        tokio::fs::create_dir_all(&work_dir)
+            .await
+            .map_err(|err| Error::InvalidData(format!("create bb working dir: {err}")))?;
+        let request_path = work_dir.join("rust-private-kernel-request.json");
+        let response_path = work_dir.join("rust-private-kernel-response.json");
+
+        fn collect_calls<'a>(
+            call: &'a crate::execution::execution_result::PrivateCallExecutionResult,
+            out: &mut Vec<&'a crate::execution::execution_result::PrivateCallExecutionResult>,
+        ) {
+            out.push(call);
+            for nested in &call.nested_execution_results {
+                collect_calls(nested, out);
+            }
+        }
+
+        let block_hash = Fr::from_hex(anchor.get_block_hash())?;
+        let kernel_oracle = crate::kernel::oracle::PrivateKernelOracle::new(
+            &self.node,
+            &self.contract_store,
+            &self.key_store,
+            block_hash,
+        );
+        let mut calls = Vec::new();
+        collect_calls(&execution_result.entrypoint, &mut calls);
+        let mut metadata = serde_json::Map::new();
+        for call in calls {
+            if call.public_inputs_fields.is_empty() {
+                continue;
+            }
+            let selector = call.call_context.function_selector;
+            let key = format!("{}:{selector}", call.contract_address);
+            if metadata.contains_key(&key) {
+                continue;
+            }
+            let contract_preimage = kernel_oracle
+                .get_contract_address_preimage(&call.contract_address)
+                .await?;
+            let class_id = contract_preimage
+                .get("currentContractClassId")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| Error::InvalidData("contract preimage missing class id".into()))
+                .and_then(Fr::from_hex)?;
+            let class_preimage = kernel_oracle
+                .get_contract_class_id_preimage(&class_id)
+                .await?;
+            let function_membership_witness = kernel_oracle
+                .get_function_membership_witness(&class_id, &selector)
+                .await?;
+            metadata.insert(
+                key,
+                serde_json::json!({
+                    "contractAddressPreimage": contract_preimage,
+                    "contractClassIdPreimage": class_preimage,
+                    "functionMembershipWitness": function_membership_witness,
+                }),
+            );
+        }
+
+        let kernel_entrypoint = if execution_result.entrypoint.public_inputs_fields.is_empty()
+            && !execution_result
+                .entrypoint
+                .nested_execution_results
+                .is_empty()
+        {
+            &execution_result.entrypoint.nested_execution_results[0]
+        } else {
+            &execution_result.entrypoint
+        };
+
+        let request = serde_json::json!({
+            "txRequestFields": Self::tx_request_fields_for_kernel(tx_request)?,
+            "firstNullifier": execution_result.first_nullifier,
+            "publicFunctionCalldata": execution_result.public_function_calldata,
+            "entrypoint": Self::kernel_proof_call_json(kernel_entrypoint),
+            "callMetadata": metadata,
+            "masterSecretKeys": self.kernel_master_secret_keys().await?,
+            "blockHash": block_hash,
+            "blockNumber": anchor.get_block_number(),
+            "threads": std::env::var("HARDWARE_CONCURRENCY").ok().and_then(|value| value.parse::<u32>().ok()),
+        });
+        tokio::fs::write(&request_path, serde_json::to_vec(&request)?)
+            .await
+            .map_err(|err| Error::InvalidData(format!("write private kernel request: {err}")))?;
+
+        let script_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tools/private_kernel_prove_from_rust.mjs");
+        let mut command = Command::new("node");
+        command
+            .arg(script_path)
+            .arg(&request_path)
+            .arg(&response_path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(path) = crate::kernel::prover::locate_aztec_packages_path() {
+            command.env("AZTEC_PACKAGES_PATH", path);
+        }
+
+        let output = command.output().await.map_err(|err| {
+            Error::InvalidData(format!("execute private kernel proof helper: {err}"))
+        })?;
+        if !output.status.success() {
+            return Err(Error::InvalidData(format!(
+                "private kernel proof helper failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+        let response_bytes = tokio::fs::read(&response_path)
+            .await
+            .map_err(|err| Error::InvalidData(format!("read private kernel response: {err}")))?;
+        let response: serde_json::Value = serde_json::from_slice(&response_bytes)?;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let proof = response
+            .get("proofBase64")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| Error::InvalidData("private kernel helper missing proof".into()))
+            .and_then(|value| {
+                b64.decode(value)
+                    .map_err(|err| Error::InvalidData(format!("decode helper proof: {err}")))
+            })?;
+        let public_inputs = response
+            .get("publicInputsBase64")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| Error::InvalidData("private kernel helper missing public inputs".into()))
+            .and_then(|value| {
+                b64.decode(value).map_err(|err| {
+                    Error::InvalidData(format!("decode helper public inputs: {err}"))
+                })
+            })?;
+        Ok((proof, public_inputs, response))
+    }
+
+    async fn kernel_master_secret_keys(&self) -> Result<Vec<Fr>, Error> {
+        let mut secrets = Vec::new();
+        for pk_hash in self.key_store.get_accounts().await? {
+            if let Some(secret) = self.key_store.get_secret_key(&pk_hash).await? {
+                secrets.push(secret);
+            }
+        }
+        Ok(secrets)
+    }
+
+    async fn prove_tx_with_real_kernels(
+        &self,
+        tx_request: &TxExecutionRequest,
+        execution_result: &crate::execution::execution_result::PrivateExecutionResult,
+        anchor: &AnchorBlockHeader,
+        contract_class_log_fields: Vec<aztec_core::tx::ContractClassLogFields>,
+        public_function_calldata: Vec<aztec_core::tx::HashedValues>,
+    ) -> Result<TxProvingResult, Error> {
+        let (proof, public_inputs, helper_response) = self
+            .prove_with_real_kernel_helper(tx_request, execution_result, anchor)
+            .await?;
+
+        let tx_hash = helper_response
+            .get("txHash")
+            .and_then(|value| value.as_str())
+            .map(aztec_core::tx::TxHash::from_hex)
+            .transpose()?;
+
+        Ok(TxProvingResult {
+            tx_hash,
+            private_execution_result: serde_json::json!({
+                "realProofs": true,
+                "helper": "private_kernel_prove_from_rust.mjs",
+            }),
+            public_inputs: aztec_core::tx::PrivateKernelTailCircuitPublicInputs::from_bytes(
+                public_inputs,
+            ),
+            chonk_proof: aztec_core::tx::ChonkProof::from_bytes(proof),
+            contract_class_log_fields,
+            public_function_calldata,
+            stats: Some(serde_json::json!({
+                "provingTimings": helper_response,
+            })),
+        })
+    }
 }
 
 fn public_function_signatures(artifact: &ContractArtifact) -> Vec<String> {
@@ -2129,12 +2409,14 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
     ) -> Result<CompleteAddress, Error> {
         tracing::debug!("registering account");
 
-        // Derive keys and store in key store
-        let _derived = self.key_store.add_account(secret_key).await?;
-
-        // Derive complete address
-        let complete =
-            complete_address_from_secret_key_and_partial_address(secret_key, partial_address)?;
+        // Derive once, store the account secret, then reuse the public keys for address derivation.
+        let derived = self.key_store.add_account(secret_key).await?;
+        let address = compute_address(&derived.public_keys, partial_address)?;
+        let complete = CompleteAddress {
+            address,
+            public_keys: derived.public_keys,
+            partial_address: *partial_address,
+        };
 
         // Store in address store
         self.address_store.add(&complete).await?;
@@ -2178,8 +2460,13 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
         tracing::debug!(address = %request.instance.address, "registering contract");
 
         if let Some(ref artifact) = request.artifact {
+            let allow_bbjs_canonical_ids = std::env::var("PXE_BENCH_REAL_PROOFS")
+                .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE"))
+                .unwrap_or(false);
             let computed_class_id = compute_contract_class_id_from_artifact(artifact)?;
-            if computed_class_id != request.instance.inner.current_contract_class_id {
+            if computed_class_id != request.instance.inner.current_contract_class_id
+                && !allow_bbjs_canonical_ids
+            {
                 return Err(Error::InvalidData(format!(
                     "artifact class id {} does not match instance class id {}",
                     computed_class_id, request.instance.inner.current_contract_class_id
@@ -2187,7 +2474,7 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
             }
 
             let computed_address = compute_contract_address_from_instance(&request.instance.inner)?;
-            if computed_address != request.instance.address {
+            if computed_address != request.instance.address && !allow_bbjs_canonical_ids {
                 return Err(Error::InvalidData(format!(
                     "artifact instance address {} does not match computed contract address {}",
                     request.instance.address, computed_address
@@ -2426,7 +2713,10 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
             }
         };
 
-        let aggregated = if has_public_calls {
+        let use_acvm_entrypoint =
+            has_public_calls || self.prover_enabled.load(AtomicOrdering::Relaxed);
+
+        let aggregated = if use_acvm_entrypoint {
             match self
                 .execute_entrypoint_via_acvm(
                     tx_request,
@@ -2439,8 +2729,9 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
             {
                 Ok(bundle) => bundle,
                 Err(Error::InvalidData(msg))
-                    if msg.contains("account contract not found")
-                        || msg.contains("account contract artifact not found") =>
+                    if has_public_calls
+                        && (msg.contains("account contract not found")
+                            || msg.contains("account contract artifact not found")) =>
                 {
                     let mut bundles = Vec::with_capacity(decoded_calls.len());
                     for call in &decoded_calls {
@@ -2502,6 +2793,18 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
                 aggregated.public_function_calldata.clone()
             }
         };
+
+        if self.prover_enabled.load(AtomicOrdering::Relaxed) {
+            return self
+                .prove_tx_with_real_kernels(
+                    tx_request,
+                    &aggregated.execution_result,
+                    &anchor,
+                    aggregated.contract_class_log_fields.clone(),
+                    sorted_calldata,
+                )
+                .await;
+        }
 
         // Process through simulated kernel
         let kernel_output = crate::kernel::SimulatedKernel::process(
@@ -2598,11 +2901,6 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
         call: &FunctionCall,
         opts: ExecuteUtilityOpts,
     ) -> Result<UtilityExecutionResult, Error> {
-        self.sync_block_state().await?;
-        // Always wipe the contract sync cache before utility execution.
-        // This ensures we pick up nullifier-tree changes from recently
-        // mined transactions (which may share the same block number).
-        self.contract_sync_service.wipe().await;
         let anchor = self.get_anchor_block_header().await?;
 
         // Look up the artifact for the target contract
@@ -2783,8 +3081,14 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stores::note_store::{NoteFilter, NoteStatus, StoredNote};
+    use crate::stores::private_event_store::StoredPrivateEvent;
+    use crate::stores::sender_tagging_store::PreTag;
+    use crate::stores::{InMemoryKvStore, SledKvStore};
+    use aztec_core::tx::TxHash;
     use aztec_core::types::{ContractInstance, PublicKeys};
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
 
     fn sample_public_artifact() -> ContractArtifact {
         ContractArtifact::from_json(
@@ -2817,6 +3121,19 @@ mod tests {
             }"#,
         )
         .unwrap()
+    }
+
+    fn sample_empty_artifact(name: &str) -> ContractArtifact {
+        ContractArtifact {
+            name: name.to_owned(),
+            functions: vec![],
+            outputs: Some(serde_json::json!({
+                "structs": {},
+                "globals": {},
+            })),
+            file_map: Some(serde_json::json!({})),
+            context_inputs_sizes: None,
+        }
     }
 
     /// A minimal mock AztecNode for testing.
@@ -3189,5 +3506,539 @@ mod tests {
             .unwrap();
         let anchor = pxe.anchor_block_store().get_block_header().await.unwrap();
         assert!(anchor.is_some());
+    }
+
+    #[derive(Debug, serde::Serialize)]
+    struct BenchOperation {
+        name: &'static str,
+        iterations: usize,
+        mean_ms: f64,
+        min_ms: f64,
+        p50_ms: f64,
+        p95_ms: f64,
+        max_ms: f64,
+        samples_ms: Vec<f64>,
+    }
+
+    #[derive(Debug, serde::Serialize)]
+    struct BenchReport {
+        benchmark: &'static str,
+        implementation: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        node_url: Option<String>,
+        scope: &'static str,
+        covered_operations: Vec<&'static str>,
+        excluded_operations: Vec<&'static str>,
+        iterations: usize,
+        operations: Vec<BenchOperation>,
+    }
+
+    fn bench_iterations() -> usize {
+        std::env::var("PXE_BENCH_ITERATIONS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(25)
+    }
+
+    fn bench_store_backend() -> String {
+        std::env::var("PXE_BENCH_RUST_STORE").unwrap_or_else(|_| "sled".to_owned())
+    }
+
+    async fn create_bench_pxe(node: MockNode) -> EmbeddedPxe<MockNode> {
+        match bench_store_backend().as_str() {
+            "memory" | "in-memory" => EmbeddedPxe::create(node, Arc::new(InMemoryKvStore::new()))
+                .await
+                .unwrap(),
+            "sled" => EmbeddedPxe::create(node, Arc::new(SledKvStore::open_temporary().unwrap()))
+                .await
+                .unwrap(),
+            other => panic!("unsupported PXE_BENCH_RUST_STORE={other}; expected sled or memory"),
+        }
+    }
+
+    fn percentile(sorted: &[f64], percentile: f64) -> f64 {
+        if sorted.is_empty() {
+            return 0.0;
+        }
+        let idx = ((sorted.len() - 1) as f64 * percentile).ceil() as usize;
+        sorted[idx.min(sorted.len() - 1)]
+    }
+
+    fn summarize(name: &'static str, mut samples_ms: Vec<f64>) -> BenchOperation {
+        let iterations = samples_ms.len();
+        let mut sorted = samples_ms.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let total: f64 = samples_ms.iter().sum();
+
+        BenchOperation {
+            name,
+            iterations,
+            mean_ms: if iterations == 0 {
+                0.0
+            } else {
+                total / iterations as f64
+            },
+            min_ms: sorted.first().copied().unwrap_or(0.0),
+            p50_ms: percentile(&sorted, 0.50),
+            p95_ms: percentile(&sorted, 0.95),
+            max_ms: sorted.last().copied().unwrap_or(0.0),
+            samples_ms: {
+                samples_ms.shrink_to_fit();
+                samples_ms
+            },
+        }
+    }
+
+    fn elapsed_ms(start: Instant) -> f64 {
+        start.elapsed().as_secs_f64() * 1_000.0
+    }
+
+    fn bench_contract_instance(
+        artifact: &ContractArtifact,
+        salt: u64,
+    ) -> ContractInstanceWithAddress {
+        let class_id = compute_contract_class_id_from_artifact(artifact).unwrap();
+        let inner = ContractInstance {
+            version: 1,
+            salt: Fr::from(salt),
+            deployer: AztecAddress::zero(),
+            current_contract_class_id: class_id,
+            original_contract_class_id: class_id,
+            initialization_hash: Fr::zero(),
+            public_keys: PublicKeys::default(),
+        };
+        let address = compute_contract_address_from_instance(&inner).unwrap();
+        ContractInstanceWithAddress { address, inner }
+    }
+
+    fn bench_note(contract: AztecAddress, owner: AztecAddress, i: u64) -> StoredNote {
+        StoredNote {
+            contract_address: contract,
+            owner,
+            storage_slot: Fr::from(1_000 + i),
+            randomness: Fr::from(2_000 + i),
+            note_nonce: Fr::from(3_000 + i),
+            note_hash: Fr::from(4_000 + i),
+            siloed_nullifier: Fr::from(5_000 + i),
+            note_data: vec![Fr::from(6_000 + i), Fr::from(7_000 + i)],
+            nullified: false,
+            is_pending: false,
+            nullification_block_number: None,
+            leaf_index: Some(i),
+            block_number: Some(1),
+            tx_index_in_block: Some(0),
+            note_index_in_tx: Some(i),
+            scopes: vec![owner],
+        }
+    }
+
+    fn bench_tx_hash(i: u64) -> TxHash {
+        let mut bytes = [0u8; 32];
+        bytes[24..].copy_from_slice(&i.to_be_bytes());
+        TxHash(bytes)
+    }
+
+    fn bench_private_event(
+        contract: AztecAddress,
+        scope: AztecAddress,
+        selector: EventSelector,
+        i: u64,
+    ) -> StoredPrivateEvent {
+        StoredPrivateEvent {
+            event_selector: selector,
+            randomness: Fr::from(8_000 + i),
+            msg_content: vec![Fr::from(9_000 + i), Fr::from(10_000 + i)],
+            siloed_event_commitment: Fr::from(11_000 + i),
+            contract_address: contract,
+            scopes: vec![scope],
+            tx_hash: bench_tx_hash(i),
+            l2_block_number: 1,
+            l2_block_hash: format!("0x{:064x}", i + 1),
+            tx_index_in_block: Some(0),
+            event_index_in_tx: Some(i),
+        }
+    }
+
+    fn covered_pxe_operations() -> Vec<&'static str> {
+        vec![
+            "EmbeddedPxe::create_ephemeral",
+            "Pxe::get_synced_block_header",
+            "Pxe::register_account",
+            "Pxe::get_registered_accounts",
+            "Pxe::register_sender",
+            "Pxe::get_senders",
+            "Pxe::remove_sender",
+            "Pxe::register_contract_class",
+            "Pxe::get_contract_artifact",
+            "Pxe::register_contract",
+            "Pxe::get_contract_instance",
+            "Pxe::get_contracts",
+            "Pxe::update_contract",
+            "Pxe::get_private_events",
+            "Pxe::stop",
+            "NoteStore::add_note",
+            "NoteStore::get_notes",
+            "NoteStore::apply_nullifiers",
+            "PrivateEventStore::store_private_event_log",
+            "PrivateEventStore::get_private_events",
+            "CapsuleStore::store/load/delete/copy",
+            "SenderTaggingStore::get_next_index",
+            "SenderTaggingStore::store/finalize/drop_pending_indexes",
+        ]
+    }
+
+    fn excluded_pxe_operations() -> Vec<&'static str> {
+        vec![
+            "Pxe::simulate_tx: needs a valid account tx request and ACIR fixture; benchmark separately from bookkeeping",
+            "Pxe::prove_tx: local proving/simulated-kernel lifecycle; benchmark separately from bookkeeping",
+            "Pxe::profile_tx: same tx-request dependency as simulate/prove",
+            "Pxe::execute_utility: ACVM execution benchmark; keep separate from registration/store microbenchmarks",
+        ]
+    }
+
+    fn write_bench_report(report: &BenchReport) {
+        let output = std::env::var("PXE_BENCH_OUTPUT").unwrap_or_else(|_| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/pxe-bench-rust.json")
+                .display()
+                .to_string()
+        });
+        if let Some(parent) = std::path::Path::new(&output).parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        let json = serde_json::to_string_pretty(report).unwrap();
+        std::fs::write(&output, json).unwrap();
+        eprintln!("wrote Rust PXE benchmark to {output}");
+    }
+
+    #[tokio::test]
+    #[ignore = "writes PXE benchmark JSON; run explicitly"]
+    async fn pxe_local_json_benchmark() {
+        let iterations = bench_iterations();
+        let node = MockNode::default();
+
+        let mut create_pxe = Vec::with_capacity(iterations);
+        let mut get_synced_block_header = Vec::with_capacity(iterations);
+        let mut register_account = Vec::with_capacity(iterations);
+        let mut get_registered_accounts = Vec::with_capacity(iterations);
+        let mut register_sender = Vec::with_capacity(iterations);
+        let mut get_senders = Vec::with_capacity(iterations);
+        let mut remove_sender = Vec::with_capacity(iterations);
+        let mut register_contract_class = Vec::with_capacity(iterations);
+        let mut get_contract_artifact = Vec::with_capacity(iterations);
+        let mut register_contract = Vec::with_capacity(iterations);
+        let mut register_contract_with_artifact = Vec::with_capacity(iterations);
+        let mut get_contract_instance = Vec::with_capacity(iterations);
+        let mut get_contracts = Vec::with_capacity(iterations);
+        let mut update_contract = Vec::with_capacity(iterations);
+        let mut get_private_events_empty = Vec::with_capacity(iterations);
+        let mut get_private_events_hit = Vec::with_capacity(iterations);
+        let mut note_store_add = Vec::with_capacity(iterations);
+        let mut note_store_get_active = Vec::with_capacity(iterations);
+        let mut note_store_nullify = Vec::with_capacity(iterations);
+        let mut note_store_get_nullified = Vec::with_capacity(iterations);
+        let mut private_event_store_add = Vec::with_capacity(iterations);
+        let mut private_event_store_get = Vec::with_capacity(iterations);
+        let mut capsule_store_write_read_delete = Vec::with_capacity(iterations);
+        let mut capsule_store_copy = Vec::with_capacity(iterations);
+        let mut sender_tagging_next_index = Vec::with_capacity(iterations);
+        let mut sender_tagging_pending_lifecycle = Vec::with_capacity(iterations);
+        let mut stop = Vec::with_capacity(iterations);
+
+        for i in 0..iterations {
+            let start = Instant::now();
+            let pxe = create_bench_pxe(node.clone()).await;
+            create_pxe.push(elapsed_ms(start));
+
+            let start = Instant::now();
+            pxe.get_synced_block_header().await.unwrap();
+            get_synced_block_header.push(elapsed_ms(start));
+
+            let start = Instant::now();
+            let sk = Fr::from(10_000 + i as u64);
+            let partial = Fr::from(20_000 + i as u64);
+            let account = pxe.register_account(&sk, &partial).await.unwrap();
+            register_account.push(elapsed_ms(start));
+
+            let start = Instant::now();
+            pxe.get_registered_accounts().await.unwrap();
+            get_registered_accounts.push(elapsed_ms(start));
+
+            let sender = AztecAddress::from(30_000 + i as u64);
+            let start = Instant::now();
+            pxe.register_sender(&sender).await.unwrap();
+            register_sender.push(elapsed_ms(start));
+
+            let start = Instant::now();
+            pxe.get_senders().await.unwrap();
+            get_senders.push(elapsed_ms(start));
+
+            let temporary_sender = AztecAddress::from(31_000 + i as u64);
+            pxe.register_sender(&temporary_sender).await.unwrap();
+            let start = Instant::now();
+            pxe.remove_sender(&temporary_sender).await.unwrap();
+            remove_sender.push(elapsed_ms(start));
+
+            let artifact = sample_empty_artifact(&format!("Bench{}", i));
+            let instance = bench_contract_instance(&artifact, 40_000 + i as u64);
+            let class_id = compute_contract_class_id_from_artifact(&artifact).unwrap();
+
+            let start = Instant::now();
+            pxe.register_contract_class(&artifact).await.unwrap();
+            register_contract_class.push(elapsed_ms(start));
+
+            let start = Instant::now();
+            pxe.get_contract_artifact(&class_id).await.unwrap();
+            get_contract_artifact.push(elapsed_ms(start));
+
+            let start = Instant::now();
+            pxe.register_contract(RegisterContractRequest {
+                instance: instance.clone(),
+                artifact: None,
+            })
+            .await
+            .unwrap();
+            register_contract.push(elapsed_ms(start));
+
+            let second_instance = bench_contract_instance(&artifact, 41_000 + i as u64);
+            let start = Instant::now();
+            pxe.register_contract(RegisterContractRequest {
+                instance: second_instance.clone(),
+                artifact: Some(artifact.clone()),
+            })
+            .await
+            .unwrap();
+            register_contract_with_artifact.push(elapsed_ms(start));
+
+            let start = Instant::now();
+            pxe.get_contract_instance(&instance.address).await.unwrap();
+            get_contract_instance.push(elapsed_ms(start));
+
+            let start = Instant::now();
+            pxe.get_contracts().await.unwrap();
+            get_contracts.push(elapsed_ms(start));
+
+            let start = Instant::now();
+            pxe.update_contract(&instance.address, &artifact)
+                .await
+                .unwrap();
+            update_contract.push(elapsed_ms(start));
+
+            let start = Instant::now();
+            pxe.get_private_events(
+                &EventSelector(Fr::from(1u64)),
+                PrivateEventFilter {
+                    contract_address: instance.address,
+                    scopes: vec![sender],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            get_private_events_empty.push(elapsed_ms(start));
+
+            let selector = EventSelector(Fr::from(2u64));
+            let event = bench_private_event(instance.address, sender, selector, i as u64);
+            pxe.private_event_store()
+                .store_private_event_log(&event, &sender)
+                .await
+                .unwrap();
+            let start = Instant::now();
+            pxe.get_private_events(
+                &selector,
+                PrivateEventFilter {
+                    contract_address: instance.address,
+                    scopes: vec![sender],
+                    from_block: Some(1),
+                    to_block: Some(2),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            get_private_events_hit.push(elapsed_ms(start));
+
+            let note = bench_note(instance.address, account.address, i as u64);
+            let start = Instant::now();
+            pxe.note_store().add_note(&note).await.unwrap();
+            note_store_add.push(elapsed_ms(start));
+
+            let start = Instant::now();
+            pxe.note_store()
+                .get_notes(&NoteFilter {
+                    contract_address: Some(instance.address),
+                    status: NoteStatus::Active,
+                    scopes: vec![account.address],
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            note_store_get_active.push(elapsed_ms(start));
+
+            let start = Instant::now();
+            pxe.note_store()
+                .apply_nullifiers(&[(note.siloed_nullifier, 2)])
+                .await
+                .unwrap();
+            note_store_nullify.push(elapsed_ms(start));
+
+            let start = Instant::now();
+            pxe.note_store()
+                .get_notes(&NoteFilter {
+                    contract_address: Some(instance.address),
+                    status: NoteStatus::Nullified,
+                    scopes: vec![account.address],
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            note_store_get_nullified.push(elapsed_ms(start));
+
+            let store_event = bench_private_event(
+                instance.address,
+                sender,
+                EventSelector(Fr::from(3u64)),
+                100 + i as u64,
+            );
+            let start = Instant::now();
+            pxe.private_event_store()
+                .store_private_event_log(&store_event, &sender)
+                .await
+                .unwrap();
+            private_event_store_add.push(elapsed_ms(start));
+
+            let start = Instant::now();
+            pxe.private_event_store()
+                .get_private_events(
+                    &store_event.event_selector,
+                    &crate::stores::private_event_store::PrivateEventQueryFilter {
+                        contract_address: instance.address,
+                        from_block: Some(1),
+                        to_block: Some(1),
+                        scopes: vec![sender],
+                        tx_hash: None,
+                    },
+                )
+                .await
+                .unwrap();
+            private_event_store_get.push(elapsed_ms(start));
+
+            let capsule_slot = Fr::from(12_000 + i as u64);
+            let start = Instant::now();
+            pxe.capsule_store
+                .store_capsule(
+                    &instance.address,
+                    &capsule_slot,
+                    &[Fr::from(1u64), Fr::from(2u64)],
+                )
+                .await
+                .unwrap();
+            pxe.capsule_store
+                .load_capsule(&instance.address, &capsule_slot)
+                .await
+                .unwrap();
+            pxe.capsule_store
+                .delete_capsule(&instance.address, &capsule_slot)
+                .await
+                .unwrap();
+            capsule_store_write_read_delete.push(elapsed_ms(start));
+
+            let src_slot = Fr::from(13_000 + i as u64);
+            let dst_slot = Fr::from(14_000 + i as u64);
+            pxe.capsule_store
+                .store_capsule(&instance.address, &src_slot, &[Fr::from(3u64)])
+                .await
+                .unwrap();
+            pxe.capsule_store
+                .store_capsule(
+                    &instance.address,
+                    &Fr::from(src_slot.to_usize() as u64 + 1),
+                    &[Fr::from(4u64)],
+                )
+                .await
+                .unwrap();
+            let start = Instant::now();
+            pxe.capsule_store
+                .copy_capsule(&instance.address, &src_slot, &dst_slot, 2)
+                .await
+                .unwrap();
+            capsule_store_copy.push(elapsed_ms(start));
+
+            let tag_secret = Fr::from(15_000 + i as u64);
+            let start = Instant::now();
+            pxe.sender_tagging_store
+                .get_next_index(&tag_secret)
+                .await
+                .unwrap();
+            sender_tagging_next_index.push(elapsed_ms(start));
+
+            let pending_secret = Fr::from(16_000 + i as u64);
+            let pending_hash = bench_tx_hash(200 + i as u64);
+            let start = Instant::now();
+            pxe.sender_tagging_store
+                .store_pending_indexes(&[PreTag {
+                    secret: pending_secret,
+                    index: 1,
+                    tx_hash: pending_hash,
+                }])
+                .await
+                .unwrap();
+            pxe.sender_tagging_store
+                .finalize_pending_indexes(&pending_secret, 1)
+                .await
+                .unwrap();
+            pxe.sender_tagging_store
+                .drop_pending_indexes(&[pending_hash])
+                .await
+                .unwrap();
+            sender_tagging_pending_lifecycle.push(elapsed_ms(start));
+
+            let start = Instant::now();
+            pxe.stop().await.unwrap();
+            stop.push(elapsed_ms(start));
+        }
+
+        let report = BenchReport {
+            benchmark: "pxe_local_json",
+            implementation: "rust",
+            node_url: None,
+            scope: "PXE local bookkeeping and stores only; no live-node tx submission or wait-for-inclusion. Rust store backend defaults to temporary sled; set PXE_BENCH_RUST_STORE=memory for old in-memory mode.",
+            covered_operations: covered_pxe_operations(),
+            excluded_operations: excluded_pxe_operations(),
+            iterations,
+            operations: vec![
+                summarize("create_pxe", create_pxe),
+                summarize("get_synced_block_header", get_synced_block_header),
+                summarize("register_account", register_account),
+                summarize("get_registered_accounts", get_registered_accounts),
+                summarize("register_sender", register_sender),
+                summarize("get_senders", get_senders),
+                summarize("remove_sender", remove_sender),
+                summarize("register_contract_class", register_contract_class),
+                summarize("get_contract_artifact", get_contract_artifact),
+                summarize("register_contract", register_contract),
+                summarize("register_contract_with_artifact", register_contract_with_artifact),
+                summarize("get_contract_instance", get_contract_instance),
+                summarize("get_contracts", get_contracts),
+                summarize("update_contract", update_contract),
+                summarize("get_private_events_empty", get_private_events_empty),
+                summarize("get_private_events_hit", get_private_events_hit),
+                summarize("note_store_add", note_store_add),
+                summarize("note_store_get_active", note_store_get_active),
+                summarize("note_store_nullify", note_store_nullify),
+                summarize("note_store_get_nullified", note_store_get_nullified),
+                summarize("private_event_store_add", private_event_store_add),
+                summarize("private_event_store_get", private_event_store_get),
+                summarize("capsule_store_write_read_delete", capsule_store_write_read_delete),
+                summarize("capsule_store_copy", capsule_store_copy),
+                summarize("sender_tagging_next_index", sender_tagging_next_index),
+                summarize(
+                    "sender_tagging_pending_lifecycle",
+                    sender_tagging_pending_lifecycle,
+                ),
+                summarize("stop", stop),
+            ],
+        };
+        write_bench_report(&report);
     }
 }

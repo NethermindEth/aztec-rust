@@ -5,7 +5,7 @@
 //! needed by the kernel prover and `TxProvingResult.toTx()`.
 
 use acir::native_types::WitnessMap;
-use acir::FieldElement;
+use acir::{native_types::Witness, FieldElement};
 
 use aztec_core::kernel_types::{
     CallContext, CountedContractClassLog, NoteAndSlot, ScopedNoteHash, ScopedNullifier,
@@ -31,6 +31,10 @@ pub struct PrivateCallExecutionResult {
     pub call_context: CallContext,
     /// Function return values.
     pub return_values: Vec<Fr>,
+    /// Raw `PrivateCircuitPublicInputs` fields extracted from the solved
+    /// witness. These are the canonical app public inputs consumed by the
+    /// private kernel prover.
+    pub public_inputs_fields: Vec<Fr>,
 
     // --- Side effects collected by the oracle ---
     /// Notes created during this call.
@@ -79,6 +83,7 @@ impl Default for PrivateCallExecutionResult {
             contract_address: AztecAddress::zero(),
             call_context: CallContext::default(),
             return_values: Vec::new(),
+            public_inputs_fields: Vec::new(),
             new_notes: Vec::new(),
             note_hash_nullifier_counter_map: std::collections::HashMap::new(),
             offchain_effects: Vec::new(),
@@ -96,6 +101,26 @@ impl Default for PrivateCallExecutionResult {
             end_side_effect_counter: 0,
             min_revertible_side_effect_counter: 0,
         }
+    }
+}
+
+impl PrivateCallExecutionResult {
+    /// `PrivateCircuitPublicInputs` is returned by private app circuits as a
+    /// fixed-width field array immediately after context inputs and user args.
+    pub const PRIVATE_CIRCUIT_PUBLIC_INPUTS_LENGTH: usize = 870;
+
+    pub fn extract_public_inputs_fields(
+        witness: &WitnessMap<FieldElement>,
+        params_size: usize,
+    ) -> Vec<Fr> {
+        (0..Self::PRIVATE_CIRCUIT_PUBLIC_INPUTS_LENGTH)
+            .map(|offset| {
+                witness
+                    .get(&Witness((params_size + offset) as u32))
+                    .map(crate::execution::field_conversion::fe_to_fr)
+                    .unwrap_or_else(Fr::zero)
+            })
+            .collect()
     }
 }
 

@@ -3,11 +3,12 @@
 //! Ports the TS `PrivateKernelProver` interface and `BBPrivateKernelProver`
 //! implementation that shells out to the `bb` binary for proof generation.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 
 use async_trait::async_trait;
 use aztec_core::error::Error;
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
@@ -292,25 +293,6 @@ impl BbPrivateKernelProver {
         }
     }
 
-    /// Generate a ChonkProof by writing inputs and invoking bb prove --scheme chonk.
-    async fn execute_chonk_proof(
-        &self,
-        inputs_path: &Path,
-        output_path: &Path,
-    ) -> Result<BbResult, Error> {
-        let args = vec![
-            "-o",
-            output_path.to_str().unwrap_or(""),
-            "--ivc_inputs_path",
-            inputs_path.to_str().unwrap_or(""),
-            "-v",
-            "--scheme",
-            "chonk",
-        ];
-
-        self.execute_bb("prove", &args).await
-    }
-
     /// Ensure working directory exists.
     async fn ensure_working_dir(&self) -> Result<PathBuf, Error> {
         let dir = &self.config.working_directory;
@@ -345,6 +327,24 @@ impl BbPrivateKernelProver {
             "kernel witness generation for {circuit_type} is not wired to real artifacts yet"
         )))
     }
+}
+
+pub(crate) fn locate_aztec_packages_path() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("AZTEC_PACKAGES_PATH") {
+        let path = PathBuf::from(path);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    let cwd = std::env::current_dir().ok()?;
+    [
+        cwd.join("../aztec-packages"),
+        cwd.join("../../aztec-packages"),
+        PathBuf::from("/Users/alexmetelli/source/aztec-packages"),
+    ]
+    .into_iter()
+    .find(|path| path.join("yarn-project/package.json").exists())
 }
 
 #[async_trait]
@@ -445,48 +445,88 @@ impl PrivateKernelProver for BbPrivateKernelProver {
             .await
             .map_err(|e| Error::InvalidData(format!("failed to create chonk dir: {e}")))?;
 
-        // Write execution steps as IVC inputs
-        let inputs_path = chonk_dir.join("ivc_inputs.bin");
-        let steps_data = serde_json::to_vec(execution_steps)?;
-        tokio::fs::write(&inputs_path, &steps_data)
-            .await
-            .map_err(|e| Error::InvalidData(format!("failed to write IVC inputs: {e}")))?;
-
-        let result = self.execute_chonk_proof(&inputs_path, &chonk_dir).await?;
-
-        match result {
-            BbResult::Success { duration_ms, .. } => {
-                tracing::info!("Generated ClientIVC proof in {}ms", duration_ms);
-
-                // Read proof and public inputs from output directory
-                let proof_path = chonk_dir.join("proof");
-                let pi_path = chonk_dir.join("public_inputs");
-
-                let proof = tokio::fs::read(&proof_path).await.unwrap_or_default();
-                let public_inputs = tokio::fs::read(&pi_path).await.unwrap_or_default();
-
-                // Cleanup if configured
-                if !self.config.skip_cleanup {
-                    let _ = tokio::fs::remove_dir_all(&chonk_dir).await;
-                }
-
-                Ok(ChonkProofWithPublicInputs {
-                    proof,
-                    public_inputs,
+        let request_path = chonk_dir.join("client_ivc_request.json");
+        let response_path = chonk_dir.join("client_ivc_response.json");
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let request = serde_json::json!({
+            "threads": self.config.hardware_concurrency,
+            "executionSteps": execution_steps.iter().map(|step| {
+                serde_json::json!({
+                    "functionName": step.function_name,
+                    "bytecodeBase64": b64.encode(&step.bytecode),
+                    "witnessBase64": b64.encode(&step.witness),
+                    "vkBase64": b64.encode(&step.vk),
                 })
-            }
-            BbResult::Failure { reason, .. } => {
-                let elapsed = start.elapsed().as_millis();
-                tracing::error!(
-                    "ChonkProof generation failed after {}ms: {}",
-                    elapsed,
-                    reason
-                );
-                Err(Error::InvalidData(format!(
-                    "ChonkProof generation failed: {reason}"
-                )))
-            }
+            }).collect::<Vec<_>>(),
+        });
+        tokio::fs::write(&request_path, serde_json::to_vec(&request)?)
+            .await
+            .map_err(|e| Error::InvalidData(format!("failed to write ClientIVC request: {e}")))?;
+
+        let script_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tools/client_ivc_prove.mjs");
+        let mut command = Command::new("node");
+        command
+            .arg(script_path)
+            .arg(&request_path)
+            .arg(&response_path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(aztec_packages_path) = locate_aztec_packages_path() {
+            command.env("AZTEC_PACKAGES_PATH", aztec_packages_path);
         }
+
+        let output = command
+            .output()
+            .await
+            .map_err(|e| Error::InvalidData(format!("failed to execute ClientIVC helper: {e}")))?;
+        if !output.status.success() {
+            let elapsed = start.elapsed().as_millis();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::error!(
+                "ClientIVC proof helper failed after {}ms: {}",
+                elapsed,
+                stderr
+            );
+            return Err(Error::InvalidData(format!(
+                "ClientIVC proof helper failed: {stderr}"
+            )));
+        }
+
+        let response_bytes = tokio::fs::read(&response_path)
+            .await
+            .map_err(|e| Error::InvalidData(format!("failed to read ClientIVC response: {e}")))?;
+        let response: serde_json::Value = serde_json::from_slice(&response_bytes)?;
+        let proof = response
+            .get("proofBase64")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| Error::InvalidData("ClientIVC response missing proof".into()))
+            .and_then(|value| {
+                b64.decode(value)
+                    .map_err(|e| Error::InvalidData(format!("invalid base64 ClientIVC proof: {e}")))
+            })?;
+        let public_inputs = response
+            .get("publicInputsBase64")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| Error::InvalidData("ClientIVC response missing public inputs".into()))
+            .and_then(|value| {
+                b64.decode(value).map_err(|e| {
+                    Error::InvalidData(format!("invalid base64 ClientIVC public inputs: {e}"))
+                })
+            })?;
+
+        if !self.config.skip_cleanup {
+            let _ = tokio::fs::remove_dir_all(&chonk_dir).await;
+        }
+
+        tracing::info!(
+            "Generated ClientIVC proof in {}ms",
+            start.elapsed().as_millis()
+        );
+        Ok(ChonkProofWithPublicInputs {
+            proof,
+            public_inputs,
+        })
     }
 
     async fn compute_gate_count_for_circuit(

@@ -4,6 +4,7 @@
 //! requests through the kernel circuit sequence:
 //! init → inner (looped) → reset (dynamic) → tail → hiding → ChonkProof
 
+use aztec_core::abi::FunctionSelector;
 use aztec_core::error::Error;
 use aztec_core::types::{AztecAddress, Fr};
 use aztec_node_client::AztecNode;
@@ -109,6 +110,9 @@ impl<'a, N: AztecNode> PrivateKernelExecutionProver<'a, N> {
 
         // Step 1: Init circuit — process the first private call
         let first = &execution_results[0];
+        if !self.config.simulate {
+            execution_steps.push(self.call_to_step(first).await?);
+        }
         let init_inputs = self.build_init_inputs(first).await?;
 
         let init_output = if self.config.simulate {
@@ -127,6 +131,9 @@ impl<'a, N: AztecNode> PrivateKernelExecutionProver<'a, N> {
         // Step 2: Inner circuits — process each subsequent nested call
         for (i, call) in execution_results.iter().enumerate().skip(1) {
             let inner_start = std::time::Instant::now();
+            if !self.config.simulate {
+                execution_steps.push(self.call_to_step(call).await?);
+            }
             let inner_inputs = self.build_inner_inputs(call, &current_output).await?;
 
             current_output = if self.config.simulate {
@@ -390,6 +397,40 @@ impl<'a, N: AztecNode> PrivateKernelExecutionProver<'a, N> {
             vk: output.verification_key.clone(),
             timings: Default::default(),
         }
+    }
+
+    /// Convert an executed private app circuit into a ClientIVC execution step.
+    ///
+    /// This mirrors the TS path, which interleaves app-circuit steps with the
+    /// private kernel init/inner/reset/tail/hiding steps before creating the
+    /// final ClientIVC proof.
+    async fn call_to_step(
+        &self,
+        call: &PrivateCallExecution,
+    ) -> Result<PrivateExecutionStep, Error> {
+        let function_name = self
+            .oracle
+            .get_debug_function_name(
+                &call.execution_result.call_context.contract_address,
+                &FunctionSelector::from_field(call.execution_result.call_context.function_selector),
+            )
+            .await?
+            .unwrap_or_else(|| "private_call".to_owned());
+        let witness = call
+            .execution_result
+            .partial_witness
+            .serialize()
+            .map_err(|err| {
+                Error::InvalidData(format!("failed to serialize private app witness: {err}"))
+            })?;
+
+        Ok(PrivateExecutionStep {
+            function_name,
+            bytecode: call.execution_result.acir.clone(),
+            witness,
+            vk: call.execution_result.vk.clone(),
+            timings: Default::default(),
+        })
     }
 }
 

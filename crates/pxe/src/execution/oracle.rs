@@ -77,6 +77,11 @@ pub struct PrivateExecutionOracle<'a, N: AztecNode> {
     pub(crate) nullifier_read_requests: Vec<ScopedReadRequest>,
     /// Minimum revertible side-effect counter.
     pub(crate) min_revertible_side_effect_counter: u32,
+    /// Whether execution has entered the revertible phase.
+    ///
+    /// This mirrors TS `ExecutionNoteCache`: a zero min counter means the
+    /// phase has not been entered, not that every counter is revertible.
+    pub(crate) in_revertible_phase: bool,
     /// Public function calldata preimages.
     public_function_calldata: Vec<HashedValues>,
     /// Captured nested execution results (for return value extraction).
@@ -652,6 +657,7 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             note_hash_read_requests: Vec::new(),
             nullifier_read_requests: Vec::new(),
             min_revertible_side_effect_counter: 0,
+            in_revertible_phase: false,
             public_function_calldata: Vec::new(),
             nested_results: Vec::new(),
             context_witness_prefix: Vec::new(),
@@ -782,6 +788,14 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
             // Counter management
             "notifySetMinRevertibleSideEffectCounter" => {
                 if let Some(counter) = args.first().and_then(|v| v.first()) {
+                    if self.in_revertible_phase {
+                        return Err(Error::InvalidData(format!(
+                            "cannot enter the revertible phase twice: previous {}, new {}",
+                            self.min_revertible_side_effect_counter,
+                            counter.to_usize()
+                        )));
+                    }
+                    self.in_revertible_phase = true;
                     self.min_revertible_side_effect_counter = counter.to_usize() as u32;
                 }
                 Ok(vec![])
@@ -792,7 +806,8 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
                     .and_then(|v| v.first())
                     .map(|f| f.to_usize() as u32)
                     .unwrap_or(0);
-                let revertible = counter >= self.min_revertible_side_effect_counter;
+                let revertible =
+                    self.in_revertible_phase && counter >= self.min_revertible_side_effect_counter;
                 Ok(vec![vec![Fr::from(revertible)]])
             }
 
@@ -1986,6 +2001,7 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
         // Inherit revertibility threshold so nested calls answer
         // `isSideEffectCounterRevertible` consistently with the parent.
         nested_oracle.min_revertible_side_effect_counter = self.min_revertible_side_effect_counter;
+        nested_oracle.in_revertible_phase = self.in_revertible_phase;
         // Share context witness prefix (block header + tx_context) for nested calls.
         nested_oracle.context_witness_prefix = self.context_witness_prefix.clone();
         // Share capsules so nested protocol contract handlers can access bytecode data.
@@ -2016,42 +2032,30 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
         )
         .await?;
 
-        // Compute the actual end counter from the maximum counter across all
-        // side effects produced by the nested call. The oracle's side_effect_counter
-        // may not advance when counters come from circuit args, so we scan
-        // note hashes, nullifiers, and logs to find the true maximum.
-        let end_counter = {
-            let nh_max = nested_oracle
-                .note_hashes
-                .iter()
-                .skip(inherited_note_hashes)
-                .map(|nh| nh.note_hash.counter)
-                .max()
-                .unwrap_or(0);
-            let null_max = nested_oracle
-                .nullifiers
-                .iter()
-                .skip(inherited_nullifiers)
-                .map(|n| n.nullifier.counter)
-                .max()
-                .unwrap_or(0);
-            let log_max = nested_oracle
-                .private_logs
-                .iter()
-                .map(|l| l.counter)
-                .max()
-                .unwrap_or(0);
-            let oracle_counter = nested_oracle.side_effect_counter;
-            nh_max.max(null_max).max(log_max).max(oracle_counter)
-        };
-
-        // Extract returns_hash and end_side_effect_counter from the PCPI
+        // Extract returns_hash and side-effect counters from the PCPI
         // in the witness, not from ACIR return values. The PCPI starts at
         // offset `nested_params_size` in the witness.
         let nested_ctx_size_for_pcpi = artifact.private_context_inputs_size(&function_name);
         let pcpi_start = nested_ctx_size_for_pcpi + cached_args.len();
         // PCPI layout: call_context(4), args_hash(1), returns_hash(1), ...
         const PCPI_RETURNS_HASH_OFFSET: usize = 5;
+        const PCPI_START_SIDE_EFFECT_COUNTER_OFFSET: usize = 41;
+        const PCPI_END_SIDE_EFFECT_COUNTER_OFFSET: usize = 42;
+
+        let nested_public_inputs_fields = PrivateCallExecutionResult::extract_public_inputs_fields(
+            &acvm_output.witness,
+            pcpi_start,
+        );
+        let start_counter = nested_public_inputs_fields
+            .get(PCPI_START_SIDE_EFFECT_COUNTER_OFFSET)
+            .copied()
+            .unwrap_or_else(Fr::zero)
+            .to_usize() as u32;
+        let end_counter = nested_public_inputs_fields
+            .get(PCPI_END_SIDE_EFFECT_COUNTER_OFFSET)
+            .copied()
+            .unwrap_or_else(Fr::zero)
+            .to_usize() as u32;
 
         let returns_hash = {
             let idx = acir::native_types::Witness((pcpi_start + PCPI_RETURNS_HASH_OFFSET) as u32);
@@ -2091,26 +2095,66 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
                 target_address,
             );
 
-        // Capture the nested call's return values for extraction by simulate_tx.
-        // Only return_values are stored here — side effects (nullifiers, note
-        // hashes, etc.) are merged into the parent oracle below and must NOT be
-        // duplicated in nested_execution_results or the kernel will reject the
-        // tx with "Duplicate nullifier".
-        //
-        // For private functions with databus returns, the main circuit's return
-        // values are the full PCPI structure.  The user's actual return values
-        // live in the first ACIR sub-circuit call (the inner function body),
-        // captured by `first_acir_call_return_values`.
-        {
-            let mut minimal = PrivateCallExecutionResult::default();
-            minimal.contract_address = target_address;
-            minimal.return_values = if !acvm_output.first_acir_call_return_values.is_empty() {
+        // Preserve the full nested execution for the real private-kernel
+        // prover. The simulated-kernel path still consumes the flattened
+        // side-effect vectors collected below.
+        self.nested_results.push(PrivateCallExecutionResult {
+            acir: acvm_output.acir_bytecode.clone(),
+            vk: acvm_output.verification_key.clone(),
+            partial_witness: acvm_output.witness.clone(),
+            contract_address: target_address,
+            call_context: CallContext {
+                msg_sender: self.contract_address,
+                contract_address: target_address,
+                function_selector: selector_field,
+                is_static_call: is_static,
+            },
+            return_values: if !acvm_output.first_acir_call_return_values.is_empty() {
                 acvm_output.first_acir_call_return_values.clone()
             } else {
                 acvm_output.return_values.clone()
-            };
-            self.nested_results.push(minimal);
-        }
+            },
+            public_inputs_fields: nested_public_inputs_fields,
+            new_notes: nested_oracle
+                .new_notes
+                .iter()
+                .skip(inherited_new_notes)
+                .cloned()
+                .collect(),
+            note_hash_nullifier_counter_map: nested_oracle
+                .note_hash_nullifier_counter_map
+                .iter()
+                .filter(|(counter, _)| !inherited_counter_map_keys.contains(counter))
+                .map(|(counter, nullifier_counter)| (*counter, *nullifier_counter))
+                .collect(),
+            offchain_effects: nested_oracle.offchain_effects.clone(),
+            pre_tags: Vec::new(),
+            nested_execution_results: nested_oracle.nested_results.clone(),
+            contract_class_logs: nested_oracle.contract_class_logs.clone(),
+            note_hashes: nested_oracle
+                .note_hashes
+                .iter()
+                .skip(inherited_note_hashes)
+                .cloned()
+                .collect(),
+            nullifiers: nested_oracle
+                .nullifiers
+                .iter()
+                .skip(inherited_nullifiers)
+                .cloned()
+                .collect(),
+            note_hash_read_requests: nested_oracle.note_hash_read_requests.clone(),
+            nullifier_read_requests: nested_oracle.nullifier_read_requests.clone(),
+            private_logs: Self::merge_nested_private_logs(
+                nested_oracle.private_logs.clone(),
+                circuit_logs.clone(),
+            ),
+            public_call_requests: nested_oracle.public_call_requests.clone(),
+            public_teardown_call_request: nested_oracle.public_teardown_call_request.clone(),
+            start_side_effect_counter: start_counter,
+            end_side_effect_counter: end_counter,
+            min_revertible_side_effect_counter: nested_oracle.min_revertible_side_effect_counter,
+        });
 
         // Merge the nested execution cache back into the parent.
         for (k, v) in nested_oracle.execution_cache {
@@ -2193,7 +2237,7 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
     ) -> PrivateExecutionResult {
         let entrypoint = PrivateCallExecutionResult {
             acir: acvm_output.acir_bytecode,
-            vk: Vec::new(), // VK extracted later from artifact
+            vk: acvm_output.verification_key,
             partial_witness: acvm_output.witness,
             contract_address,
             call_context: CallContext {
@@ -2203,6 +2247,7 @@ impl<'a, N: AztecNode + 'static> PrivateExecutionOracle<'a, N> {
                 is_static_call: self.call_is_static,
             },
             return_values: acvm_output.return_values,
+            public_inputs_fields: Vec::new(),
             new_notes: self.new_notes.clone(),
             note_hash_nullifier_counter_map: self.note_hash_nullifier_counter_map.clone(),
             offchain_effects: self.offchain_effects.clone(),

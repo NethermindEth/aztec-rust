@@ -3,11 +3,13 @@
 //! Ports the TS `PrivateKernelOracle` which provides contract preimages,
 //! membership witnesses, VK witnesses, and other data needed by kernel circuits.
 
-use aztec_core::abi::{ContractArtifact, FunctionSelector};
+use aztec_core::abi::{ContractArtifact, FunctionSelector, FunctionType};
+use aztec_core::constants::{self, domain_separator};
 use aztec_core::error::Error;
 use aztec_core::hash::{
     compute_artifact_hash, compute_private_functions_root_from_artifact,
-    compute_public_bytecode_commitment, compute_salted_initialization_hash,
+    compute_public_bytecode_commitment, compute_salted_initialization_hash, poseidon2_hash,
+    poseidon2_hash_with_separator,
 };
 use aztec_core::types::{AztecAddress, Fr};
 use aztec_node_client::AztecNode;
@@ -125,9 +127,18 @@ impl<'a, N: AztecNode> PrivateKernelOracle<'a, N> {
         class_id: &Fr,
         function_selector: &Fr,
     ) -> Result<serde_json::Value, Error> {
-        Err(Error::InvalidData(format!(
-            "private function membership witness for class {class_id} selector {function_selector} is not implemented yet"
-        )))
+        let artifact = self
+            .contract_store
+            .get_artifact(class_id)
+            .await?
+            .ok_or_else(|| {
+                Error::InvalidData(format!(
+                    "contract artifact not found for private function witness class {class_id}"
+                ))
+            })?;
+        let selector = FunctionSelector::from_field(*function_selector);
+        let (leaf_index, sibling_path) = private_function_membership_witness(&artifact, selector)?;
+        Ok(membership_witness_json(leaf_index, sibling_path))
     }
 
     /// Get VK membership witness in the protocol VK indexed merkle tree.
@@ -137,9 +148,16 @@ impl<'a, N: AztecNode> PrivateKernelOracle<'a, N> {
         &self,
         vk_hash: &Fr,
     ) -> Result<serde_json::Value, Error> {
-        Err(Error::InvalidData(format!(
-            "protocol VK membership witness for vk hash {vk_hash} is not implemented yet"
-        )))
+        let tree = load_vk_tree()?;
+        let leaf_count = (tree.nodes.len() + 1) / 2;
+        let leaf_index = tree
+            .nodes
+            .iter()
+            .take(leaf_count)
+            .position(|leaf| leaf == vk_hash)
+            .ok_or_else(|| Error::InvalidData(format!("VK hash {vk_hash} not found in VK tree")))?;
+        let sibling_path = sibling_path_from_flat_tree(&tree.nodes, leaf_index)?;
+        Ok(membership_witness_json(leaf_index, sibling_path))
     }
 
     /// Get note hash membership witness at the current block.
@@ -247,25 +265,213 @@ fn extract_packed_public_bytecode(artifact: &ContractArtifact) -> Vec<u8> {
         .unwrap_or_default()
 }
 
-fn decode_bytecode(encoded: &str) -> Vec<u8> {
-    let Some(hex) = encoded.strip_prefix("0x") else {
-        return Vec::new();
-    };
-    let mut bytes = Vec::with_capacity(hex.len() / 2);
-    let mut chars = hex.as_bytes().chunks_exact(2);
-    for pair in &mut chars {
-        if let Ok(pair_str) = std::str::from_utf8(pair) {
-            if let Ok(byte) = u8::from_str_radix(pair_str, 16) {
-                bytes.push(byte);
-            } else {
-                return Vec::new();
-            }
-        } else {
-            return Vec::new();
+fn membership_witness_json(leaf_index: usize, sibling_path: Vec<Fr>) -> serde_json::Value {
+    serde_json::json!({
+        "leafIndex": leaf_index,
+        "siblingPath": sibling_path,
+    })
+}
+
+fn private_function_membership_witness(
+    artifact: &ContractArtifact,
+    selector: FunctionSelector,
+) -> Result<(usize, Vec<Fr>), Error> {
+    let mut private_fns: Vec<(FunctionSelector, Fr)> = artifact
+        .functions
+        .iter()
+        .filter(|function| function.function_type == FunctionType::Private)
+        .map(|function| {
+            let selector = function.selector.unwrap_or_else(|| {
+                FunctionSelector::from_name_and_parameters(&function.name, &function.parameters)
+            });
+            let vk_hash = function.verification_key_hash.unwrap_or(Fr::zero());
+            (selector, vk_hash)
+        })
+        .collect();
+    private_fns.sort_by_key(|(selector, _)| u32::from_be_bytes(selector.0));
+
+    let leaf_index = private_fns
+        .iter()
+        .position(|(function_selector, _)| *function_selector == selector)
+        .ok_or_else(|| {
+            Error::InvalidData(format!(
+                "private function selector {selector} not found in artifact {}",
+                artifact.name
+            ))
+        })?;
+
+    let leaf_count = 1usize << constants::FUNCTION_TREE_HEIGHT;
+    let zero_leaf = poseidon2_hash(&[Fr::zero(), Fr::zero()]);
+    let mut leaves = private_fns
+        .into_iter()
+        .map(|(selector, vk_hash)| {
+            poseidon2_hash_with_separator(
+                &[selector.to_field(), vk_hash],
+                domain_separator::PRIVATE_FUNCTION_LEAF,
+            )
+        })
+        .collect::<Vec<_>>();
+    leaves.resize(leaf_count, zero_leaf);
+
+    Ok((leaf_index, sibling_path_from_leaves(leaves, leaf_index)?))
+}
+
+fn sibling_path_from_leaves(mut level: Vec<Fr>, leaf_index: usize) -> Result<Vec<Fr>, Error> {
+    if level.is_empty() || leaf_index >= level.len() {
+        return Err(Error::InvalidData(format!(
+            "invalid leaf index {leaf_index} for tree with {} leaves",
+            level.len()
+        )));
+    }
+
+    let mut index = leaf_index;
+    let mut sibling_path = Vec::new();
+    while level.len() > 1 {
+        let sibling_index = if index & 1 == 1 { index - 1 } else { index + 1 };
+        sibling_path.push(level.get(sibling_index).copied().unwrap_or_else(Fr::zero));
+
+        let mut next = Vec::with_capacity(level.len().div_ceil(2));
+        for chunk in level.chunks(2) {
+            let left = chunk[0];
+            let right = *chunk.get(1).unwrap_or(&Fr::zero());
+            next.push(poseidon2_hash(&[left, right]));
+        }
+        level = next;
+        index >>= 1;
+    }
+    Ok(sibling_path)
+}
+
+#[derive(Debug)]
+struct VkTree {
+    nodes: Vec<Fr>,
+}
+
+fn load_vk_tree() -> Result<VkTree, Error> {
+    let path = locate_vk_tree_path().ok_or_else(|| {
+        Error::InvalidData(
+            "VK tree not found; set PXE_VK_TREE_PATH or AZTEC_PACKAGES_PATH so Rust can load noir-protocol-circuits-types/src/vk_tree.ts".into(),
+        )
+    })?;
+    let contents = std::fs::read_to_string(&path).map_err(|err| {
+        Error::InvalidData(format!(
+            "failed to read VK tree from {}: {err}",
+            path.display()
+        ))
+    })?;
+    let nodes = parse_vk_tree_nodes(&contents)?;
+    Ok(VkTree { nodes })
+}
+
+fn locate_vk_tree_path() -> Option<std::path::PathBuf> {
+    if let Ok(path) = std::env::var("PXE_VK_TREE_PATH") {
+        let path = std::path::PathBuf::from(path);
+        if path.exists() {
+            return Some(path);
         }
     }
-    if !chars.remainder().is_empty() {
-        return Vec::new();
+
+    let mut candidates = Vec::new();
+    if let Ok(path) = std::env::var("AZTEC_PACKAGES_PATH") {
+        let root = std::path::PathBuf::from(path);
+        candidates.push(root.join("yarn-project/noir-protocol-circuits-types/src/vk_tree.ts"));
+        candidates.push(root.join("noir-protocol-circuits-types/src/vk_tree.ts"));
     }
-    bytes
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(
+            cwd.join("../aztec-packages/yarn-project/noir-protocol-circuits-types/src/vk_tree.ts"),
+        );
+        candidates.push(
+            cwd.join(
+                "../../aztec-packages/yarn-project/noir-protocol-circuits-types/src/vk_tree.ts",
+            ),
+        );
+    }
+
+    candidates.into_iter().find(|path| path.exists())
+}
+
+fn parse_vk_tree_nodes(contents: &str) -> Result<Vec<Fr>, Error> {
+    let mut nodes = Vec::new();
+    let bytes = contents.as_bytes();
+    let mut i = 0;
+    while i + 66 <= bytes.len() {
+        if bytes[i] == b'\'' {
+            let hex_start = i + 1;
+            let hex_end = hex_start + 64;
+            if hex_end < bytes.len()
+                && bytes[hex_end] == b'\''
+                && bytes[hex_start..hex_end]
+                    .iter()
+                    .all(|byte| byte.is_ascii_hexdigit())
+            {
+                let hex = std::str::from_utf8(&bytes[hex_start..hex_end]).map_err(|err| {
+                    Error::InvalidData(format!("invalid UTF-8 in VK tree hex node: {err}"))
+                })?;
+                nodes.push(Fr::from_hex(&format!("0x{hex}"))?);
+                i = hex_end + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    if nodes.is_empty() {
+        return Err(Error::InvalidData("VK tree contains no nodes".into()));
+    }
+    if !nodes.len().is_power_of_two() && (nodes.len() + 1).is_power_of_two() {
+        Ok(nodes)
+    } else {
+        Err(Error::InvalidData(format!(
+            "VK tree has invalid flat node count {}; expected 2^(height + 1) - 1",
+            nodes.len()
+        )))
+    }
+}
+
+fn sibling_path_from_flat_tree(nodes: &[Fr], leaf_index: usize) -> Result<Vec<Fr>, Error> {
+    let leaf_count = (nodes.len() + 1) / 2;
+    if leaf_index >= leaf_count {
+        return Err(Error::InvalidData(format!(
+            "invalid VK leaf index {leaf_index} for {leaf_count} leaves"
+        )));
+    }
+
+    let mut row_size = leaf_count;
+    let mut row_offset = 0usize;
+    let mut index = leaf_index;
+    let mut sibling_path = Vec::new();
+    while row_size > 1 {
+        let sibling_index = if index & 1 == 1 { index - 1 } else { index + 1 };
+        sibling_path.push(nodes[row_offset + sibling_index]);
+        row_offset += row_size;
+        row_size >>= 1;
+        index >>= 1;
+    }
+    Ok(sibling_path)
+}
+
+fn decode_bytecode(encoded: &str) -> Vec<u8> {
+    if let Some(hex) = encoded.strip_prefix("0x") {
+        let mut bytes = Vec::with_capacity(hex.len() / 2);
+        let mut chunks = hex.as_bytes().chunks_exact(2);
+        for pair in &mut chunks {
+            let Ok(pair) = std::str::from_utf8(pair) else {
+                return Vec::new();
+            };
+            let Ok(byte) = u8::from_str_radix(pair, 16) else {
+                return Vec::new();
+            };
+            bytes.push(byte);
+        }
+        if !chunks.remainder().is_empty() {
+            return Vec::new();
+        }
+        return bytes;
+    }
+
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .unwrap_or_default()
 }

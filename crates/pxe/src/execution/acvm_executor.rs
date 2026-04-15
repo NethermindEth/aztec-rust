@@ -29,6 +29,8 @@ pub struct AcvmExecutionOutput {
     pub witness: WitnessMap<FieldElement>,
     /// The ACIR bytecode used (for kernel proving).
     pub acir_bytecode: Vec<u8>,
+    /// The function verification key used for real private app proving.
+    pub verification_key: Vec<u8>,
     /// Return values from the first ACIR sub-circuit call (if any).
     /// Used to extract the inner function's return value from an entrypoint wrapper.
     pub first_acir_call_return_values: Vec<Fr>,
@@ -371,11 +373,19 @@ impl AcvmExecutor {
             function.bytecode.as_deref().unwrap_or(""),
         )
         .unwrap_or_default();
+        let verification_key = function
+            .verification_key
+            .as_deref()
+            .and_then(|value| {
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, value).ok()
+            })
+            .unwrap_or_default();
 
         Ok(AcvmExecutionOutput {
             return_values,
             witness,
             acir_bytecode,
+            verification_key,
             first_acir_call_return_values,
         })
     }
