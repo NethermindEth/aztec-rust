@@ -293,6 +293,7 @@ async fn get_shared_state() -> Option<&'static SharedState> {
         .as_ref()
 }
 
+#[allow(clippy::cognitive_complexity)]
 async fn init_shared_state() -> Option<SharedState> {
     let (wallet, default_account_address) = setup_wallet(TEST_ACCOUNT_0).await?;
 

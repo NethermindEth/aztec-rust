@@ -226,6 +226,7 @@ async fn test_calls_public_function(state: &AccountTestState) {
 /// Mirrors:
 ///   Create a random account contract, replace the account in the wallet,
 ///   then `expect(child.methods.value(42).simulate(...)).rejects.toThrow('Cannot satisfy constraint')`
+#[allow(clippy::cognitive_complexity)]
 async fn test_fails_invalid_signature(state: &AccountTestState) {
     // Create a wallet with a random (wrong) signing key for the same address.
     let random_secret = Fr::from(next_unique_salt());

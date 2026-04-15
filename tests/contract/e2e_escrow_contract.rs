@@ -57,6 +57,7 @@ struct EscrowTestSetup {
 ///
 /// Returns `None` if the escrow compiled artifact is missing or the live node
 /// is unreachable.
+#[allow(clippy::cognitive_complexity)]
 async fn setup_escrow() -> Option<EscrowTestSetup> {
     let escrow_artifact = load_escrow_compiled_artifact()?;
 

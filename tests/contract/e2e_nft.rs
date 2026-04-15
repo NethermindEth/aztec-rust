@@ -55,6 +55,7 @@ async fn get_shared_state() -> Option<&'static NftState> {
         .as_ref()
 }
 
+#[allow(clippy::cognitive_complexity)]
 async fn init_shared_state() -> Option<NftState> {
     let artifact = load_nft_artifact()?;
 

@@ -221,6 +221,7 @@ async fn utility_return_fields(
 
 /// Exercise `method_name` with undefined/null/some values, dispatched via the
 /// SDK entry point appropriate for the function's `abi_*` attribute.
+#[allow(clippy::cognitive_complexity)]
 async fn exercise_optional(method_name: &str, dispatch: Dispatch) {
     let Some(s) = get_shared_state().await else {
         return;

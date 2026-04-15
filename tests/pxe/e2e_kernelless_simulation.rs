@@ -64,6 +64,7 @@ async fn get_shared_state() -> Option<&'static KernellessState> {
         .as_ref()
 }
 
+#[allow(clippy::cognitive_complexity)]
 async fn init_shared_state() -> Option<KernellessState> {
     let amm_artifact = load_amm_artifact()?;
 

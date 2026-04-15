@@ -296,6 +296,7 @@ pub async fn register_protocol_contracts(pxe: &EmbeddedPxe<HttpNodeClient>) {
     }
 }
 
+#[allow(clippy::cognitive_complexity)]
 pub async fn setup_wallet(account: ImportedTestAccount) -> Option<(TestWallet, AztecAddress)> {
     let node = create_aztec_node_client(node_url());
     if node.get_node_info().await.is_err() {
@@ -358,6 +359,7 @@ pub async fn setup_wallet_with_accounts(
     Some((wallet, address))
 }
 
+#[allow(clippy::cognitive_complexity)]
 pub async fn create_wallet(
     primary: ImportedTestAccount,
     extra: &[ImportedTestAccount],

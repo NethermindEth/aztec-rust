@@ -63,6 +63,7 @@ async fn get_shared_state() -> Option<&'static FeeJuiceState> {
         .as_ref()
 }
 
+#[allow(clippy::cognitive_complexity)]
 async fn init_shared_state() -> Option<FeeJuiceState> {
     let (wallet, alice_address) = setup_wallet(TEST_ACCOUNT_0).await?;
 

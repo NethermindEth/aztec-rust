@@ -177,6 +177,7 @@ async fn get_shared_state() -> Option<&'static PublicPaymentState> {
         .as_ref()
 }
 
+#[allow(clippy::cognitive_complexity)]
 async fn init_shared_state() -> Option<PublicPaymentState> {
     let (wallet, alice_address) = setup_wallet(TEST_ACCOUNT_0).await?;
     let bob_address = imported_complete_address(TEST_ACCOUNT_1).address;

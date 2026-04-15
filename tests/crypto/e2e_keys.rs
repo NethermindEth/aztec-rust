@@ -243,6 +243,7 @@ fn point_hash(x: Fr, y: Fr, is_infinite: bool) -> Fr {
 /// Extract all note hashes and nullifiers from blocks `1..=current_block`.
 ///
 /// Returns `(all_note_hashes, all_nullifiers)`.
+#[allow(clippy::cognitive_complexity)]
 async fn get_all_note_hashes_and_nullifiers(node: &HttpNodeClient) -> (Vec<Fr>, Vec<Fr>) {
     let current_block = node.get_block_number().await.expect("get block number");
 

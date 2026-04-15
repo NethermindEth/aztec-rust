@@ -215,6 +215,7 @@ pub fn load_schnorr_account_artifact() -> ContractArtifact {
     ContractArtifact::from_nargo_json(json).expect("parse schnorr_account_contract_compiled.json")
 }
 
+#[allow(clippy::map_unwrap_or)]
 fn load_real_proof_schnorr_account_artifact() -> Option<ContractArtifact> {
     let aztec_packages = std::env::var("AZTEC_PACKAGES_PATH")
         .or_else(|_| std::env::var("PXE_AZTEC_PACKAGES_PATH"))
@@ -230,6 +231,7 @@ fn load_real_proof_schnorr_account_artifact() -> Option<ContractArtifact> {
     Some(fill_real_proof_vk_hashes(artifact, "schnorr-account"))
 }
 
+#[allow(clippy::map_unwrap_or)]
 fn fill_real_proof_vk_hashes(mut artifact: ContractArtifact, name: &str) -> ContractArtifact {
     if artifact.functions.iter().all(|function| {
         function.verification_key.is_none() || function.verification_key_hash.is_some()
@@ -566,6 +568,7 @@ pub async fn seed_signing_key_note(
 /// Registers the Schnorr account contract artifact, instance, and signing key
 /// note in the PXE so that `execute_entrypoint_via_acvm` can run the real Noir
 /// entrypoint circuit (required for public function calls).
+#[allow(clippy::cognitive_complexity)]
 pub async fn setup_wallet(account: ImportedTestAccount) -> Option<(TestWallet, AztecAddress)> {
     let url = node_url();
     let node = create_aztec_node_client(&url);
@@ -719,6 +722,7 @@ pub async fn register_account_for_authwit(
 ///
 /// Includes authwit contract registration and signing key note injection.
 /// This is the full-featured variant used by token tests that need authwit.
+#[allow(clippy::cognitive_complexity)]
 pub async fn create_wallet(
     primary: ImportedTestAccount,
     extra: &[ImportedTestAccount],
@@ -1308,6 +1312,7 @@ pub struct TokenTestState {
 /// Initialise a [`TokenTestState`]: two wallets (via `setup_wallet`) with
 /// sender registration, a deployed token contract registered on both PXEs,
 /// and configurable minting to admin.
+#[allow(clippy::cognitive_complexity)]
 pub async fn init_token_test_state(public_mint: u64, private_mint: u64) -> Option<TokenTestState> {
     let (admin_wallet, admin_address) = setup_wallet(TEST_ACCOUNT_0).await?;
     let (account1_wallet, account1_address) = setup_wallet(TEST_ACCOUNT_1).await?;
