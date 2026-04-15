@@ -4,6 +4,7 @@
 //! TypeScript SDK's hashing utilities.
 
 use sha2::{Digest, Sha256};
+use std::sync::OnceLock;
 
 use crate::abi::{
     encode_arguments, AbiValue, ContractArtifact, FunctionArtifact, FunctionSelector, FunctionType,
@@ -21,6 +22,10 @@ use crate::Error;
 ///
 /// This matches barretenberg's `poseidon2_hash` and the TS SDK's `poseidon2Hash`.
 pub fn poseidon2_hash(inputs: &[Fr]) -> Fr {
+    if use_external_poseidon2() {
+        return poseidon2_hash_with_bbjs(inputs);
+    }
+
     use ark_bn254::Fr as ArkFr;
     use taceo_poseidon2::bn254::t4::permutation;
 
@@ -54,6 +59,45 @@ pub fn poseidon2_hash(inputs: &[Fr]) -> Fr {
     state = permutation(&state);
 
     Fr(state[0])
+}
+
+fn use_external_poseidon2() -> bool {
+    std::env::var("AZTEC_RS_USE_TS_POSEIDON")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE"))
+        .unwrap_or(false)
+}
+
+fn poseidon2_hash_with_bbjs(inputs: &[Fr]) -> Fr {
+    let script = locate_repo_tool("poseidon2_hash.mjs").unwrap_or_else(|| {
+        panic!("tools/poseidon2_hash.mjs not found; required for AZTEC_RS_USE_TS_POSEIDON")
+    });
+    let mut command = std::process::Command::new("node");
+    command.arg(script);
+    for input in inputs {
+        command.arg(input.to_string());
+    }
+    let output = command.output().expect("run bb.js poseidon2 helper");
+    if !output.status.success() {
+        panic!(
+            "bb.js poseidon2 helper failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let value = String::from_utf8(output.stdout).expect("poseidon2 helper output is utf8");
+    Fr::from_hex(value.trim()).expect("poseidon2 helper output is a field")
+}
+
+fn locate_repo_tool(name: &str) -> Option<std::path::PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(path) = std::env::var("AZTEC_RS_REPO") {
+        candidates.push(std::path::PathBuf::from(path).join("tools").join(name));
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("tools").join(name));
+        candidates.push(cwd.join("../tools").join(name));
+        candidates.push(cwd.join("../../tools").join(name));
+    }
+    candidates.into_iter().find(|path| path.exists())
 }
 
 /// Compute a Poseidon2 hash over raw bytes using the same chunking as Aztec's
@@ -489,8 +533,18 @@ pub fn compute_initialization_hash_from_encoded(selector: Fr, encoded_args: &[Fr
 /// Each leaf = `poseidon2_hash_with_separator([selector, vk_hash], PRIVATE_FUNCTION_LEAF)`.
 /// Tree height = `FUNCTION_TREE_HEIGHT` (7).
 pub fn compute_private_functions_root(private_functions: &mut [(FunctionSelector, Fr)]) -> Fr {
+    static EMPTY_PRIVATE_FUNCTIONS_ROOT: OnceLock<Fr> = OnceLock::new();
+
     let tree_height = constants::FUNCTION_TREE_HEIGHT;
     let num_leaves = 1usize << tree_height; // 128
+
+    if private_functions.is_empty() {
+        return *EMPTY_PRIVATE_FUNCTIONS_ROOT.get_or_init(|| {
+            let zero_leaf = poseidon2_hash(&[Fr::zero(), Fr::zero()]);
+            let leaves = vec![zero_leaf; num_leaves];
+            poseidon_merkle_root(&leaves)
+        });
+    }
 
     // Sort by selector bytes (big-endian u32 value).
     private_functions.sort_by_key(|(sel, _)| u32::from_be_bytes(sel.0));
@@ -718,16 +772,22 @@ fn compute_artifact_metadata_hash(artifact: &ContractArtifact) -> Fr {
 ///
 /// Encodes bytecode as field elements (31 bytes each) and hashes with Poseidon2.
 pub fn compute_public_bytecode_commitment(packed_bytecode: &[u8]) -> Fr {
-    let fields = crate::abi::buffer_as_fields(
-        packed_bytecode,
-        constants::MAX_PACKED_PUBLIC_BYTECODE_SIZE_IN_FIELDS,
-    )
-    .expect("packed bytecode exceeds maximum field count");
-    let byte_length = fields[0].to_usize() as u64;
-    let length_in_fields = byte_length.div_ceil(31) as usize;
+    let byte_length = packed_bytecode.len() as u64;
+    let length_in_fields = packed_bytecode.len().div_ceil(31);
+    assert!(
+        length_in_fields < constants::MAX_PACKED_PUBLIC_BYTECODE_SIZE_IN_FIELDS,
+        "packed bytecode exceeds maximum field count"
+    );
+
+    let mut fields = Vec::with_capacity(length_in_fields);
+    for chunk in packed_bytecode.chunks(31) {
+        let mut padded = [0u8; 32];
+        padded[1..1 + chunk.len()].copy_from_slice(chunk);
+        fields.push(Fr::from(padded));
+    }
 
     let separator = Fr::from(u64::from(domain_separator::PUBLIC_BYTECODE) + (byte_length << 32));
-    poseidon2_hash_with_separator_field(&fields[1..1 + length_in_fields], separator)
+    poseidon2_hash_with_separator_field(&fields, separator)
 }
 
 /// Compute the contract class ID from its components.
