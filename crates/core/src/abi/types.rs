@@ -401,6 +401,16 @@ impl ContractArtifact {
             .and_then(|v| v.as_str())
             .map(|s| s.to_owned());
 
+        let verification_key = raw
+            .get("verification_key")
+            .or_else(|| raw.get("verificationKey"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_owned());
+        let verification_key_hash = raw
+            .get("verification_key_hash")
+            .or_else(|| raw.get("verificationKeyHash"))
+            .and_then(|value| serde_json::from_value(value.clone()).ok());
+
         // Get debug symbols
         let debug_symbols = raw.get("debug_symbols").cloned();
 
@@ -421,8 +431,8 @@ impl ContractArtifact {
             error_types: abi.and_then(|a| a.get("error_types")).cloned(),
             selector,
             bytecode,
-            verification_key_hash: None,
-            verification_key: None,
+            verification_key_hash,
+            verification_key,
             custom_attributes: Some(attrs),
             is_unconstrained: Some(is_unconstrained),
             debug_symbols,

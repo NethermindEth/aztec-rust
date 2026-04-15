@@ -263,7 +263,7 @@ pub const L1_TO_L2_MSG_SUBTREE_HEIGHT: usize = 10;
 /// Archive tree height.
 pub const ARCHIVE_HEIGHT: usize = 30;
 /// VK tree height.
-pub const VK_TREE_HEIGHT: usize = 8;
+pub const VK_TREE_HEIGHT: usize = 7;
 /// Canonical protocol contract tuple length.
 pub const MAX_PROTOCOL_CONTRACTS: usize = 11;
 
