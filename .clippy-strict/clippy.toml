@@ -1,0 +1,4 @@
+# Hard-stop threshold used by `cargo lint-strict` (CI).  Functions with
+# cognitive complexity > 15 are denied.  The soft-warning threshold (> 10)
+# is in the root clippy.toml and applies during local `cargo lint` runs.
+cognitive-complexity-threshold = 15

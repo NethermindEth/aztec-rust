@@ -1,4 +1,5 @@
 [alias]
+# Soft lint pass — warns on cognitive complexity > 10 (threshold in clippy.toml).
 lint = """clippy --all-targets --all-features -- --no-deps \
   -W clippy::all \
   -W clippy::pedantic \
@@ -19,6 +20,37 @@ lint = """clippy --all-targets --all-features -- --no-deps \
   -W clippy::verbose_file_reads \
   -W clippy::unnecessary_self_imports \
   -W clippy::undocumented_unsafe_blocks \
+  -W clippy::cognitive_complexity \
+  -A clippy::module_name_repetitions \
+  -A clippy::missing_errors_doc \
+  -A clippy::missing_panics_doc \
+  -A clippy::must_use_candidate \
+  -A clippy::multiple_crate_versions \
+  -A clippy::cargo_common_metadata"""
+
+# Hard-stop lint pass — errors on cognitive complexity > 15 (threshold in
+# .clippy-strict/clippy.toml).  Run this in CI to enforce the upper bound.
+lint-strict = """!CLIPPY_CONF_DIR=.clippy-strict cargo clippy --all-targets --all-features -- --no-deps \
+  -W clippy::all \
+  -W clippy::pedantic \
+  -W clippy::nursery \
+  -W clippy::cargo \
+  -W clippy::unwrap_used \
+  -W clippy::expect_used \
+  -W clippy::panic \
+  -W clippy::unimplemented \
+  -W clippy::todo \
+  -W clippy::dbg_macro \
+  -W clippy::print_stdout \
+  -W clippy::print_stderr \
+  -W clippy::implicit_clone \
+  -W clippy::str_to_string \
+  -W clippy::rc_mutex \
+  -W clippy::rest_pat_in_fully_bound_structs \
+  -W clippy::verbose_file_reads \
+  -W clippy::unnecessary_self_imports \
+  -W clippy::undocumented_unsafe_blocks \
+  -D clippy::cognitive_complexity \
   -A clippy::module_name_repetitions \
   -A clippy::missing_errors_doc \
   -A clippy::missing_panics_doc \
