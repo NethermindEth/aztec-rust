@@ -65,8 +65,7 @@ impl RpcTransport {
             id,
         };
 
-        let resp = self.client.post(&self.url).json(&request).send().await?;
-        let body: serde_json::Value = resp.json().await?;
+        let body = self.send_json(&request).await?;
         let error: Option<RpcError> = body
             .get("error")
             .filter(|value| !value.is_null())
@@ -107,8 +106,7 @@ impl RpcTransport {
             id,
         };
 
-        let resp = self.client.post(&self.url).json(&request).send().await?;
-        let body: serde_json::Value = resp.json().await?;
+        let body = self.send_json(&request).await?;
         let error: Option<RpcError> = body
             .get("error")
             .filter(|value| !value.is_null())
@@ -147,8 +145,7 @@ impl RpcTransport {
             id,
         };
 
-        let resp = self.client.post(&self.url).json(&request).send().await?;
-        let body: serde_json::Value = resp.json().await?;
+        let body = self.send_json(&request).await?;
         let error: Option<RpcError> = body
             .get("error")
             .filter(|value| !value.is_null())
@@ -164,6 +161,26 @@ impl RpcTransport {
         }
 
         Ok(())
+    }
+
+    async fn send_json(&self, request: &Request<'_>) -> Result<serde_json::Value, Error> {
+        let response = match self.client.post(&self.url).json(request).send().await {
+            Ok(response) => response,
+            Err(first_err) if first_err.is_connect() || first_err.is_request() => self
+                .client
+                .post(&self.url)
+                .json(request)
+                .send()
+                .await
+                .map_err(|second_err| {
+                    Error::Transport(format!(
+                        "{second_err}; retry after transport failure also failed: {first_err}"
+                    ))
+                })?,
+            Err(err) => return Err(err.into()),
+        };
+
+        response.json().await.map_err(Into::into)
     }
 }
 
