@@ -286,6 +286,9 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
                 }
 
                 if !stored_for_owner {
+                    if scopes.is_empty() {
+                        continue;
+                    }
                     let fallback_scope = if !note.owner.0.is_zero() {
                         note.owner
                     } else {
