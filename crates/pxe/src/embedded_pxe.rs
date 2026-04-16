@@ -1,5 +1,6 @@
 //! Embedded PXE implementation that runs PXE logic in-process.
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
@@ -33,7 +34,9 @@ use aztec_pxe_client::{
 use base64::Engine;
 use tokio::process::Command;
 
-use crate::kernel::prover::{BbPrivateKernelProver, BbProverConfig};
+use crate::kernel::prover::{
+    BbPrivateKernelProver, BbProverConfig, PrivateExecutionStep, PrivateKernelProver, StepTimings,
+};
 use crate::stores::anchor_block_store::AnchorBlockHeader;
 use crate::stores::kv::KvStore;
 use crate::stores::{
@@ -250,6 +253,199 @@ fn prove_with_real_kernel_daemon(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RealProofBackend {
+    TsDaemon,
+    TsProcess,
+    BbSubprocess,
+}
+
+impl RealProofBackend {
+    fn selected() -> Result<Self, Error> {
+        if let Ok(value) = std::env::var("PXE_REAL_PROOF_BACKEND") {
+            return match value.as_str() {
+                "ts-daemon" => Ok(Self::TsDaemon),
+                "ts-process" => Ok(Self::TsProcess),
+                "bb-subprocess" => Ok(Self::BbSubprocess),
+                other => Err(Error::InvalidData(format!(
+                    "unsupported PXE_REAL_PROOF_BACKEND {other:?}; expected ts-daemon, ts-process, or bb-subprocess"
+                ))),
+            };
+        }
+
+        Ok(
+            if std::env::var("PXE_REAL_PROOF_DISABLE_DAEMON")
+                .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE"))
+                .unwrap_or(false)
+            {
+                Self::TsProcess
+            } else {
+                Self::TsDaemon
+            },
+        )
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::TsDaemon => "ts-daemon",
+            Self::TsProcess => "ts-process",
+            Self::BbSubprocess => "bb-subprocess",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RealProofRequestFormat {
+    Json,
+    BinaryV1,
+}
+
+impl RealProofRequestFormat {
+    fn selected() -> Result<Self, Error> {
+        match std::env::var("PXE_REAL_PROOF_REQUEST_FORMAT")
+            .unwrap_or_else(|_| "binary-v1".to_owned())
+            .as_str()
+        {
+            "json" => Ok(Self::Json),
+            "binary-v1" => Ok(Self::BinaryV1),
+            other => Err(Error::InvalidData(format!(
+                "unsupported PXE_REAL_PROOF_REQUEST_FORMAT {other:?}; expected json or binary-v1"
+            ))),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::BinaryV1 => "binary-v1",
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExternalClientIvcStep {
+    function_name: String,
+    #[serde(default)]
+    bytecode_base64: Option<String>,
+    #[serde(default)]
+    witness_base64: Option<String>,
+    #[serde(default)]
+    vk_base64: Option<String>,
+    #[serde(default)]
+    bytecode_path: Option<String>,
+    #[serde(default)]
+    witness_path: Option<String>,
+    #[serde(default)]
+    vk_path: Option<String>,
+    #[serde(default)]
+    timings: ExternalClientIvcStepTimings,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExternalClientIvcStepTimings {
+    #[serde(default)]
+    witgen: f64,
+    #[serde(default)]
+    gate_count: Option<u64>,
+    #[serde(default)]
+    oracles: serde_json::Value,
+}
+
+#[derive(Clone)]
+struct CachedContractAddressPreimage {
+    preimage: serde_json::Value,
+    class_id: Fr,
+}
+
+#[derive(Default)]
+struct RealProofMetadataCache {
+    contract_address_preimages: HashMap<(Fr, AztecAddress), CachedContractAddressPreimage>,
+    contract_class_preimages: HashMap<Fr, serde_json::Value>,
+    function_membership_witnesses: HashMap<(Fr, Fr), serde_json::Value>,
+}
+
+impl RealProofMetadataCache {
+    fn clear(&mut self) {
+        self.contract_address_preimages.clear();
+        self.contract_class_preimages.clear();
+        self.function_membership_witnesses.clear();
+    }
+}
+
+impl ExternalClientIvcStep {
+    fn into_execution_step(self) -> Result<PrivateExecutionStep, Error> {
+        let function_name = self.function_name;
+        Ok(PrivateExecutionStep {
+            bytecode: decode_external_client_ivc_field(
+                &function_name,
+                "bytecode",
+                self.bytecode_path.as_deref(),
+                self.bytecode_base64.as_deref(),
+            )?,
+            witness: decode_external_client_ivc_field(
+                &function_name,
+                "witness",
+                self.witness_path.as_deref(),
+                self.witness_base64.as_deref(),
+            )?,
+            vk: decode_external_client_ivc_field(
+                &function_name,
+                "vk",
+                self.vk_path.as_deref(),
+                self.vk_base64.as_deref(),
+            )?,
+            function_name,
+            timings: StepTimings {
+                witgen_ms: self.timings.witgen.round().max(0.0) as u64,
+                gate_count: self.timings.gate_count,
+                oracles_ms: external_oracles_ms(&self.timings.oracles),
+            },
+        })
+    }
+}
+
+fn decode_external_client_ivc_field(
+    function_name: &str,
+    label: &str,
+    path: Option<&str>,
+    base64: Option<&str>,
+) -> Result<Vec<u8>, Error> {
+    if let Some(path) = path {
+        return std::fs::read(path).map_err(|err| {
+            Error::InvalidData(format!(
+                "read external ClientIVC step {function_name} {label}: {err}"
+            ))
+        });
+    }
+    let value = base64.ok_or_else(|| {
+        Error::InvalidData(format!(
+            "external ClientIVC step {function_name} missing {label}"
+        ))
+    })?;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    b64.decode(value).map_err(|err| {
+        Error::InvalidData(format!(
+            "decode external ClientIVC step {function_name} {label}: {err}"
+        ))
+    })
+}
+
+fn external_oracles_ms(value: &serde_json::Value) -> u64 {
+    let Some(object) = value.as_object() else {
+        return 0;
+    };
+    object
+        .values()
+        .filter_map(|entry| entry.get("times").and_then(|times| times.as_array()))
+        .flat_map(|times| times.iter())
+        .filter_map(serde_json::Value::as_f64)
+        .sum::<f64>()
+        .round()
+        .max(0.0) as u64
+}
+
 fn parse_encoded_calls(fields: &[Fr]) -> Result<Vec<ParsedEntrypointCall>, Error> {
     const CALL_FIELDS: usize = 6;
     const APP_MAX_CALLS: usize = 5;
@@ -316,6 +512,8 @@ pub struct EmbeddedPxe<N: AztecNode> {
     vk_tree_root: Fr,
     /// Protocol contracts hash from node info — needed in TxConstantData.
     protocol_contracts_hash: Fr,
+    /// Static metadata reused while preparing real private-kernel proof requests.
+    real_proof_metadata_cache: Mutex<RealProofMetadataCache>,
     /// Whether `prove_tx` should run private-kernel witness generation and
     /// ClientIVC proof creation instead of the simulated-kernel dummy proof.
     prover_enabled: AtomicBool,
@@ -580,6 +778,7 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
             contract_sync_service,
             vk_tree_root,
             protocol_contracts_hash,
+            real_proof_metadata_cache: Mutex::new(RealProofMetadataCache::default()),
             prover_enabled: AtomicBool::new(prover_enabled),
         };
 
@@ -665,6 +864,13 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
     /// Get a reference to the contract store.
     pub fn contract_store(&self) -> &ContractStore {
         &self.contract_store
+    }
+
+    fn clear_real_proof_metadata_cache(&self) {
+        match self.real_proof_metadata_cache.lock() {
+            Ok(mut cache) => cache.clear(),
+            Err(_) => tracing::warn!("real proof metadata cache mutex poisoned"),
+        }
     }
 
     /// Get a reference to the key store.
@@ -2308,32 +2514,133 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
         Ok(fields)
     }
 
+    fn encode_witness_binary_v1(
+        witness_map: &acir::native_types::WitnessMap<acir::FieldElement>,
+    ) -> Vec<u8> {
+        let mut entries = witness_map.clone().into_iter().collect::<Vec<_>>();
+        entries.sort_by_key(|(witness, _)| witness.0);
+        let mut bytes = Vec::with_capacity(4 + entries.len() * 36);
+        bytes.extend_from_slice(&(entries.len() as u32).to_be_bytes());
+        for (witness, field) in entries {
+            bytes.extend_from_slice(&witness.0.to_be_bytes());
+            bytes.extend_from_slice(
+                &crate::execution::field_conversion::fe_to_fr(&field).to_be_bytes(),
+            );
+        }
+        bytes
+    }
+
+    fn write_kernel_call_sidecar(
+        sidecar_dir: &std::path::Path,
+        call_id: usize,
+        label: &str,
+        bytes: &[u8],
+    ) -> Result<String, Error> {
+        let path = sidecar_dir.join(format!("call-{call_id}-{label}.bin"));
+        std::fs::write(&path, bytes)
+            .map_err(|err| Error::InvalidData(format!("write {label} sidecar: {err}")))?;
+        Ok(path.to_string_lossy().into_owned())
+    }
+
+    async fn cached_contract_address_preimage(
+        &self,
+        kernel_oracle: &crate::kernel::oracle::PrivateKernelOracle<'_, N>,
+        block_hash: Fr,
+        contract_address: &AztecAddress,
+    ) -> Result<CachedContractAddressPreimage, Error> {
+        if let Ok(cache) = self.real_proof_metadata_cache.lock() {
+            if let Some(value) = cache
+                .contract_address_preimages
+                .get(&(block_hash, *contract_address))
+            {
+                return Ok(value.clone());
+            }
+        }
+
+        let preimage = kernel_oracle
+            .get_contract_address_preimage(contract_address)
+            .await?;
+        let class_id = preimage
+            .get("currentContractClassId")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| Error::InvalidData("contract preimage missing class id".into()))
+            .and_then(Fr::from_hex)?;
+        let value = CachedContractAddressPreimage { preimage, class_id };
+        if let Ok(mut cache) = self.real_proof_metadata_cache.lock() {
+            cache
+                .contract_address_preimages
+                .insert((block_hash, *contract_address), value.clone());
+        }
+        Ok(value)
+    }
+
+    async fn cached_contract_class_preimage(
+        &self,
+        kernel_oracle: &crate::kernel::oracle::PrivateKernelOracle<'_, N>,
+        class_id: &Fr,
+    ) -> Result<serde_json::Value, Error> {
+        if let Ok(cache) = self.real_proof_metadata_cache.lock() {
+            if let Some(value) = cache.contract_class_preimages.get(class_id) {
+                return Ok(value.clone());
+            }
+        }
+
+        let preimage = kernel_oracle
+            .get_contract_class_id_preimage(class_id)
+            .await?;
+        if let Ok(mut cache) = self.real_proof_metadata_cache.lock() {
+            cache
+                .contract_class_preimages
+                .insert(*class_id, preimage.clone());
+        }
+        Ok(preimage)
+    }
+
+    async fn cached_function_membership_witness(
+        &self,
+        kernel_oracle: &crate::kernel::oracle::PrivateKernelOracle<'_, N>,
+        class_id: &Fr,
+        selector: &Fr,
+    ) -> Result<serde_json::Value, Error> {
+        let key = (*class_id, *selector);
+        if let Ok(cache) = self.real_proof_metadata_cache.lock() {
+            if let Some(value) = cache.function_membership_witnesses.get(&key) {
+                return Ok(value.clone());
+            }
+        }
+
+        let witness = kernel_oracle
+            .get_function_membership_witness(class_id, selector)
+            .await?;
+        if let Ok(mut cache) = self.real_proof_metadata_cache.lock() {
+            cache
+                .function_membership_witnesses
+                .insert(key, witness.clone());
+        }
+        Ok(witness)
+    }
+
     fn kernel_proof_call_json(
         call: &crate::execution::execution_result::PrivateCallExecutionResult,
-    ) -> serde_json::Value {
+        request_format: RealProofRequestFormat,
+        sidecar_dir: Option<&std::path::Path>,
+        next_call_id: &mut usize,
+    ) -> Result<serde_json::Value, Error> {
         let b64 = base64::engine::general_purpose::STANDARD;
-        let witness = call
-            .partial_witness
-            .clone()
-            .into_iter()
-            .map(|(witness, field)| {
-                serde_json::json!([
-                    witness.0,
-                    crate::execution::field_conversion::fe_to_fr(&field)
-                ])
-            })
-            .collect::<Vec<_>>();
-        let nested = call
-            .nested_execution_results
-            .iter()
-            .map(Self::kernel_proof_call_json)
-            .collect::<Vec<_>>();
+        let call_id = *next_call_id;
+        *next_call_id += 1;
+        let mut nested = Vec::with_capacity(call.nested_execution_results.len());
+        for nested_call in &call.nested_execution_results {
+            nested.push(Self::kernel_proof_call_json(
+                nested_call,
+                request_format,
+                sidecar_dir,
+                next_call_id,
+            )?);
+        }
 
-        serde_json::json!({
+        let mut value = serde_json::json!({
             "functionName": "private_call",
-            "acirBase64": b64.encode(&call.acir),
-            "vkBase64": b64.encode(&call.vk),
-            "partialWitness": witness,
             "publicInputsFields": call.public_inputs_fields,
             "minRevertibleSideEffectCounter": call.min_revertible_side_effect_counter,
             "startSideEffectCounter": call.start_side_effect_counter,
@@ -2341,7 +2648,67 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
             "returnValues": call.return_values,
             "noteHashNullifierCounterMap": call.note_hash_nullifier_counter_map,
             "nestedExecutionResults": nested,
-        })
+        });
+        let object = value
+            .as_object_mut()
+            .expect("kernel call json should be an object");
+        match request_format {
+            RealProofRequestFormat::Json => {
+                let witness = call
+                    .partial_witness
+                    .clone()
+                    .into_iter()
+                    .map(|(witness, field)| {
+                        serde_json::json!([
+                            witness.0,
+                            crate::execution::field_conversion::fe_to_fr(&field)
+                        ])
+                    })
+                    .collect::<Vec<_>>();
+                object.insert(
+                    "acirBase64".to_owned(),
+                    serde_json::json!(b64.encode(&call.acir)),
+                );
+                object.insert(
+                    "vkBase64".to_owned(),
+                    serde_json::json!(b64.encode(&call.vk)),
+                );
+                object.insert("partialWitness".to_owned(), serde_json::json!(witness));
+            }
+            RealProofRequestFormat::BinaryV1 => {
+                let sidecar_dir = sidecar_dir.ok_or_else(|| {
+                    Error::InvalidData("binary-v1 request missing sidecar directory".into())
+                })?;
+                object.insert(
+                    "acirPath".to_owned(),
+                    serde_json::json!(Self::write_kernel_call_sidecar(
+                        sidecar_dir,
+                        call_id,
+                        "acir",
+                        &call.acir,
+                    )?),
+                );
+                object.insert(
+                    "vkPath".to_owned(),
+                    serde_json::json!(Self::write_kernel_call_sidecar(
+                        sidecar_dir,
+                        call_id,
+                        "vk",
+                        &call.vk,
+                    )?),
+                );
+                object.insert(
+                    "witnessPath".to_owned(),
+                    serde_json::json!(Self::write_kernel_call_sidecar(
+                        sidecar_dir,
+                        call_id,
+                        "witness",
+                        &Self::encode_witness_binary_v1(&call.partial_witness),
+                    )?),
+                );
+            }
+        }
+        Ok(value)
     }
 
     async fn prove_with_real_kernel_helper(
@@ -2350,6 +2717,8 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
         execution_result: &crate::execution::execution_result::PrivateExecutionResult,
         anchor: &AnchorBlockHeader,
     ) -> Result<(Vec<u8>, Vec<u8>, serde_json::Value), Error> {
+        let backend = RealProofBackend::selected()?;
+        let request_format = RealProofRequestFormat::selected()?;
         let work_dir = std::env::var("BB_WORKING_DIRECTORY")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| {
@@ -2361,6 +2730,14 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
             .map_err(|err| Error::InvalidData(format!("create bb working dir: {err}")))?;
         let request_path = work_dir.join("rust-private-kernel-request.json");
         let response_path = work_dir.join("rust-private-kernel-response.json");
+        let sidecar_dir = work_dir.join("rust-private-kernel-request-binary-v1");
+        if request_format == RealProofRequestFormat::BinaryV1 {
+            let _ = std::fs::remove_dir_all(&sidecar_dir);
+            std::fs::create_dir_all(&sidecar_dir)
+                .map_err(|err| Error::InvalidData(format!("create sidecar dir: {err}")))?;
+            std::fs::create_dir_all(sidecar_dir.join("response"))
+                .map_err(|err| Error::InvalidData(format!("create response sidecar dir: {err}")))?;
+        }
 
         fn collect_calls<'a>(
             call: &'a crate::execution::execution_result::PrivateCallExecutionResult,
@@ -2391,24 +2768,27 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
             if metadata.contains_key(&key) {
                 continue;
             }
-            let contract_preimage = kernel_oracle
-                .get_contract_address_preimage(&call.contract_address)
+            let contract_preimage = self
+                .cached_contract_address_preimage(
+                    &kernel_oracle,
+                    block_hash,
+                    &call.contract_address,
+                )
                 .await?;
-            let class_id = contract_preimage
-                .get("currentContractClassId")
-                .and_then(|value| value.as_str())
-                .ok_or_else(|| Error::InvalidData("contract preimage missing class id".into()))
-                .and_then(Fr::from_hex)?;
-            let class_preimage = kernel_oracle
-                .get_contract_class_id_preimage(&class_id)
+            let class_preimage = self
+                .cached_contract_class_preimage(&kernel_oracle, &contract_preimage.class_id)
                 .await?;
-            let function_membership_witness = kernel_oracle
-                .get_function_membership_witness(&class_id, &selector)
+            let function_membership_witness = self
+                .cached_function_membership_witness(
+                    &kernel_oracle,
+                    &contract_preimage.class_id,
+                    &selector,
+                )
                 .await?;
             metadata.insert(
                 key,
                 serde_json::json!({
-                    "contractAddressPreimage": contract_preimage,
+                    "contractAddressPreimage": contract_preimage.preimage,
                     "contractClassIdPreimage": class_preimage,
                     "functionMembershipWitness": function_membership_witness,
                 }),
@@ -2426,69 +2806,114 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
             &execution_result.entrypoint
         };
 
+        let mut next_call_id = 0usize;
         let request = serde_json::json!({
             "txRequestFields": Self::tx_request_fields_for_kernel(tx_request)?,
             "firstNullifier": execution_result.first_nullifier,
             "publicFunctionCalldata": execution_result.public_function_calldata,
-            "entrypoint": Self::kernel_proof_call_json(kernel_entrypoint),
+            "entrypoint": Self::kernel_proof_call_json(
+                kernel_entrypoint,
+                request_format,
+                (request_format == RealProofRequestFormat::BinaryV1).then_some(sidecar_dir.as_path()),
+                &mut next_call_id,
+            )?,
             "callMetadata": metadata,
             "masterSecretKeys": self.kernel_master_secret_keys().await?,
             "blockHash": block_hash,
             "blockNumber": anchor.get_block_number(),
             "threads": std::env::var("HARDWARE_CONCURRENCY").ok().and_then(|value| value.parse::<u32>().ok()),
+            "proofBackend": backend.as_str(),
+            "requestFormat": request_format.as_str(),
+            "responseSidecarDir": (request_format == RealProofRequestFormat::BinaryV1)
+                .then(|| sidecar_dir.join("response").to_string_lossy().into_owned()),
         });
         tokio::fs::write(&request_path, serde_json::to_vec(&request)?)
             .await
             .map_err(|err| Error::InvalidData(format!("write private kernel request: {err}")))?;
 
-        let response = if std::env::var("PXE_REAL_PROOF_DISABLE_DAEMON")
-            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE"))
-            .unwrap_or(false)
-        {
-            let script_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../tools/private_kernel_prove_from_rust.mjs");
-            let mut command = Command::new("node");
-            command
-                .arg(script_path)
-                .arg(&request_path)
-                .arg(&response_path)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            if let Some(path) = crate::kernel::prover::locate_aztec_packages_path() {
-                command.env("AZTEC_PACKAGES_PATH", path);
-            }
+        let mut response = match backend {
+            RealProofBackend::TsProcess => {
+                let script_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../tools/private_kernel_prove_from_rust.mjs");
+                let mut command = Command::new("node");
+                command
+                    .arg(script_path)
+                    .arg(&request_path)
+                    .arg(&response_path)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                if let Some(path) = crate::kernel::prover::locate_aztec_packages_path() {
+                    command.env("AZTEC_PACKAGES_PATH", path);
+                }
 
-            let output = command.output().await.map_err(|err| {
-                Error::InvalidData(format!("execute private kernel proof helper: {err}"))
-            })?;
-            if !output.status.success() {
-                return Err(Error::InvalidData(format!(
-                    "private kernel proof helper failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                )));
+                let output = command.output().await.map_err(|err| {
+                    Error::InvalidData(format!("execute private kernel proof helper: {err}"))
+                })?;
+                if !output.status.success() {
+                    return Err(Error::InvalidData(format!(
+                        "private kernel proof helper failed: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    )));
+                }
+                let response_bytes = tokio::fs::read(&response_path).await.map_err(|err| {
+                    Error::InvalidData(format!("read private kernel response: {err}"))
+                })?;
+                serde_json::from_slice(&response_bytes)?
             }
-            let response_bytes = tokio::fs::read(&response_path).await.map_err(|err| {
-                Error::InvalidData(format!("read private kernel response: {err}"))
-            })?;
-            serde_json::from_slice(&response_bytes)?
-        } else {
-            let request_path = request_path.clone();
-            let response_path = response_path.clone();
-            tokio::task::spawn_blocking(move || {
-                prove_with_real_kernel_daemon(&request_path, &response_path)
-            })
-            .await
-            .map_err(|err| Error::InvalidData(format!("join private kernel daemon: {err}")))??
+            RealProofBackend::TsDaemon | RealProofBackend::BbSubprocess => {
+                let request_path = request_path.clone();
+                let response_path = response_path.clone();
+                tokio::task::spawn_blocking(move || {
+                    prove_with_real_kernel_daemon(&request_path, &response_path)
+                })
+                .await
+                .map_err(|err| Error::InvalidData(format!("join private kernel daemon: {err}")))??
+            }
         };
         let b64 = base64::engine::general_purpose::STANDARD;
-        let proof = response
-            .get("proofBase64")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| Error::InvalidData("private kernel helper missing proof".into()))
-            .and_then(|value| {
-                b64.decode(value)
-                    .map_err(|err| Error::InvalidData(format!("decode helper proof: {err}")))
-            })?;
+        let proof = if backend == RealProofBackend::BbSubprocess {
+            let steps = response
+                .get("externalExecutionSteps")
+                .cloned()
+                .ok_or_else(|| {
+                    Error::InvalidData(
+                        "private kernel helper missing external execution steps".into(),
+                    )
+                })
+                .and_then(|value| {
+                    serde_json::from_value::<Vec<ExternalClientIvcStep>>(value).map_err(|err| {
+                        Error::InvalidData(format!(
+                            "decode external ClientIVC execution steps: {err}"
+                        ))
+                    })
+                })?
+                .into_iter()
+                .map(ExternalClientIvcStep::into_execution_step)
+                .collect::<Result<Vec<_>, _>>()?;
+            let client_ivc_start = std::time::Instant::now();
+            let chonk = self.kernel_prover.create_chonk_proof(&steps).await?;
+            let client_ivc_ms = client_ivc_start.elapsed().as_millis() as u64;
+            if let Some(object) = response.as_object_mut() {
+                object.insert(
+                    "rustClientIvcMs".to_owned(),
+                    serde_json::Value::from(client_ivc_ms),
+                );
+                object.insert(
+                    "rustProofBackend".to_owned(),
+                    serde_json::Value::from(backend.as_str()),
+                );
+            }
+            chonk.proof
+        } else {
+            response
+                .get("proofBase64")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| Error::InvalidData("private kernel helper missing proof".into()))
+                .and_then(|value| {
+                    b64.decode(value)
+                        .map_err(|err| Error::InvalidData(format!("decode helper proof: {err}")))
+                })?
+        };
         let public_inputs = response
             .get("publicInputsBase64")
             .and_then(|value| value.as_str())
@@ -2529,19 +2954,20 @@ impl<N: AztecNode + Clone + 'static> EmbeddedPxe<N> {
             .map(aztec_core::tx::TxHash::from_hex)
             .transpose()?;
 
-        let helper_script = if std::env::var("PXE_REAL_PROOF_DISABLE_DAEMON")
-            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE"))
-            .unwrap_or(false)
-        {
-            "private_kernel_prove_from_rust.mjs"
-        } else {
-            "private_kernel_prove_daemon_from_rust.mjs"
+        let proof_backend = RealProofBackend::selected()?;
+        let helper_script = match proof_backend {
+            RealProofBackend::TsProcess => "private_kernel_prove_from_rust.mjs",
+            RealProofBackend::TsDaemon => "private_kernel_prove_daemon_from_rust.mjs",
+            RealProofBackend::BbSubprocess => {
+                "private_kernel_prove_daemon_from_rust.mjs + rust bb-subprocess ClientIVC"
+            }
         };
         Ok(TxProvingResult {
             tx_hash,
             private_execution_result: serde_json::json!({
                 "realProofs": true,
                 "helper": helper_script,
+                "proofBackend": proof_backend.as_str(),
             }),
             public_inputs: aztec_core::tx::PrivateKernelTailCircuitPublicInputs::from_bytes(
                 public_inputs,
@@ -2651,6 +3077,7 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
     async fn register_contract_class(&self, artifact: &ContractArtifact) -> Result<(), Error> {
         tracing::debug!(name = %artifact.name, "registering contract class");
         self.contract_store.add_class(artifact).await?;
+        self.clear_real_proof_metadata_cache();
         Ok(())
     }
 
@@ -2707,6 +3134,7 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
                 .await?;
         }
 
+        self.clear_real_proof_metadata_cache();
         Ok(())
     }
 
@@ -2715,7 +3143,11 @@ impl<N: AztecNode + Clone + 'static> Pxe for EmbeddedPxe<N> {
         address: &AztecAddress,
         artifact: &ContractArtifact,
     ) -> Result<(), Error> {
-        self.contract_store.update_artifact(address, artifact).await
+        self.contract_store
+            .update_artifact(address, artifact)
+            .await?;
+        self.clear_real_proof_metadata_cache();
+        Ok(())
     }
 
     async fn simulate_tx(

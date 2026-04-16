@@ -68,6 +68,34 @@ pub struct ChonkProofWithPublicInputs {
     pub public_inputs: Vec<u8>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProofRequestFormat {
+    Json,
+    BinaryV1,
+}
+
+impl ProofRequestFormat {
+    fn selected() -> Result<Self, Error> {
+        match std::env::var("PXE_REAL_PROOF_REQUEST_FORMAT")
+            .unwrap_or_else(|_| "binary-v1".to_owned())
+            .as_str()
+        {
+            "json" => Ok(Self::Json),
+            "binary-v1" => Ok(Self::BinaryV1),
+            other => Err(Error::InvalidData(format!(
+                "unsupported PXE_REAL_PROOF_REQUEST_FORMAT {other:?}; expected json or binary-v1"
+            ))),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::BinaryV1 => "binary-v1",
+        }
+    }
+}
+
 /// Result from BB binary execution.
 #[derive(Debug)]
 pub enum BbResult {
@@ -447,17 +475,74 @@ impl PrivateKernelProver for BbPrivateKernelProver {
 
         let request_path = chonk_dir.join("client_ivc_request.json");
         let response_path = chonk_dir.join("client_ivc_response.json");
+        let sidecar_dir = chonk_dir.join("binary-v1");
+        let request_format = ProofRequestFormat::selected()?;
         let b64 = base64::engine::general_purpose::STANDARD;
+        if request_format == ProofRequestFormat::BinaryV1 {
+            tokio::fs::create_dir_all(&sidecar_dir).await.map_err(|e| {
+                Error::InvalidData(format!("failed to create ClientIVC sidecar dir: {e}"))
+            })?;
+        }
+        let mut request_steps = Vec::with_capacity(execution_steps.len());
+        for (index, step) in execution_steps.iter().enumerate() {
+            let mut step_json = serde_json::json!({
+                "functionName": step.function_name,
+            });
+            let object = step_json
+                .as_object_mut()
+                .expect("ClientIVC step json should be an object");
+            match request_format {
+                ProofRequestFormat::Json => {
+                    object.insert(
+                        "bytecodeBase64".to_owned(),
+                        serde_json::json!(b64.encode(&step.bytecode)),
+                    );
+                    object.insert(
+                        "witnessBase64".to_owned(),
+                        serde_json::json!(b64.encode(&step.witness)),
+                    );
+                    object.insert(
+                        "vkBase64".to_owned(),
+                        serde_json::json!(b64.encode(&step.vk)),
+                    );
+                }
+                ProofRequestFormat::BinaryV1 => {
+                    let bytecode_path = sidecar_dir.join(format!("step-{index}-bytecode.bin"));
+                    let witness_path = sidecar_dir.join(format!("step-{index}-witness.bin"));
+                    let vk_path = sidecar_dir.join(format!("step-{index}-vk.bin"));
+                    tokio::fs::write(&bytecode_path, &step.bytecode)
+                        .await
+                        .map_err(|e| {
+                            Error::InvalidData(format!("failed to write ClientIVC bytecode: {e}"))
+                        })?;
+                    tokio::fs::write(&witness_path, &step.witness)
+                        .await
+                        .map_err(|e| {
+                            Error::InvalidData(format!("failed to write ClientIVC witness: {e}"))
+                        })?;
+                    tokio::fs::write(&vk_path, &step.vk).await.map_err(|e| {
+                        Error::InvalidData(format!("failed to write ClientIVC VK: {e}"))
+                    })?;
+                    object.insert(
+                        "bytecodePath".to_owned(),
+                        serde_json::json!(bytecode_path.to_string_lossy().into_owned()),
+                    );
+                    object.insert(
+                        "witnessPath".to_owned(),
+                        serde_json::json!(witness_path.to_string_lossy().into_owned()),
+                    );
+                    object.insert(
+                        "vkPath".to_owned(),
+                        serde_json::json!(vk_path.to_string_lossy().into_owned()),
+                    );
+                }
+            }
+            request_steps.push(step_json);
+        }
         let request = serde_json::json!({
             "threads": self.config.hardware_concurrency,
-            "executionSteps": execution_steps.iter().map(|step| {
-                serde_json::json!({
-                    "functionName": step.function_name,
-                    "bytecodeBase64": b64.encode(&step.bytecode),
-                    "witnessBase64": b64.encode(&step.witness),
-                    "vkBase64": b64.encode(&step.vk),
-                })
-            }).collect::<Vec<_>>(),
+            "requestFormat": request_format.as_str(),
+            "executionSteps": request_steps,
         });
         tokio::fs::write(&request_path, serde_json::to_vec(&request)?)
             .await
