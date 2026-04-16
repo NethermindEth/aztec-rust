@@ -225,15 +225,16 @@ cd /Users/alexmetelli/source/aztec-rs
 
 AZTEC_NODE_URL=http://localhost:8080 \
 PXE_BENCH_REAL_PROOFS=1 \
-PXE_BENCH_ITERATIONS=3 \
+PXE_BENCH_ITERATIONS=10 \
 PXE_BENCH_TIMEOUT_MS=3600000 \
-PXE_BENCH_OUTPUT=/Users/alexmetelli/source/aztec-rs/crates/pxe/target/tmp/pxe-bench-rust-private-real-proving-note-decryption-3iter.json \
+PXE_BENCH_OUTPUT=/Users/alexmetelli/source/aztec-rs/crates/pxe/target/tmp/pxe-bench-rust-private-real-proving-note-decryption-10iter.json \
 cargo test --release --test pxe pxe_private_prove_and_note_decryption_json_benchmark -- --ignored --nocapture
 ```
 
-Use 3 iterations — each proof takes roughly 4–5 seconds. Keep
-`PXE_BENCH_TIMEOUT_MS=3600000` to avoid the default 2-minute Jest-style
-timeout.
+Use at least 10 iterations for any headline claim. Three-iteration runs are
+acceptable only for smoke checks because the prove row's expected deltas are
+small relative to inter-iteration variance. Keep `PXE_BENCH_TIMEOUT_MS=3600000`
+to avoid the default 2-minute Jest-style timeout.
 
 ## Run TypeScript Private Real Proving + Note Decryption
 
@@ -246,25 +247,31 @@ AZTEC_NODE_URL=http://localhost:8080 \
 PXE_BENCH=1 \
 PXE_BENCH_TARGET=private \
 PXE_BENCH_REAL_PROOFS=1 \
-PXE_BENCH_ITERATIONS=3 \
+PXE_BENCH_ITERATIONS=10 \
 PXE_BENCH_TIMEOUT_MS=3600000 \
 PXE_BENCH_STATE_VARS_ARTIFACT=/Users/alexmetelli/source/aztec-rs/fixtures/state_vars_contract_compiled.json \
-PXE_BENCH_OUTPUT=/Users/alexmetelli/source/aztec-packages/yarn-project/pxe-bench-ts-private-real-proving-note-decryption-3iter.json \
+PXE_BENCH_OUTPUT=/Users/alexmetelli/source/aztec-rs/crates/pxe/target/tmp/pxe-bench-ts-private-real-proving-note-decryption-10iter.json \
 JEST_MAX_WORKERS=1 \
 yarn workspace @aztec/pxe test pxe_bench.test.ts
 ```
 
-Measured local 3-iteration baseline on this machine:
+Write the TypeScript output directly to the canonical `aztec-rs` comparison
+path. Do not copy an older JSON file into `crates/pxe/target/tmp`; the
+comparison report prints input paths and modification times so stale baselines
+are visible.
+
+Recent local 3-iteration samples showed enough variance that the old headline
+ratios should not be reused. In particular, two TypeScript real-proof runs
+differed materially:
 
 | operation | TypeScript mean ms | note |
 | --- | ---: | --- |
-| `build_private_tx_request` | 20.606 | local request construction |
-| `prove_private_note_tx` | 4937.761 | real witness generation + ClientIVC proof generation |
-| `note_decryption_first_read` | 39.221 | first sync/decrypt/store read |
-| `note_cached_read` | 3.121 | cached utility read |
+| `prove_private_note_tx` | 4771.783 vs 4937.761 | both 3-iteration real-proof samples |
+| `note_decryption_first_read` | 70.684 vs 39.221 | unstable enough to invalidate a 2.2x headline |
+| `note_cached_read` | 5.008 vs 3.121 | unstable small sample |
+| `build_private_tx_request` | 36.027 vs 20.606 | supporting only; not apples-to-apples against Rust |
 
-Do not compare this report to the Rust simulated-proving report. It is a
-TypeScript real-proving baseline until Rust real private-kernel proving is wired.
+Do not compare this report to the Rust simulated-proving report.
 
 ## Run TypeScript E2E
 
@@ -337,8 +344,25 @@ node tools/compare_pxe_benchmarks.mjs \
 cat crates/pxe/target/tmp/pxe-benchmark-e2e-local-comparison.md
 ```
 
+For the private real-proving comparison on macOS:
+
+```bash
+cd /Users/alexmetelli/source/aztec-rs
+
+node tools/compare_pxe_benchmarks.mjs \
+  crates/pxe/target/tmp/pxe-bench-rust-private-real-proving-note-decryption-10iter.json \
+  crates/pxe/target/tmp/pxe-bench-ts-private-real-proving-note-decryption-10iter.json \
+  crates/pxe/target/tmp/pxe-benchmark-private-real-proving-note-decryption-10iter-comparison.md
+
+cat crates/pxe/target/tmp/pxe-benchmark-private-real-proving-note-decryption-10iter-comparison.md
+```
+
 Interpretation:
 
 - `ts/rust mean > 1`: TypeScript is slower for that operation.
 - `ts/rust mean < 1`: TypeScript is faster for that operation.
 - Compare only reports with the same `benchmark` value and operation names.
+- For private real-proving, `build_private_tx_request` is supporting only:
+  TypeScript and Rust time different request-builder paths.
+- Check the comparison report's input paths and modification times before using
+  the ratios in an external summary.
