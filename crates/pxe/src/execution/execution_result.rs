@@ -4,6 +4,8 @@
 //! flat return values. The real types preserve the full execution tree structure
 //! needed by the kernel prover and `TxProvingResult.toTx()`.
 
+use std::collections::BTreeMap;
+
 use acir::native_types::WitnessMap;
 use acir::{native_types::Witness, FieldElement};
 
@@ -159,61 +161,101 @@ impl PrivateExecutionResult {
 
     /// Collect all note hashes from the execution tree.
     pub fn all_note_hashes(&self) -> Vec<&ScopedNoteHash> {
-        self.iter_all_calls()
+        let mut by_counter = BTreeMap::new();
+        for note_hash in self
+            .iter_all_calls()
             .into_iter()
             .flat_map(|c| c.note_hashes.iter())
-            .collect()
+        {
+            by_counter
+                .entry(note_hash.note_hash.counter)
+                .or_insert(note_hash);
+        }
+        by_counter.into_values().collect()
     }
 
     /// Collect all nullifiers from the execution tree.
     pub fn all_nullifiers(&self) -> Vec<&ScopedNullifier> {
-        self.iter_all_calls()
+        let mut by_counter = BTreeMap::new();
+        for nullifier in self
+            .iter_all_calls()
             .into_iter()
             .flat_map(|c| c.nullifiers.iter())
-            .collect()
+        {
+            by_counter
+                .entry(nullifier.nullifier.counter)
+                .or_insert(nullifier);
+        }
+        by_counter.into_values().collect()
     }
 
     /// Collect all note hash read requests.
     pub fn all_note_hash_read_requests(&self) -> Vec<&ScopedReadRequest> {
-        self.iter_all_calls()
+        let mut by_counter = BTreeMap::new();
+        for request in self
+            .iter_all_calls()
             .into_iter()
             .flat_map(|c| c.note_hash_read_requests.iter())
-            .collect()
+        {
+            by_counter
+                .entry(request.read_request.counter)
+                .or_insert(request);
+        }
+        by_counter.into_values().collect()
     }
 
     /// Collect all nullifier read requests.
     pub fn all_nullifier_read_requests(&self) -> Vec<&ScopedReadRequest> {
-        self.iter_all_calls()
+        let mut by_counter = BTreeMap::new();
+        for request in self
+            .iter_all_calls()
             .into_iter()
             .flat_map(|c| c.nullifier_read_requests.iter())
-            .collect()
+        {
+            by_counter
+                .entry(request.read_request.counter)
+                .or_insert(request);
+        }
+        by_counter.into_values().collect()
     }
 
     /// Collect all private logs from the execution tree.
     pub fn all_private_logs(&self) -> Vec<&PrivateLogData> {
-        self.iter_all_calls()
+        let mut by_counter = BTreeMap::new();
+        for log in self
+            .iter_all_calls()
             .into_iter()
             .flat_map(|c| c.private_logs.iter())
-            .collect()
+        {
+            by_counter.entry(log.counter).or_insert(log);
+        }
+        by_counter.into_values().collect()
     }
 
     /// Collect all contract class logs, sorted by counter.
     pub fn all_contract_class_logs_sorted(&self) -> Vec<&CountedContractClassLog> {
-        let mut logs: Vec<&CountedContractClassLog> = self
+        let mut by_counter = BTreeMap::new();
+        for log in self
             .iter_all_calls()
             .into_iter()
             .flat_map(|c| c.contract_class_logs.iter())
-            .collect();
-        logs.sort_by_key(|l| l.counter);
-        logs
+        {
+            by_counter.entry(log.counter).or_insert(log);
+        }
+        by_counter.into_values().collect()
     }
 
     /// Collect all public call requests from the execution tree.
     pub fn all_public_call_requests(&self) -> Vec<&PublicCallRequestData> {
-        self.iter_all_calls()
+        let mut by_counter = BTreeMap::new();
+        for request in self
+            .iter_all_calls()
             .into_iter()
             .flat_map(|c| c.public_call_requests.iter())
-            .collect()
+        {
+            by_counter.entry(request.counter).or_insert(request);
+        }
+        by_counter.into_values().collect()
     }
 
     /// Get the teardown call request (if any).
