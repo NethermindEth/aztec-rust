@@ -19,8 +19,10 @@
 )]
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::common::serial_guard;
 
 use aztec_rs::abi::{AbiValue, ContractArtifact, FunctionType};
 use aztec_rs::account::{SchnorrAccountContract, SingleAccountProvider};
@@ -74,14 +76,6 @@ const INITIAL_TOKEN_BALANCE: u64 = 1_000_000_000;
 
 fn node_url() -> String {
     std::env::var("AZTEC_NODE_URL").unwrap_or_else(|_| "http://localhost:8080".to_owned())
-}
-
-fn serial_guard() -> MutexGuard<'static, ()> {
-    static E2E_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    E2E_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[allow(clippy::cast_possible_truncation)]

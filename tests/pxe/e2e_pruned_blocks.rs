@@ -10,6 +10,7 @@
 //! ```
 
 #![allow(
+    clippy::await_holding_lock,
     clippy::expect_used,
     clippy::panic,
     clippy::print_stderr,
@@ -20,6 +21,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use crate::common::serial_guard;
 
 use aztec_rs::abi::{AbiValue, ContractArtifact, FunctionType};
 use aztec_rs::account::{SchnorrAccountContract, SingleAccountProvider};
@@ -336,6 +339,7 @@ async fn set_node_config(config: serde_json::Value) {
 #[tokio::test]
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn can_discover_and_use_notes_created_in_both_pruned_and_available_blocks() {
+    let _guard = serial_guard();
     // --- Setup: 3 accounts (admin, sender, recipient), deploy token ---
 
     let Some((admin_wallet, admin)) = setup_wallet(TEST_ACCOUNT_0).await else {

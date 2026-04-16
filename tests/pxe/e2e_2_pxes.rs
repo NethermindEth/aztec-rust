@@ -10,6 +10,7 @@
 //! ```
 
 #![allow(
+    clippy::await_holding_lock,
     clippy::expect_used,
     clippy::print_stderr,
     clippy::similar_names,
@@ -61,6 +62,7 @@ async fn deploy_child(
 #[tokio::test]
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn transfers_funds_from_user_a_to_b_via_pxe_a_followed_by_transfer_from_b_to_a_via_pxe_b() {
+    let _guard = serial_guard();
     let Some(((wallet_a, account_a_address), (wallet_b, account_b_address))) =
         setup_two_wallets().await
     else {
@@ -166,6 +168,7 @@ async fn transfers_funds_from_user_a_to_b_via_pxe_a_followed_by_transfer_from_b_
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn user_calls_a_public_function_on_a_contract_deployed_by_a_different_user_using_a_different_pxe(
 ) {
+    let _guard = serial_guard();
     let Some(((wallet_a, account_a_address), (wallet_b, account_b_address))) =
         setup_two_wallets().await
     else {
@@ -204,6 +207,7 @@ async fn user_calls_a_public_function_on_a_contract_deployed_by_a_different_user
 #[tokio::test]
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn private_state_is_zero_when_pxe_does_not_have_the_account_secret_key() {
+    let _guard = serial_guard();
     let Some(((wallet_a, account_a_address), (wallet_b, account_b_address))) =
         setup_two_wallets().await
     else {
@@ -274,6 +278,7 @@ async fn private_state_is_zero_when_pxe_does_not_have_the_account_secret_key() {
 #[tokio::test]
 #[ignore = "requires live node via AZTEC_NODE_URL"]
 async fn permits_sending_funds_to_a_user_before_they_have_registered_the_contract() {
+    let _guard = serial_guard();
     let Some(((wallet_a, account_a_address), (wallet_b, account_b_address))) =
         setup_two_wallets().await
     else {
@@ -338,6 +343,7 @@ async fn permits_sending_funds_to_a_user_before_they_have_registered_the_contrac
 #[allow(clippy::too_many_lines)]
 async fn permits_sending_funds_to_a_user_and_spending_them_before_they_have_registered_the_contract(
 ) {
+    let _guard = serial_guard();
     let Some(((wallet_a, account_a_address), (wallet_b, account_b_address))) =
         setup_two_wallets().await
     else {
